@@ -31,15 +31,16 @@ TEMPLATE = "TEMPLATE"
 HTTP_REQUEST = "HTTP_REQUEST"
 REDIRECT = "REDIRECT"
 XML = "XML_PARSER"
+HTML_OUTPUT = "HTML_OUTPUT"
 NORMALIZED = "NORMALIZED_PATH"
 ALL_SINKS = frozenset(
-    {COMMAND, SQL, CODE, FILESYSTEM, DESERIALIZATION, TEMPLATE, HTTP_REQUEST, REDIRECT, XML}
+    {COMMAND, SQL, CODE, FILESYSTEM, DESERIALIZATION, TEMPLATE, HTTP_REQUEST, REDIRECT, XML, HTML_OUTPUT}
 )
 
 # Path, request and redirect sinks only matter when a remote party controls the
 # value. A CLI that opens the file named on its own command line is not a
 # path-traversal vulnerability.
-REMOTE_ONLY_CATEGORIES = frozenset({FILESYSTEM, HTTP_REQUEST, REDIRECT, TEMPLATE, XML})
+REMOTE_ONLY_CATEGORIES = frozenset({FILESYSTEM, HTTP_REQUEST, REDIRECT, TEMPLATE, XML, HTML_OUTPUT})
 
 SQL_KEYWORDS = re.compile(
     r"(?i)\b(?:select\s.+\sfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|"

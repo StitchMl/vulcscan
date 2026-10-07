@@ -106,35 +106,43 @@ def _severity(value: str, enabled: bool) -> str:
     return _paint(value, _SEVERITY_COLOR.get(value, "dim"), enabled)
 
 
+def _label(text: str, color: bool) -> str:
+    return _paint(f"{text:<11}", "cyan", color)
+
+
+def _field(text: str, value: str, color: bool) -> str:
+    return f"      {_label(text + ':', color)} {value}"
+
+
 def _render_finding(number: int, finding: Finding, patch_preview: bool, color: bool) -> list[str]:
     lines = [
         f"{_paint(f'F-{number:03d}', 'bold', color)}  [{_severity(finding.severity.value, color)}] "
         f"{_paint(finding.name, 'bold', color)} ({finding.cwe})",
-        f"      Location:   {_where(finding.location)}",
-        f"      Severity:   {finding.severity.value}    Confidence: {finding.confidence.value}    Rule: {finding.rule_id}",
+        _field("Location", _where(finding.location), color),
+        _field("Severity", f"{_severity(finding.severity.value, color)}    Confidence: {finding.confidence.value}    Rule: {finding.rule_id}", color),
     ]
     sink_line = f"{finding.evidence[:100]}  @ {finding.location.file}:{finding.location.line}"
     if finding.source is not None:
         source_step = next((step for step in finding.flow if step.kind == "SOURCE"), None)
         code = source_step.code[:80] if source_step else ""
-        lines.append(f"      Source:     {code}  @ {finding.source.file}:{finding.source.line}".rstrip())
-        lines.append(f"      Sink:       {sink_line}")
+        lines.append(_field("Source", f"{code}  @ {finding.source.file}:{finding.source.line}".rstrip(), color))
+        lines.append(_field("Sink", sink_line, color))
         middle = [step for step in finding.flow if step.kind == "PROPAGATION"]
         if middle:
-            lines.append("      Flow:       " + " -> ".join(f"line {step.location.line}" for step in middle[:6]) + " -> sink")
+            lines.append(_field("Flow", " -> ".join(f"line {step.location.line}" for step in middle[:6]) + " -> sink", color))
     else:
-        lines.append(f"      Code:       {sink_line}")
-    lines.append(f"      Why:        {finding.reason}")
-    lines.append(f"      Reference:  https://cwe.mitre.org/data/definitions/{finding.cwe.removeprefix('CWE-')}.html")
-    lines.append(f"      Patch at:   {_where(finding.patch_location)}")
+        lines.append(_field("Code", sink_line, color))
+    lines.append(_field("Why", finding.reason, color))
+    lines.append(_field("Reference", f"https://cwe.mitre.org/data/definitions/{finding.cwe.removeprefix('CWE-')}.html", color))
+    lines.append(_field("Patch at", _where(finding.patch_location), color))
     for location in finding.related_locations[:3]:
         lines.append(f"      Related:    {_where(location)}")
     for index, vector in enumerate(finding.test_vectors[:3], 1):
         label = "Test vector:" if index == 1 else "            "
-        lines.append(f"      {label:<12} {vector}")
+        lines.append(_field(label.rstrip(":"), vector, color) if index == 1 else f"                   {vector}")
     preferred = next((item for item in finding.remediations if item.preferred), None)
     if preferred is not None:
-        lines.append(f"      Fix:        {preferred.title}")
+        lines.append(_field("Patch", preferred.title, color))
         lines.append(f"                  {preferred.guidance}")
         lines.append(f"                  Patch confidence: {preferred.patch_confidence.value}   Patch risk: {preferred.patch_risk}")
         if patch_preview and preferred.suggested:
@@ -182,11 +190,20 @@ def _counts_line(findings: list[Finding], color: bool = False) -> str:
     ) or "none"
 
 
+def _types_line(findings: list[Finding], limit: int = 6) -> str:
+    counts = Counter(item.name for item in findings)
+    ordered = list(dict.fromkeys(item.name for item in findings))
+    visible = ordered[:limit]
+    text = " | ".join(f"{name}: {counts[name]}" for name in visible)
+    remaining = len(ordered) - len(visible)
+    return text + (f" | +{remaining} other types" if remaining else "")
+
+
 def render_text(
     result: ScanResult,
     minimum_severity: Severity | None = None,
     *,
-    patch_preview: bool = False,
+    patch_preview: bool = True,
     color: bool = False,
 ) -> str:
     findings = _sorted_findings(result, minimum_severity)
@@ -201,6 +218,7 @@ def render_text(
         f"Files:         {metadata.get('files_analyzed', 0)} scanned, {metadata.get('files_skipped', 0)} skipped, {duration_text}",
         f"Network:       {metadata.get('network_access', 'DISABLED')}",
         f"Findings:      {len(findings)}  ({_counts_line(findings, color)})",
+        f"Top types:     {_types_line(findings) if findings else 'none'}",
         f"High confidence: {high_confidence}",
         f"Dependency vulnerabilities: {len(vulnerabilities)}",
         "",

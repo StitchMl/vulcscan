@@ -15,6 +15,7 @@ from .dataflow import (
     DESERIALIZATION,
     FILESYSTEM,
     HTTP_REQUEST,
+    HTML_OUTPUT,
     REDIRECT,
     SQL,
     TEMPLATE,
@@ -85,16 +86,23 @@ _FAMILIES: dict[str, tuple[str, str, str, Severity, str]] = {
         Severity.HIGH,
         "Untrusted input controls the scheme or host of an outbound request.",
     ),
+    "XSS": (
+        "Cross-Site Scripting",
+        "CWE-79",
+        HTML_OUTPUT,
+        Severity.HIGH,
+        "Untrusted input reaches an HTML-producing sink without contextual output encoding.",
+    ),
 }
 
 _TAINT_LANGUAGES: dict[str, tuple[str, ...]] = {
-    "PY": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
-    "JS": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
+    "PY": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
+    "JS": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
     "PHP": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
-    "JAVA": ("CMD", "SQL", "PATH", "DESER", "SSRF"),
-    "CS": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
-    "GO": ("CMD", "SQL", "PATH", "SSRF"),
-    "RB": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
+    "JAVA": ("CMD", "SQL", "PATH", "DESER", "SSRF", "XSS"),
+    "CS": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
+    "GO": ("CMD", "SQL", "PATH", "SSRF", "XSS"),
+    "RB": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
     "C": ("CMD", "SQL", "PATH"),
     "SH": ("CMD", "CODE"),
     "PS": ("CMD", "SQL", "CODE", "PATH", "SSRF"),
@@ -463,6 +471,20 @@ _FAMILY_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "XSS": (
+        Advice(
+            "Encode the value for its HTML context.",
+            "Use the framework's contextual encoder and keep user input as template data. HTML text, attributes, URLs and JavaScript require different encoders.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+        Advice(
+            "Return structured JSON instead of HTML.",
+            "For API endpoints, use the framework JSON response type and an application/json content type.",
+            Confidence.MEDIUM,
+            "LOW",
+        ),
+    ),
 }
 
 _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
@@ -768,7 +790,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
             "Also test alternate loopback spelling such as `http://2130706433:8000/vulcscan-probe` against the same controlled listener.",
         ],
     }
-    if rule_id in {"PHP-XSS-001", "SVG-ACTIVE-001"}:
+    if family == "XSS" or rule_id == "SVG-ACTIVE-001":
         return ["Submit `<img src=x onerror=alert('VULCSCAN_PROBE')>` as the reported field on a disposable account, then view the affected page in a test browser."]
     if rule_id == "PY-SSTI-001":
         return ["Submit `{{7*7}}`; rendering `49` instead of the literal text confirms template evaluation."]
@@ -786,4 +808,24 @@ def test_vectors_for(rule_id: str) -> list[str]:
         return ["From a separate test origin, submit the same POST without a CSRF token; the application must reject it before changing state."]
     if rule_id == "SESSION-FIXATION-001":
         return ["Record a disposable test session ID before login and confirm that a different ID is issued immediately after successful authentication."]
-    return vectors.get(family, [])
+    verification = {
+        "PY-XXE-001": ["Parse `<!DOCTYPE x [<!ENTITY probe SYSTEM \"file:///vulcscan-nonexistent\">]><x>&probe;</x>` and confirm the parser rejects the DOCTYPE before resolving the entity."],
+        "XXE-001": ["Parse `<!DOCTYPE x [<!ENTITY probe SYSTEM \"file:///vulcscan-nonexistent\">]><x>&probe;</x>` and confirm the parser rejects the DOCTYPE before resolving the entity."],
+        "SECRET-001": ["Replace the reported value with a disposable canary credential, build the artifact, then search logs and packaged files for that canary; it must not appear."],
+        "PRIVATE-KEY-001": ["Use a disposable test key, build the release artifact, then run `rg -n \"BEGIN .*PRIVATE KEY\" ARTIFACT_DIRECTORY`; no private key should be present."],
+        "TLS-VERIFY-001": ["Point the client at a local HTTPS endpoint with a self-signed certificate; the connection must fail with certificate verification enabled."],
+        "JWT-VERIFY-001": ["Submit the unsigned test token `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ2dWxjc2Nhbi1wcm9iZSJ9.`; the application must reject it before authorization."],
+        "WEAK-HASH-001": ["Create two disposable accounts with the same test password and inspect their stored hashes; use a password KDF with unique salts, so the hashes must differ."],
+        "WEAK-CIPHER-001": ["Encrypt repeated test blocks such as `VULCSCAN-PROBE!!VULCSCAN-PROBE!!`; ciphertext must not expose repeated blocks and authenticated decryption must reject one changed byte."],
+        "WEAK-RANDOM-001": ["Run the token generator twice with the same controlled PRNG seed; security tokens must not repeat or become predictable."],
+        "TEMPFILE-001": ["In a disposable directory, pre-create the predicted temporary path as a symlink to another test file; the program must refuse the path and leave the target unchanged."],
+        "FILE-PERM-001": ["Create the file in a disposable environment, then verify another unprivileged account cannot modify it; on Unix use `stat -c '%a %n' FILE`."],
+        "DEBUG-001": ["Send a malformed request to the test deployment; the response must not contain a stack trace, source path, environment value or interactive debugger."],
+        "CORS-001": ["Run `curl -i -H \"Origin: https://example.invalid\" -H \"Cookie: probe=1\" URL`; the response must not combine reflected or wildcard origin access with credentials."],
+        "DOCKER-ROOT-001": ["Run `docker run --rm IMAGE id -u`; the result must be a non-zero UID used by the application process."],
+        "K8S-PRIV-001": ["Inspect the rendered manifest with `kubectl create --dry-run=client -o yaml -f MANIFEST`; no container may request privileged mode or added dangerous capabilities."],
+        "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
+        "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
+        "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+    }
+    return vectors.get(family, verification.get(rule_id, []))

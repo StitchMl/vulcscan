@@ -33,7 +33,7 @@ After installation, use `vulcscan PATH`. From a source checkout, `python -m vulc
 ```text
 vulcscan PATH [--offline|--update-cve] [--no-cve] [--format text|json] [--output FILE]
               [--severity CRITICAL|HIGH|MEDIUM|LOW|INFO] [--exclude PATTERN]
-              [--max-file-size SIZE] [--patch-preview] [--generate-diff FILE]
+              [--max-file-size SIZE] [--patch-preview|--no-patch-preview] [--generate-diff FILE]
               [--color auto|always|never]
 ```
 
@@ -46,7 +46,8 @@ vulcscan PATH [--offline|--update-cve] [--no-cve] [--format text|json] [--output
 | `--output FILE` | Write the report to a file; a `.json` suffix selects JSON. |
 | `--severity LEVEL` | Show findings at or above LEVEL. |
 | `--exclude PATTERN` | Repository-relative glob to skip; repeatable. |
-| `--patch-preview` | Show current and suggested code when VulcScan can generate a concrete patch. |
+| `--patch-preview` | Show current and suggested code when VulcScan can generate a concrete patch. Enabled by default. |
+| `--no-patch-preview` | Hide current and suggested code snippets from text output. |
 | `--generate-diff FILE` | Write a unified diff of machine-applicable fixes. Source files are never modified. |
 | `--color MODE` | Color text output on terminals (`auto`, default), force ANSI colors, or disable them. `NO_COLOR` also disables color. |
 
@@ -84,7 +85,7 @@ Sanitizers are recognized by behavior, never by function name: numeric conversio
 
 ### Rules
 
-Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `PY-SSTI-001` (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
+Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `-XSS-001` (CWE-79 for Python, JavaScript/TypeScript, Java, C#, Go and Ruby), `PY-SSTI-001` (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
 
 Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `WEAK-RANDOM-001` (CWE-338), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `UPLOAD-MIME-001` (CWE-434), `CSRF-001` (CWE-352), `SESSION-FIXATION-001` (CWE-384), `PHP-URL-INCLUDE-001` (CWE-98), `CLEARTEXT-PASSWORD-001` (CWE-256), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
 
@@ -134,4 +135,4 @@ python -m pip install -e ".[test]"
 python -m pytest
 ```
 
-The suite covers vulnerable and safe fixtures, malformed input, CRLF, paths with spaces, binary and oversized files, symlink handling, deterministic ordering, offline network denial, dependency formats, OSV range selection, exact diff safety and zero-AI/network-import audits. A SQL matrix checks vulnerable source-to-query flows for every supported application-language SQL engine and safe parameterized counterexamples.
+The suite covers vulnerable and safe fixtures, malformed input, CRLF, paths with spaces, binary and oversized files, symlink handling, deterministic ordering, offline network denial, dependency formats, OSV range selection, exact diff safety and zero-AI/network-import audits. SQL and XSS matrices check vulnerable source-to-sink flows and safe counterexamples across the supported languages.

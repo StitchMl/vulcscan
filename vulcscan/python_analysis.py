@@ -21,6 +21,7 @@ from .dataflow import (
     DESERIALIZATION,
     ENVIRONMENT,
     FILESYSTEM,
+    HTML_OUTPUT,
     HTTP_REQUEST,
     LOCAL,
     NORMALIZED,
@@ -131,6 +132,9 @@ _SANITIZERS: dict[str, frozenset[str]] = {
     "flask.url_for": frozenset({REDIRECT}),
     "django.urls.reverse": frozenset({REDIRECT}),
     "django.shortcuts.resolve_url": frozenset({REDIRECT}),
+    "html.escape": frozenset({HTML_OUTPUT}),
+    "markupsafe.escape": frozenset({HTML_OUTPUT}),
+    "django.utils.html.escape": frozenset({HTML_OUTPUT}),
 }
 _NORMALIZERS = {
     "os.path.realpath",
@@ -1175,6 +1179,23 @@ class _Walker:
             template = argument(0, "source") or keywords.get("text")
             if template is not None:
                 yield "PY-SSTI-001", name, template, Confidence.HIGH, {}
+            return
+        # HTML output and explicit escaping bypasses.
+        if name in {
+            "flask.make_response",
+            "make_response",
+            "flask.Response",
+            "Response",
+            "django.http.HttpResponse",
+            "HttpResponse",
+            "markupsafe.Markup",
+            "Markup",
+            "django.utils.safestring.mark_safe",
+            "mark_safe",
+        }:
+            body = argument(0, "response") or keywords.get("content")
+            if body is not None:
+                yield "PY-XSS-001", name, body, Confidence.HIGH, {}
             return
         # Redirects.
         if name in _REDIRECT_CALLS:

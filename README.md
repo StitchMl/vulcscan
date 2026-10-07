@@ -31,7 +31,7 @@ After installation, use `vulcscan PATH`. From a source checkout, `python -m vulc
 ## Usage
 
 ```text
-vulcscan PATH [--offline] [--no-cve] [--format text|json] [--output FILE]
+vulcscan PATH [--offline|--update-cve] [--no-cve] [--format text|json] [--output FILE]
               [--severity CRITICAL|HIGH|MEDIUM|LOW|INFO] [--exclude PATTERN]
               [--max-file-size SIZE] [--patch-preview] [--generate-diff FILE]
               [--color auto|always|never]
@@ -39,7 +39,8 @@ vulcscan PATH [--offline] [--no-cve] [--format text|json] [--output FILE]
 
 | Option | Effect |
 | --- | --- |
-| `--offline` | No network at all. Dependency CVE data comes only from an existing local cache. |
+| `--offline` | Keep network disabled. This is already the default; cached CVE data may still be read. |
+| `--update-cve` | Explicitly allow only the OSV client to refresh dependency CVE data. |
 | `--no-cve` | Skip dependency vulnerability lookup, including the cache. |
 | `--format json` | Machine-readable report on stdout (or in `--output`). Diagnostics go to stderr. |
 | `--output FILE` | Write the report to a file; a `.json` suffix selects JSON. |
@@ -85,7 +86,7 @@ Sanitizers are recognized by behavior, never by function name: numeric conversio
 
 Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `PY-SSTI-001` (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
 
-Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `WEAK-RANDOM-001` (CWE-338), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
+Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `WEAK-RANDOM-001` (CWE-338), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `UPLOAD-MIME-001` (CWE-434), `CSRF-001` (CWE-352), `SESSION-FIXATION-001` (CWE-384), `PHP-URL-INCLUDE-001` (CWE-98), `CLEARTEXT-PASSWORD-001` (CWE-256), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
 
 ## Test vectors
 
@@ -109,7 +110,7 @@ OSV decides which advisories affect the version. VulcScan shows only the fixed v
 
 Every URL must be HTTPS, host exactly `api.osv.dev`, port 443, one of those two paths, no query string or credentials. Redirects are refused, system proxies are ignored, certificates are verified against the platform trust store, the timeout is 8 seconds with one retry, and responses are capped at 16 MiB. Results are cached per user (`%LOCALAPPDATA%\vulcscan` on Windows, `$XDG_CACHE_HOME` or `~/.cache/vulcscan` on Linux) for 24 hours.
 
-`--offline` opens no network connection; it reads the cache only. There is no telemetry, update check or crash reporting.
+Network is disabled by default. `--offline` makes that policy explicit and reads only the local cache. Only `--update-cve` permits the allowlisted OSV requests described above. There is no telemetry, general web search, update check or crash reporting.
 
 ## Security model
 

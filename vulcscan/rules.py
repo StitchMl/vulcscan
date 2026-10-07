@@ -319,6 +319,51 @@ def _definitions() -> dict[str, RuleDefinition]:
             Confidence.HIGH,
             "An SVG asset contains script, an event handler or a javascript URL and may execute when served inline or opened directly.",
         ),
+        RuleDefinition(
+            "UPLOAD-MIME-001",
+            "Unrestricted File Upload",
+            "CWE-434",
+            "FILE_UPLOAD",
+            Severity.HIGH,
+            Confidence.HIGH,
+            "An upload is accepted using the client-declared MIME type instead of verified file content.",
+        ),
+        RuleDefinition(
+            "CSRF-001",
+            "Missing CSRF Protection",
+            "CWE-352",
+            "REQUEST_INTEGRITY",
+            Severity.MEDIUM,
+            Confidence.MEDIUM,
+            "A PHP POST handler changes state without an apparent anti-CSRF token check.",
+        ),
+        RuleDefinition(
+            "SESSION-FIXATION-001",
+            "Session Identifier Not Rotated After Login",
+            "CWE-384",
+            "AUTH",
+            Severity.MEDIUM,
+            Confidence.HIGH,
+            "Authentication state is stored in the session without regenerating its identifier.",
+        ),
+        RuleDefinition(
+            "PHP-URL-INCLUDE-001",
+            "Remote PHP Inclusion Enabled",
+            "CWE-98",
+            "CONFIGURATION",
+            Severity.CRITICAL,
+            Confidence.HIGH,
+            "PHP allows URL-aware include and require operations, increasing remote file inclusion impact.",
+        ),
+        RuleDefinition(
+            "CLEARTEXT-PASSWORD-001",
+            "Cleartext Password Storage",
+            "CWE-256",
+            "AUTH",
+            Severity.HIGH,
+            Confidence.HIGH,
+            "A password is seeded or stored as cleartext instead of a salted password hash.",
+        ),
     ):
         rules[definition.rule_id] = definition
     return rules
@@ -613,6 +658,46 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "UPLOAD-MIME-001": (
+        Advice(
+            "Verify file content and generate the destination name.",
+            "Inspect bytes with finfo/Fileinfo, decode the expected image format, enforce size and dimensions, generate a random server-side name, and store outside executable paths.",
+            Confidence.HIGH,
+            "MEDIUM",
+        ),
+    ),
+    "CSRF-001": (
+        Advice(
+            "Require a session-bound anti-CSRF token.",
+            "Generate a cryptographically random token, store it in the session, include it in the form, and compare it with hash_equals before changing state. Use SameSite cookies as defense in depth.",
+            Confidence.HIGH,
+            "MEDIUM",
+        ),
+    ),
+    "SESSION-FIXATION-001": (
+        Advice(
+            "Rotate the session identifier after authentication.",
+            "Call session_regenerate_id(true) immediately after credential verification and before setting authenticated session state.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
+    "PHP-URL-INCLUDE-001": (
+        Advice(
+            "Disable URL includes.",
+            "Set allow_url_include = Off. Keep include/require targets server-owned and allowlisted.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
+    "CLEARTEXT-PASSWORD-001": (
+        Advice(
+            "Store only salted password hashes.",
+            "Use password_hash with PASSWORD_ARGON2ID or PASSWORD_DEFAULT and verify with password_verify. Rotate seeded credentials.",
+            Confidence.HIGH,
+            "HIGH",
+        ),
+    ),
 }
 
 
@@ -695,4 +780,10 @@ def test_vectors_for(rule_id: str) -> list[str]:
         return ["Map the reported import to call sites with a disassembler, then exercise that path with boundary-length benign input under ASan, UBSan or Application Verifier."]
     if rule_id == "BINARY-HARDENING-001":
         return ["Confirm the header result with `checksec` for ELF or `dumpbin /headers` for PE; no exploit payload is needed."]
+    if rule_id == "UPLOAD-MIME-001":
+        return ["Upload benign text named `vulcscan-probe.php.jpg` while declaring `Content-Type: image/jpeg`; the server must reject it after inspecting the bytes."]
+    if rule_id == "CSRF-001":
+        return ["From a separate test origin, submit the same POST without a CSRF token; the application must reject it before changing state."]
+    if rule_id == "SESSION-FIXATION-001":
+        return ["Record a disposable test session ID before login and confirm that a different ID is issued immediately after successful authentication."]
     return vectors.get(family, [])

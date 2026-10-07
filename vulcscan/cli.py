@@ -71,7 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="disable network access; an existing CVE cache may still be read",
+        help="keep network disabled (the default); an existing CVE cache may still be read",
+    )
+    parser.add_argument(
+        "--update-cve",
+        action="store_true",
+        help="explicitly allow OSV network access to refresh dependency CVE data",
     )
     parser.add_argument("--output", type=Path, help="write the report to this file")
     parser.add_argument(
@@ -192,6 +197,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not root.is_dir():
         _error(f"scan path is not a directory: {root}")
         return 2
+    if args.offline and args.update_cve:
+        _error("--offline and --update-cve cannot be used together")
+        return 2
 
     report_format = _report_format(args.format, args.output)
     output = args.output.expanduser().resolve() if args.output else None
@@ -202,7 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config = ScanConfig(
         root=root,
-        offline=args.offline,
+        offline=not args.update_cve,
         cve=not args.no_cve,
         output=output,
         format=report_format,

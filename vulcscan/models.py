@@ -262,7 +262,7 @@ class ScanResult:
 @dataclass(slots=True)
 class ScanConfig:
     root: Path
-    offline: bool = False
+    offline: bool = True
     cve: bool = True
     output: Path | None = None
     format: str = "text"

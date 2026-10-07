@@ -232,6 +232,30 @@ def test_cli_accepts_color_mode() -> None:
     assert args.color == "never"
 
 
+def test_cli_network_is_opt_in() -> None:
+    default = cli.build_parser().parse_args(["."])
+    update = cli.build_parser().parse_args([".", "--update-cve"])
+
+    assert default.update_cve is False
+    assert update.update_cve is True
+
+
+def test_cli_default_scan_is_offline(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_scan(config):
+        captured["config"] = config
+        return _result([])
+
+    monkeypatch.setattr(cli, "scan", fake_scan)
+    assert cli.main([str(tmp_path)]) == 0
+    assert captured["config"].offline is True
+
+
+def test_cli_rejects_conflicting_network_flags(tmp_path: Path) -> None:
+    assert cli.main([str(tmp_path), "--offline", "--update-cve"]) == 2
+
+
 def test_cli_auto_color_enables_windows_terminal_support(monkeypatch) -> None:
     class Terminal:
         @staticmethod

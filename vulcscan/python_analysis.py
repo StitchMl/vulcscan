@@ -104,6 +104,46 @@ _ROUTE_DECORATORS = {
 _NON_INPUT_PARAMETERS = {"self", "cls", "request", "req", "response", "db", "session", "background_tasks"}
 _SAFE_ANNOTATIONS = {"int", "float", "bool", "UUID", "uuid.UUID", "datetime", "date", "Decimal", "IPv4Address"}
 _NON_INPUT_ANNOTATIONS = {"Request", "Response", "Session", "BackgroundTasks", "WebSocket", "HTTPConnection"}
+
+
+def _is_bound_orm_expression(node: ast.AST) -> bool:
+    """Recognize ORM expression trees that bind values instead of building SQL text."""
+    methods = {
+        child.func.attr
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+    }
+    names = {
+        child.func.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+    }
+    raw_escape_hatches = {"text", "literal", "literal_column", "from_statement", "exec_driver_sql"}
+    if (methods | names) & raw_escape_hatches:
+        return False
+    builders = {"select", "filter", "filter_by", "where", "join", "order_by", "values"}
+    return "select" in (methods | names) and bool((methods | names) & builders)
+
+
+def _has_non_html_media_type(node: ast.Call) -> bool:
+    safe_types = {"application/json", "application/octet-stream"}
+    for keyword in node.keywords:
+        if keyword.arg in {"mimetype", "content_type", "media_type"}:
+            if isinstance(keyword.value, ast.Constant) and keyword.value.value in safe_types:
+                return True
+        if keyword.arg != "headers" or not isinstance(keyword.value, ast.Dict):
+            continue
+        for key, value in zip(keyword.value.keys, keyword.value.values, strict=False):
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value.casefold() == "content-type"
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and value.value.split(";", 1)[0].strip().casefold() in safe_types
+            ):
+                return True
+    return False
 _FASTAPI_INPUTS = {"Query", "Path", "Body", "Header", "Cookie", "Form", "File"}
 _INJECTED = {"Depends", "Security"}
 
@@ -1139,6 +1179,8 @@ class _Walker:
             return
         # SQL.
         if short in {"execute", "executemany", "executescript", "query", "raw", "read_sql", "read_sql_query"} and isinstance(node.func, ast.Attribute):
+            if node.args and _is_bound_orm_expression(node.args[0]):
+                return
             statement = argument(0, "sql")
             if statement is None:
                 statement = keywords.get("statement") or keywords.get("query")
@@ -1152,7 +1194,14 @@ class _Walker:
             if short == "raw" and "objects" not in receiver_name:
                 return
             certainty = Confidence.HIGH if evidence or database_receiver else Confidence.MEDIUM
-            yield "PY-SQL-001", name, statement, certainty, {"unknown_origin": True, "sql_evidence": evidence}
+            has_bound_values = len(arguments) >= 2 and bool(
+                re.search(r"(?:\?|%s|\$\d+|:[A-Za-z_]\w*)", statement.text)
+            )
+            unknown_dml = bool(re.search(r"(?i)\b(?:select|insert|update|delete)\b", statement.text))
+            yield "PY-SQL-001", name, statement, certainty, {
+                "unknown_origin": unknown_dml and not has_bound_values,
+                "sql_evidence": evidence,
+            }
             return
         # Deserialization.
         if name in _DESERIALIZERS:
@@ -1193,6 +1242,8 @@ class _Walker:
             "django.utils.safestring.mark_safe",
             "mark_safe",
         }:
+            if name in {"flask.Response", "Response", "django.http.HttpResponse", "HttpResponse"} and _has_non_html_media_type(node):
+                return
             body = argument(0, "response") or keywords.get("content")
             if body is not None:
                 yield "PY-XSS-001", name, body, Confidence.HIGH, {}

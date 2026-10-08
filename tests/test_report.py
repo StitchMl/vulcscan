@@ -188,13 +188,15 @@ def test_text_report_contains_evidence_patch_and_summary() -> None:
 
     report = render_text(result, patch_preview=True)
 
-    assert "F-001  [HIGH] OS Command Injection (CWE-78)" in report
-    assert "Severity:   HIGH    Confidence: HIGH" in report
-    assert r"Location:   src\app.py:8 in handler()" in report
+    assert "F-001  HIGH     OS Command Injection  CWE-78" in report
+    assert "Confidence HIGH  |  Rule PY-CMD-8" in report
+    assert r"src\app.py:8 in handler()" in report
     assert "src/routes.py:3" in report
-    assert "Patch at:" in report
-    assert "Current:" in report
-    assert "Suggested:" in report
+    assert "PRIORITY INDEX" in report
+    assert "TRACE" in report
+    assert "FIX" in report
+    assert "CURRENT" in report
+    assert "SUGGESTED" in report
     assert "Dependency vulnerabilities: 1" in report
     assert "[DEPENDENCY] [HIGH] CVE-2026-0001" in report
     assert "Network:       DISABLED" in report
@@ -211,8 +213,20 @@ def test_text_report_hides_preview_without_flag() -> None:
 
     report = render_text(_result([finding]), patch_preview=False)
 
-    assert "Current:" not in report
-    assert "Suggested:" not in report
+    assert "CURRENT" not in report
+    assert "SUGGESTED" not in report
+
+
+def test_text_report_wraps_detail_lines_to_requested_width() -> None:
+    finding = _finding(Severity.HIGH, 1)
+    finding.reason = "Untrusted input " + "crosses several application layers " * 8
+    finding.test_vectors = ["Database-read proof: " + "send a controlled marker " * 12]
+
+    report = render_text(_result([finding]), width=88)
+
+    assert max(len(line) for line in report.splitlines()) <= 88
+    assert "  VERIFY  1 probes" in report
+    assert "    1. Database-read proof" in report
 
 
 def test_text_report_color_is_explicit_and_json_stays_plain() -> None:
@@ -276,6 +290,14 @@ def test_cli_auto_color_enables_windows_terminal_support(monkeypatch) -> None:
     assert calls == [True]
     assert cli._use_color("auto", Path("report.txt"), "text") is False
     assert cli._use_color("auto", None, "json") is False
+
+
+def test_cli_explicit_color_overrides_no_color_environment(monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli, "_enable_windows_virtual_terminal", lambda: True)
+
+    assert cli._use_color("always", None, "text") is True
+    assert cli._use_color("auto", None, "text") is False
 
 
 def test_write_report_creates_parent_directories(tmp_path: Path) -> None:

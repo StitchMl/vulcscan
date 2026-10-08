@@ -220,6 +220,170 @@ cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
     assert all(item.rule_id != "PY-SQL-001" for item in findings)
 
 
+def test_python_sqlalchemy_expression_is_not_raw_sql() -> None:
+    source = '''
+from flask import request
+
+username = request.json.get("username")
+user = db.session.execute(db.select(User).filter_by(username=username)).scalar_one_or_none()
+'''
+    findings, parser_error = analyze_python("app.py", source)
+
+    assert parser_error is None
+    assert all(item.rule_id != "PY-SQL-001" for item in findings)
+
+
+def test_bound_sql_with_internal_dynamic_identifier_is_not_assumed_remote() -> None:
+    safe_unknown = '''
+def read(table_name, key):
+    return db.execute(f"SELECT value FROM {table_name} WHERE key = ?", (key,))
+'''
+    remote_identifier = '''
+from flask import request
+table_name = request.args["table"]
+db.execute(f"SELECT value FROM {table_name} WHERE key = ?", (1,))
+'''
+
+    safe_findings, _ = analyze_python("store.py", safe_unknown)
+    unsafe_findings, _ = analyze_python("store.py", remote_identifier)
+
+    assert all(item.rule_id != "PY-SQL-001" for item in safe_findings)
+    assert any(item.rule_id == "PY-SQL-001" for item in unsafe_findings)
+
+
+def test_python_json_response_is_not_html_output() -> None:
+    source = '''
+from flask import request, Response
+import json
+
+value = request.args["value"]
+return Response(json.dumps({"value": value}), headers={"Content-Type": "application/json"})
+'''
+    findings, parser_error = analyze_python("app.py", source)
+
+    assert parser_error is None
+    assert all(item.rule_id != "PY-XSS-001" for item in findings)
+
+
+def test_javascript_binary_response_is_not_html_output() -> None:
+    source = '''
+app.get("/file/:id", async (req, res) => {
+  const file = await Files.findOne({ where: { id: req.params.id } });
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.send(file.content);
+});
+'''
+    findings = analyze_javascript("app.js", source, "JavaScript")
+
+    assert all(item.rule_id != "JS-XSS-001" for item in findings)
+
+
+def test_runtime_json_records_do_not_flood_secret_findings() -> None:
+    findings = lexical_findings(
+        "info.json",
+        "backend/data/0123456789abcdef/info.json",
+        "JSON",
+        '{"password": "disposable-user-password", "name": "test"}\n',
+    )
+
+    assert all(item.rule_id != "SECRET-001" for item in findings)
+
+
+@pytest.mark.parametrize(
+    ("language", "source"),
+    [
+        ("Python", 'with open(password_path, "w") as f:\n    f.write(password)\n'),
+        (
+            "JavaScript",
+            "await pool.query('INSERT INTO owners (username, password) VALUES ($1, $2)', [username, password]);\n",
+        ),
+    ],
+)
+def test_cleartext_password_persistence_is_reported(language: str, source: str) -> None:
+    ids = {
+        item.rule_id
+        for item in lexical_findings("account" + (".py" if language == "Python" else ".js"), "src/account", language, source)
+    }
+
+    assert "CLEARTEXT-PASSWORD-001" in ids
+
+
+def test_malleable_encryption_without_integrity_is_reported() -> None:
+    unsafe = "cipher = AES.new(server_key, AES.MODE_CBC, iv=iv)\ntoken = cipher.encrypt(data)\n"
+    safe = "cipher = AES.new(server_key, AES.MODE_GCM, nonce=nonce)\nciphertext, tag = cipher.encrypt_and_digest(data)\n"
+
+    assert "UNAUTH-ENCRYPTION-001" in {
+        item.rule_id for item in lexical_findings("token.py", "src/token.py", "Python", unsafe)
+    }
+    assert "UNAUTH-ENCRYPTION-001" not in {
+        item.rule_id for item in lexical_findings("token.py", "src/token.py", "Python", safe)
+    }
+
+
+def test_cbc_with_signature_is_not_reported_as_unauthenticated() -> None:
+    signed = (
+        "cipher = AES.new(server_key, AES.MODE_CBC, iv=iv)\n"
+        "ciphertext = cipher.encrypt(data)\n"
+        "signature = sign(ciphertext, signing_key)\n"
+    )
+
+    assert "UNAUTH-ENCRYPTION-001" not in {
+        item.rule_id for item in lexical_findings("token.py", "src/token.py", "Python", signed)
+    }
+
+
+def test_dynamic_svg_text_is_reported_but_encoded_text_is_not() -> None:
+    unsafe = "const svg = `<svg><text>${item.text}</text></svg>`; return new Response(svg, {headers: {'Content-Type': 'image/svg+xml'}});"
+    safe = "const svg = `<svg><text>${escapeXml(item.text)}</text></svg>`; return new Response(svg, {headers: {'Content-Type': 'image/svg+xml'}});"
+
+    assert "JS-XSS-001" in _rule_ids(unsafe, language="TypeScript", name="svg.ts")
+    assert "JS-XSS-001" not in _rule_ids(safe, language="TypeScript", name="svg.ts")
+
+
+def test_go_cel_compilation_of_variable_expression_is_reported() -> None:
+    source = "env, _ := cel.NewEnv()\nast, _ := env.Compile(document.Expression)\n"
+
+    assert "GO-CODE-001" in _rule_ids(source, language="Go", name="evaluator.go")
+
+
+def test_libxml_replace_entities_is_reported() -> None:
+    source = "const document = libxmljs.parseXml(svg, { replaceEntities: true });\n"
+
+    assert "XXE-001" in _rule_ids(source, language="TypeScript", name="parser.ts")
+
+
+def test_sequelize_literal_with_remote_value_is_raw_sql() -> None:
+    source = '''
+app.post("/upload", async (req, res) => {
+  const content = req.body.content;
+  await Files.create({ content: sequelize.literal(`decode('${content}', 'base64')`) });
+});
+'''
+    findings = analyze_javascript("upload.js", source, "JavaScript")
+
+    assert any(item.rule_id == "JS-SQL-001" for item in findings)
+
+
+def test_route_resource_lookup_requires_principal_scope() -> None:
+    unsafe = '''
+router.get('/file/:id', async (req, res) => {
+  const id = req.params.id;
+  const file = await Files.findOne({ where: { id } });
+  res.json(file);
+});
+'''
+    safe = '''
+router.get('/file/:id', async (req, res) => {
+  const id = req.params.id;
+  const file = await Files.findOne({ where: { id, owner_id: req.user.id } });
+  res.json(file);
+});
+'''
+
+    assert "AUTHZ-SCOPE-001" in _rule_ids(unsafe, language="JavaScript", name="files.js")
+    assert "AUTHZ-SCOPE-001" not in _rule_ids(safe, language="JavaScript", name="files.js")
+
+
 def test_python_interprocedural_argument_flow_reaches_sink() -> None:
     source = '''
 from flask import request

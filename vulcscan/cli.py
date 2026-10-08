@@ -183,13 +183,15 @@ def _enable_windows_virtual_terminal() -> bool:
 
 
 def _use_color(mode: str, output: Path | None, report_format: str) -> bool:
-    if report_format != "text" or os.environ.get("NO_COLOR") is not None:
+    if report_format != "text":
         return False
     if mode == "never":
         return False
     if mode == "always":
         _enable_windows_virtual_terminal()
         return True
+    if os.environ.get("NO_COLOR") is not None:
+        return False
     return output is None and sys.stdout.isatty() and _enable_windows_virtual_terminal()
 
 

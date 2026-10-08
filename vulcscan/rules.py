@@ -101,7 +101,7 @@ _TAINT_LANGUAGES: dict[str, tuple[str, ...]] = {
     "PHP": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF"),
     "JAVA": ("CMD", "SQL", "PATH", "DESER", "SSRF", "XSS"),
     "CS": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
-    "GO": ("CMD", "SQL", "PATH", "SSRF", "XSS"),
+    "GO": ("CMD", "SQL", "CODE", "PATH", "SSRF", "XSS"),
     "RB": ("CMD", "SQL", "CODE", "PATH", "DESER", "SSRF", "XSS"),
     "C": ("CMD", "SQL", "PATH"),
     "SH": ("CMD", "CODE"),
@@ -200,6 +200,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             Severity.HIGH,
             Confidence.HIGH,
             "The code selects DES, 3DES, RC2, RC4, Blowfish or ECB mode.",
+        ),
+        RuleDefinition(
+            "UNAUTH-ENCRYPTION-001",
+            "Encryption Without Integrity",
+            "CWE-353",
+            "CRYPTO",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "The code encrypts attacker-controlled or security-sensitive data with a malleable mode and no nearby authentication check.",
         ),
         RuleDefinition(
             "WEAK-RANDOM-001",
@@ -371,6 +380,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             Severity.HIGH,
             Confidence.HIGH,
             "A password is seeded or stored as cleartext instead of a salted password hash.",
+        ),
+        RuleDefinition(
+            "AUTHZ-SCOPE-001",
+            "Unscoped Resource Access",
+            "CWE-639",
+            "AUTH",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A route loads a resource by a request identifier without an ownership or authorization scope in the same handler.",
         ),
     ):
         rules[definition.rule_id] = definition
@@ -565,6 +583,22 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "Use AES-GCM or ChaCha20-Poly1305 with a unique nonce per message; plan migration of stored data.",
             Confidence.MEDIUM,
             "HIGH",
+        ),
+    ),
+    "UNAUTH-ENCRYPTION-001": (
+        Advice(
+            "Replace the malleable mode with authenticated encryption.",
+            "Use AES-GCM, AES-EAX or ChaCha20-Poly1305 with a unique nonce. Reject the message before parsing when tag verification fails.",
+            Confidence.MEDIUM,
+            "HIGH",
+        ),
+    ),
+    "AUTHZ-SCOPE-001": (
+        Advice(
+            "Scope the resource lookup to the authenticated principal.",
+            "Include the owner, tenant or ACL predicate in the database lookup itself, then return 404 or 403 when no scoped row exists.",
+            Confidence.MEDIUM,
+            "MEDIUM",
         ),
     ),
     "WEAK-RANDOM-001": (
@@ -817,6 +851,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "JWT-VERIFY-001": ["Submit the unsigned test token `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ2dWxjc2Nhbi1wcm9iZSJ9.`; the application must reject it before authorization."],
         "WEAK-HASH-001": ["Create two disposable accounts with the same test password and inspect their stored hashes; use a password KDF with unique salts, so the hashes must differ."],
         "WEAK-CIPHER-001": ["Encrypt repeated test blocks such as `VULCSCAN-PROBE!!VULCSCAN-PROBE!!`; ciphertext must not expose repeated blocks and authenticated decryption must reject one changed byte."],
+        "UNAUTH-ENCRYPTION-001": ["Flip one bit in a disposable ciphertext, IV and authentication tag separately; authenticated decryption must reject every modified message before parsing plaintext."],
         "WEAK-RANDOM-001": ["Run the token generator twice with the same controlled PRNG seed; security tokens must not repeat or become predictable."],
         "TEMPFILE-001": ["In a disposable directory, pre-create the predicted temporary path as a symlink to another test file; the program must refuse the path and leave the target unchanged."],
         "FILE-PERM-001": ["Create the file in a disposable environment, then verify another unprivileged account cannot modify it; on Unix use `stat -c '%a %n' FILE`."],
@@ -827,5 +862,6 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "AUTHZ-SCOPE-001": ["Create one disposable resource as account A, then request the same identifier as account B. Any resource content or metadata in B's response proves missing object-level authorization."],
     }
     return vectors.get(family, verification.get(rule_id, []))

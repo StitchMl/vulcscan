@@ -155,6 +155,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     _dynamic_svg_output(language, text, add)
     _dynamic_expression_evaluation(language, text, add)
     _unscoped_resource_routes(language, text, add)
+    _unchecked_orm_identity(language, text, add)
     if language == "Python":
         return findings
 
@@ -318,6 +319,105 @@ def _unscoped_resource_routes(language: str, text: str, add: Callable[..., None]
         line = text.count("\n", 0, route.start()) + 1
         evidence = f"{route.group(0)} ... lookup by req.params.{parameter} without owner/tenant scope"
         add("AUTHZ-SCOPE-001", line, 1, f"route {route.group('path')}", evidence, Confidence.MEDIUM)
+
+
+def _unchecked_orm_identity(language: str, text: str, add: Callable[..., None]) -> None:
+    """Find zero-value GORM identities that reach a privileged database operation."""
+    if language != "Go" or not re.search(r"(?i)gorm\.io/gorm|\*gorm\.DB", text):
+        return
+    code = blank_comments(text, comment_style(language))
+    offset = 0
+    for scope in re.split(r"(?m)(?=^[ \t]*func\s)", code):
+        scope_start = code.find(scope, offset)
+        offset = scope_start + len(scope)
+        if not scope.lstrip().startswith("func "):
+            continue
+        for match in re.finditer(
+            r"(?m)^[ \t]*(?P<result>[A-Za-z_]\w*)[ \t]*(?::=|=)[ \t]*"
+            r"(?P<query>[A-Za-z_]\w*[^;\n]{0,700}?\.\s*(?P<method>Find|First|Take|Last)"
+            r"\s*\(\s*&(?P<entity>[A-Za-z_]\w*)\s*\))",
+            scope,
+        ):
+            result = match.group("result")
+            entity = match.group("entity")
+            method = match.group("method")
+            declaration = re.search(
+                rf"(?m)^[ \t]*var[ \t]+{re.escape(entity)}[ \t]+(?P<slice>\[\])?(?P<type>[A-Za-z_]\w*)",
+                scope[: match.start()],
+            )
+            if declaration and declaration.group("slice"):
+                continue
+            identity = " ".join((entity, declaration.group("type") if declaration else ""))
+            tail = scope[match.end() : match.end() + 2600]
+            sensitive_field = (
+                r"(?:(?:User|Owner|Tenant|Account|Principal|Subject|Member|Identity)"
+                r"(?:ID|Id|Ref)?|Role)"
+            )
+            field_use = rf"\b{re.escape(entity)}\s*\.\s*{sensitive_field}\b"
+            privileged_use = re.search(
+                rf"(?is)\.\s*(?:Create|Save|Updates?|Delete|Where)\s*\("
+                rf"[\s\S]{{0,900}}?\b{re.escape(entity)}\s*\.\s*"
+                rf"(?P<field>{sensitive_field})\b",
+                tail,
+            )
+            if privileged_use is None:
+                continue
+            before_use = tail[: privileged_use.start()]
+            terminator = r"[\s\S]{0,600}?\b(?:return|panic\s*\()"
+            error_exit = re.search(
+                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*Error\s*!=\s*nil"
+                rf"[^{{]*\{{{terminator}",
+                before_use,
+            )
+            rows_exit = re.search(
+                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*RowsAffected\s*"
+                rf"(?:==\s*0|<\s*1|<=\s*0|!=\s*1)[^{{]*\{{{terminator}",
+                before_use,
+            )
+            positive_rows = re.search(
+                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*RowsAffected\s*"
+                r"(?:>\s*0|>=\s*1|==\s*1)[^\{]*\{",
+                before_use,
+            )
+            entity_exit = re.search(
+                rf"(?is)\bif\b[^{{;]{{0,240}}(?:len\s*\(\s*{field_use}\s*\)\s*(?:==|<=)\s*0|"
+                rf"{field_use}\s*==\s*(?:\"\"|0|nil))[^{{]*\{{{terminator}",
+                before_use,
+            )
+            if entity_exit or (method == "Find" and (rows_exit or positive_rows)):
+                continue
+            if method in {"First", "Take", "Last"} and error_exit:
+                continue
+            absolute = scope_start + match.start("query")
+            line = code.count("\n", 0, absolute) + 1
+            query = " ".join(match.group("query").split())
+            direct_http_source = re.search(
+                r"(?i)\.(?:Cookie|GetHeader|Header\.Get|Query|Param|PostForm|FormValue|PostFormValue|PathValue)\s*\(",
+                scope[: match.end()],
+            )
+            sensitive_model = re.search(
+                r"(?i)session|auth|token|principal|identity|account|member|user",
+                identity,
+            )
+            if direct_http_source is None and sensitive_model is None:
+                continue
+            gap = (
+                f"{result}.Error does not prove a matched row"
+                if method == "Find" and error_exit
+                else "no terminating not-found guard precedes the use"
+            )
+            evidence = (
+                f"{result} := {query}; {gap}; then uses zero-value "
+                f"{entity}.{privileged_use.group('field')} in a database operation"
+            )
+            add(
+                "ORM-EMPTY-AUTH-001",
+                line,
+                1,
+                f"GORM {method}(&{entity}) authorization lookup",
+                evidence,
+                Confidence.HIGH if direct_http_source else Confidence.MEDIUM,
+            )
 
 
 def _php_xss(text: str, add: Callable[..., None]) -> None:

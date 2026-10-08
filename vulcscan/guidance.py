@@ -105,6 +105,7 @@ def _rule_specific_remediation(finding: Finding) -> Remediation | None:
     suggested: str | None = None
     title = f"Apply the safe form for {finding.sink}."
     confidence = Confidence.MEDIUM
+    patch_risk = "MEDIUM"
     if rule == "PHP-URL-INCLUDE-001":
         suggested = re.sub(r"(?i)\bOn\b", "Off", finding.evidence, count=1)
         confidence = Confidence.HIGH
@@ -201,6 +202,19 @@ def _rule_specific_remediation(finding: Finding) -> Remediation | None:
             f"const resource = await Model.findOne({{ where: {{ {name}: req.params.{name}, owner_id: req.user.id }} }});\n"
             "if (!resource) throw new HttpError(404, 'Resource not found');"
         )
+    elif rule == "ORM-EMPTY-AUTH-001" and finding.language == "Go":
+        result_match = re.search(r"\b([A-Za-z_]\w*)\s*(?::=|=)", finding.evidence)
+        result = result_match.group(1) if result_match else "result"
+        if re.search(r"GORM (?:First|Take|Last)\(", finding.sink):
+            suggested = f"if {result}.Error != nil {{\n    return errUnauthorized\n}}"
+        else:
+            suggested = (
+                f"if {result}.Error != nil || {result}.RowsAffected == 0 {{\n"
+                "    return errUnauthorized\n"
+                "}"
+            )
+        confidence = Confidence.HIGH
+        patch_risk = "LOW"
     if suggested is None:
         return None
     existing = finding.remediations[0].guidance if finding.remediations else "Review the change against application policy."
@@ -209,7 +223,7 @@ def _rule_specific_remediation(finding: Finding) -> Remediation | None:
         guidance=f"Reported evidence: {finding.evidence}. {existing}",
         preferred=True,
         patch_confidence=confidence,
-        patch_risk="MEDIUM",
+        patch_risk=patch_risk,
         current=finding.evidence or None,
         suggested=suggested,
         machine_applicable=False,
@@ -594,6 +608,11 @@ def _contextual_vectors(finding: Finding) -> list[str]:
         ]
     if finding.rule_id in {"PY-XXE-001", "XXE-001"}:
         return [f"Send a DOCTYPE containing a nonexistent local canary entity through {target}. Parsing must fail before any external entity lookup."]
+    if finding.rule_id == "ORM-EMPTY-AUTH-001":
+        return [
+            f"State-confusion proof for `{finding.sink}` at {finding.location.file}:{finding.location.line}: send a random nonexistent session or bearer token with unique test markers in every writable field. The request must fail before the database operation. Inspect the disposable database and confirm that no row has an empty owner, tenant or principal.",
+            "If the unexpected row can act as a credential or ownership record, authenticate with its disposable marker values. Access to another test account's canary data proves the authorization bypass; delete all test rows after verification.",
+        ]
     base = test_vectors_for(finding.rule_id)
     if base:
         return [f"Exercise `{finding.sink}` at {finding.location.file}:{finding.location.line} on an isolated test deployment. {base[0]}"]

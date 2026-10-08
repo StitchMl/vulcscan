@@ -172,6 +172,7 @@ def test_offline_mode_performs_no_network_access(
     result = _scan(tmp_path, cve=True)
 
     assert result.metadata["network_access"] == "DISABLED"
+    assert result.dependency_vulnerabilities == []
 
 
 def test_symlink_outside_root_is_not_followed(tmp_path: Path) -> None:

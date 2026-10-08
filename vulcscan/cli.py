@@ -71,12 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="keep network disabled (the default); an existing CVE cache may still be read",
+        help="keep network disabled (the default); dependency CVEs are not reported",
     )
     parser.add_argument(
         "--update-cve",
         action="store_true",
-        help="explicitly allow OSV network access to refresh dependency CVE data",
+        help="query OSV for this scan; results are kept only in memory",
     )
     parser.add_argument("--output", type=Path, help="write the report to this file")
     parser.add_argument(
@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-cve",
         action="store_true",
-        help="skip dependency vulnerability lookup, including cached results",
+        help="skip dependency vulnerability lookup",
     )
     parser.add_argument(
         "--patch-preview",

@@ -10,18 +10,15 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import socket
 import ssl
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from .dependencies import canonical_name
@@ -32,8 +29,6 @@ OSV_HOST = "api.osv.dev"
 OSV_BATCH_URL = f"https://{OSV_HOST}/v1/querybatch"
 OSV_VULNERABILITY_URL = f"https://{OSV_HOST}/v1/vulns/"
 _ADVISORY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$")
-_CACHE_SCHEMA = 2
-_DEFAULT_CACHE_TTL = 24 * 60 * 60
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _BATCH_SIZE = 100
 _MAX_PAGES = 10
@@ -64,15 +59,6 @@ def _default_opener() -> Callable[..., Any]:
     return opener.open
 
 
-def default_cache_path() -> Path:
-    """Per-user cache file; never a shared temporary directory."""
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    else:
-        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    return base / "vulcscan" / "osv-cache.json"
-
-
 def network_url_allowed(url: str) -> bool:
     """True only for HTTPS requests to the two OSV API paths this client uses."""
     try:
@@ -99,71 +85,41 @@ class OSVClient:
 
     def __init__(
         self,
-        cache_path: Path | None = None,
         offline: bool = False,
         *,
         timeout: float = 8.0,
         retries: int = 1,
-        cache_ttl: int = _DEFAULT_CACHE_TTL,
         opener: Callable[..., Any] | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.cache_path = Path(cache_path) if cache_path is not None else default_cache_path()
         self.offline = bool(offline)
         self.timeout = max(0.1, float(timeout))
         self.retries = max(0, min(int(retries), 3))
-        self.cache_ttl = max(0, int(cache_ttl))
         self._opener = opener
         self._sleep = sleep
         self.errors: list[str] = []
 
     def query(self, dependencies: Iterable[Dependency]) -> list[Vulnerability]:
         self.errors.clear()
+        if self.offline:
+            return []
         selected = self._queryable(dependencies)
         if not selected:
             return []
-        cache = self._load_cache()
-        query_cache = _dict(cache.get("queries"))
-        advisory_cache = _dict(cache.get("advisories"))
-        changed = False
-        now = time.time()
-
         ids_by_key: dict[str, list[str]] = {}
-        missing: list[tuple[str, Dependency]] = []
-        for key, dependency in selected.items():
-            cached = _dict(query_cache.get(key))
-            if cached and isinstance(cached.get("ids"), list) and (self.offline or _fresh(cached, now, self.cache_ttl)):
-                ids_by_key[key] = [str(item) for item in cached["ids"]]
-            else:
-                missing.append((key, dependency))
-        if missing and not self.offline:
-            for chunk in _chunks(missing, _BATCH_SIZE):
-                found = self._query_batch([dependency for _, dependency in chunk])
-                if found is None:
-                    continue
-                for (key, _), ids in zip(chunk, found):
-                    ids_by_key[key] = ids
-                    query_cache[key] = {"stored_at": now, "ids": ids}
-                    changed = True
+        selected_items = list(selected.items())
+        for chunk in _chunks(selected_items, _BATCH_SIZE):
+            found = self._query_batch([dependency for _, dependency in chunk])
+            if found is None:
+                continue
+            for (key, _), ids in zip(chunk, found):
+                ids_by_key[key] = ids
 
         advisories: dict[str, dict[str, Any]] = {}
         for advisory_id in sorted({item for ids in ids_by_key.values() for item in ids}):
-            cached = _dict(advisory_cache.get(advisory_id))
-            data = _dict(cached.get("data"))
-            if data and (self.offline or _fresh(cached, now, self.cache_ttl)):
-                advisories[advisory_id] = data
-                continue
-            if self.offline:
-                self.errors.append(f"OSV advisory {advisory_id} is not cached; offline mode makes no request")
-                continue
             fetched = self._get_advisory(advisory_id)
             if fetched is not None:
                 advisories[advisory_id] = fetched
-                advisory_cache[advisory_id] = {"stored_at": now, "data": fetched}
-                changed = True
-
-        if changed and not self.offline:
-            self._save_cache({"schema": _CACHE_SCHEMA, "queries": query_cache, "advisories": advisory_cache})
 
         vulnerabilities: list[Vulnerability] = []
         for key, dependency in selected.items():
@@ -264,42 +220,6 @@ class OSVClient:
                 return None
             self._sleep(min(0.25 * (2**attempt), 1.0))
         return None
-
-    def _load_cache(self) -> dict[str, Any]:
-        empty = {"schema": _CACHE_SCHEMA, "queries": {}, "advisories": {}}
-        try:
-            if not self.cache_path.is_file():
-                return empty
-            raw = self.cache_path.read_bytes()
-            if len(raw) > 8 * _MAX_RESPONSE_BYTES:
-                raise ValueError("cache exceeds size limit")
-            cache = json.loads(raw.decode("utf-8"))
-            if not isinstance(cache, dict) or cache.get("schema") != _CACHE_SCHEMA:
-                return empty  # an older or foreign cache format is ignored
-            return cache
-        except (OSError, UnicodeError, ValueError) as exc:
-            self.errors.append(f"OSV cache read failed: {exc}")
-            return empty
-
-    def _save_cache(self, cache: dict[str, Any]) -> None:
-        temp_path: Path | None = None
-        try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            encoded = json.dumps(cache, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-            handle = tempfile.NamedTemporaryFile(
-                mode="wb", prefix=self.cache_path.name + ".", suffix=".tmp", dir=self.cache_path.parent, delete=False
-            )
-            temp_path = Path(handle.name)
-            with handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, self.cache_path)
-        except OSError as exc:
-            self.errors.append(f"OSV cache write failed: {exc}")
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-
 
 def osv_ecosystem(ecosystem: str) -> str | None:
     return _OSV_ECOSYSTEMS.get(ecosystem.casefold())
@@ -542,11 +462,6 @@ def _ids(result: dict[str, Any]) -> list[str]:
 
 def _dependency_order(item: Dependency) -> tuple[int, str, int]:
     return (0 if item.direct else 1, item.source_file.casefold(), item.line or 0)
-
-
-def _fresh(entry: dict[str, Any], now: float, ttl: int) -> bool:
-    stored_at = entry.get("stored_at")
-    return isinstance(stored_at, (int, float)) and 0 <= now - float(stored_at) <= ttl
 
 
 def _dict(value: Any) -> dict[str, Any]:

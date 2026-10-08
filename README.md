@@ -39,9 +39,9 @@ vulcscan PATH [--offline|--update-cve] [--no-cve] [--format text|json] [--output
 
 | Option | Effect |
 | --- | --- |
-| `--offline` | Keep network disabled. This is already the default; cached CVE data may still be read. |
-| `--update-cve` | Explicitly allow only the OSV client to refresh dependency CVE data. |
-| `--no-cve` | Skip dependency vulnerability lookup, including the cache. |
+| `--offline` | Keep network disabled. This is already the default; dependency CVEs are not reported. |
+| `--update-cve` | Query OSV for this scan. Results stay in memory and are discarded when the command exits. |
+| `--no-cve` | Skip dependency vulnerability lookup. |
 | `--format json` | Machine-readable report on stdout (or in `--output`). Diagnostics go to stderr. |
 | `--output FILE` | Write the report to a file; a `.json` suffix selects JSON. |
 | `--severity LEVEL` | Show findings at or above LEVEL. |
@@ -91,11 +91,11 @@ Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `P
 
 ## Test vectors
 
-Findings include fixed, non-destructive probes when a generic test is meaningful. Text reports print them under `Test vector`; JSON exposes `test_vectors`. Examples include a boolean SQL probe, a visible XSS marker, controlled loopback SSRF, traversal to a non-secret operating-system marker file, a harmless upload name, and a concurrent single-use-token check. Use them only on systems you own or are authorized to test, preferably with disposable data. Binary header findings use verification commands rather than exploit payloads.
+Findings include non-destructive probes adapted to the rule, language, reported sink, file and line. Text reports print them under `Test vector`; JSON exposes `test_vectors`. SQL findings receive quote, boolean and paired-predicate probes; other families receive context-specific markers or verification commands. Use them only on systems you own or are authorized to test, preferably with disposable data.
 
 ## Patch guidance
 
-Every finding has a preferred fix and up to two alternatives, each with patch confidence and patch risk, taken from a fixed catalog. For specific Python cases VulcScan builds concrete code with AST rewrites: shell command strings become argument lists, SQL f-strings become parameterized queries when the module imports a driver with a known placeholder style (`sqlite3` → `?`, `psycopg`/`pymysql` → `%s`), `yaml.load` becomes `yaml.safe_load`, and boolean switches such as `verify=False` flip. When a rewrite cannot preserve behavior, only the principle is shown.
+Every finding has a preferred fix and up to two alternatives with patch confidence and risk. VulcScan selects patch templates by vulnerability family and language, then includes the reported sink and flow context. PHP SQL findings reconstruct simple concatenated queries with their real variables and preserve `LIKE` wildcards. Python AST rewrites cover command argument lists, parameterized SQL, safe YAML parsing and unsafe boolean switches. Review-only templates never claim machine applicability; `--generate-diff` includes only verified exact rewrites.
 
 ## Dependencies and CVE lookup
 
@@ -109,9 +109,9 @@ OSV decides which advisories affect the version. VulcScan shows only the fixed v
 
 `vulcscan/cve.py` is the only module that imports networking code. Online scans send `POST https://api.osv.dev/v1/querybatch` with ecosystem, package name and version, and `GET https://api.osv.dev/v1/vulns/{id}` for advisory details. No source code, findings, paths or other repository data leave the machine; private package names do reach OSV.
 
-Every URL must be HTTPS, host exactly `api.osv.dev`, port 443, one of those two paths, no query string or credentials. Redirects are refused, system proxies are ignored, certificates are verified against the platform trust store, the timeout is 8 seconds with one retry, and responses are capped at 16 MiB. Results are cached per user (`%LOCALAPPDATA%\vulcscan` on Windows, `$XDG_CACHE_HOME` or `~/.cache/vulcscan` on Linux) for 24 hours.
+Every URL must be HTTPS, host exactly `api.osv.dev`, port 443, one of those two paths, no query string or credentials. Redirects are refused, system proxies are ignored, certificates are verified against the platform trust store, the timeout is 8 seconds with one retry, and responses are capped at 16 MiB. VulcScan keeps OSV responses only in memory for the current command. It creates no CVE cache.
 
-Network is disabled by default. `--offline` makes that policy explicit and reads only the local cache. Only `--update-cve` permits the allowlisted OSV requests described above. There is no telemetry, general web search, update check or crash reporting.
+Network is disabled by default. Offline scans return zero dependency CVEs. Only `--update-cve` permits the allowlisted OSV requests described above. There is no telemetry, general web search, update check or crash reporting.
 
 ## Security model
 
@@ -125,7 +125,7 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 - Django view parameters from URL patterns are not treated as sources.
 - Argument injection into a fixed program (`subprocess.run(["git", user_value])`) is not reported.
 - Binary analysis is header, symbol and printable-string based. It does not replace disassembly, control-flow analysis, fuzzing or memory-safety instrumentation.
-- Without network or cache, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.
+- Without `--update-cve`, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.
 - Reported findings are potential vulnerabilities; a reviewer must confirm them.
 
 ## Tests

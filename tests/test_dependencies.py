@@ -253,7 +253,7 @@ packages:
     assert _by_name(dependencies, "npm", "@scope/other")[0].version == "4.5.6"
 
 
-def test_osv_query_uses_exact_resolved_versions_and_caches(tmp_path: Path) -> None:
+def test_osv_query_uses_exact_resolved_versions_without_persistent_cache(tmp_path: Path) -> None:
     calls: list[str] = []
     advisory = {
         "id": "GHSA-test-0001",
@@ -305,8 +305,7 @@ def test_osv_query_uses_exact_resolved_versions_and_caches(tmp_path: Path) -> No
         direct=True,
         resolved=True,
     )
-    cache_path = tmp_path / "osv-cache.json"
-    client = OSVClient(cache_path, False, timeout=1.0, opener=opener)
+    client = OSVClient(offline=False, timeout=1.0, opener=opener)
 
     vulnerabilities = client.query([dependency, dependency])
 
@@ -322,12 +321,13 @@ def test_osv_query_uses_exact_resolved_versions_and_caches(tmp_path: Path) -> No
         "https://api.osv.dev/v1/querybatch",
         "https://api.osv.dev/v1/vulns/GHSA-test-0001",
     ]
+    assert list(tmp_path.iterdir()) == []
 
     def forbidden_opener(request: object, timeout: float) -> _Response:
         raise AssertionError("offline mode attempted network access")
 
-    offline = OSVClient(cache_path, True, opener=forbidden_opener)
-    assert offline.query([dependency]) == vulnerabilities
+    offline = OSVClient(offline=True, opener=forbidden_opener)
+    assert offline.query([dependency]) == []
     assert offline.errors == []
 
 
@@ -358,8 +358,7 @@ def test_osv_fetches_id_only_details_and_retries_once(tmp_path: Path) -> None:
         "widget", "1.2.0", "npm", "package-lock.json", 8, True, True
     )
     client = OSVClient(
-        tmp_path / "cache.json",
-        False,
+        offline=False,
         retries=1,
         opener=opener,
         sleep=lambda _: None,
@@ -390,10 +389,10 @@ def test_offline_mode_and_unresolved_constraints_make_no_request(tmp_path: Path)
         "demo", "1.2.3", "PyPI", "requirements.txt", 1, True, False, "==1.2.3"
     )
 
-    assert OSVClient(tmp_path / "none.json", False, opener=opener).query(
+    assert OSVClient(offline=False, opener=opener).query(
         [unresolved, exact_but_unresolved]
     ) == []
-    assert OSVClient(tmp_path / "none.json", True, opener=opener).query(
+    assert OSVClient(offline=True, opener=opener).query(
         [Dependency("demo", "1.2.3", "PyPI", "poetry.lock", 1, True, True)]
     ) == []
     assert calls == 0
@@ -406,7 +405,7 @@ def test_osv_client_blocks_non_allowlisted_network_endpoint(tmp_path: Path) -> N
         calls.append(request.full_url)  # type: ignore[attr-defined]
         return _json_response({})
 
-    client = OSVClient(tmp_path / "cache.json", False, opener=opener)
+    client = OSVClient(offline=False, opener=opener)
     result = client._request_json("https://example.com/v1/querybatch", {"queries": []})
 
     assert result is None
@@ -423,7 +422,7 @@ def test_osv_client_rejects_osv_lookalike_hosts_and_query_strings(tmp_path: Path
         calls.append(request.full_url)  # type: ignore[attr-defined]
         return _json_response({})
 
-    client = OSVClient(tmp_path / "cache.json", False, opener=opener)
+    client = OSVClient(offline=False, opener=opener)
     blocked = (
         "https://api.osv.dev.example.com/v1/querybatch",
         "http://api.osv.dev/v1/querybatch",
@@ -446,6 +445,6 @@ def test_osv_allowlist_accepts_explicit_https_port(tmp_path: Path) -> None:
         calls.append(request.full_url)  # type: ignore[attr-defined]
         return _json_response({})
 
-    client = OSVClient(tmp_path / "cache.json", False, opener=opener)
+    client = OSVClient(offline=False, opener=opener)
     assert client._request_json("https://api.osv.dev:443/v1/querybatch", None) == {}
     assert calls == ["https://api.osv.dev:443/v1/querybatch"]

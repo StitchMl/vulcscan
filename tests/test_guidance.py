@@ -67,6 +67,53 @@ $db->query($sql);
     assert 'WHERE name LIKE ?' in patch
     assert '$stmt->bind_param("s", "%" . $term . "%")' in patch
     assert "SELECT ..." not in patch
+    joined = "\n".join(finding.test_vectors)
+    assert "UNION SELECT" in joined
+    assert "CURRENT_USER" in joined
+    assert "Unauthorized-row proof" in joined
+
+
+def test_authentication_sql_vector_proves_bypass_with_invalid_password(tmp_path: Path) -> None:
+    source = '''<?php
+$user = $_POST['username'];
+$password = $_POST['password'];
+$sql = "SELECT * FROM admin_users WHERE username='" . $user . "' AND password='" . $password . "'";
+$db->query($sql);
+'''
+    (tmp_path / "login.php").write_text(source, encoding="utf-8")
+    finding = next(item for item in scan_path(tmp_path, cve=False).findings if item.rule_id == "PHP-SQL-001")
+
+    proof = finding.test_vectors[0]
+    assert "Authentication proof" in proof
+    assert "invalid password" in proof
+    assert "protected page" in proof
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "rule_id"),
+    [
+        (
+            "App.java",
+            'String id = request.getParameter("id");\nString sql = "SELECT id, email FROM users WHERE id=" + id;\nstatement.executeQuery(sql);\n',
+            "JAVA-SQL-001",
+        ),
+        (
+            "app.go",
+            'id := r.URL.Query().Get("id")\nquery := "SELECT id, email FROM users WHERE id=" + id\ndb.Query(query)\n',
+            "GO-SQL-001",
+        ),
+    ],
+)
+def test_data_read_proof_is_language_independent(
+    tmp_path: Path, name: str, source: str, rule_id: str
+) -> None:
+    (tmp_path / name).write_text(source, encoding="utf-8")
+    finding = next(item for item in scan_path(tmp_path, cve=False).findings if item.rule_id == rule_id)
+
+    joined = "\n".join(finding.test_vectors)
+    assert "Unauthorized-row proof" in joined
+    assert "UNION SELECT" in joined
+    assert "CURRENT_USER" in joined
 
 
 def test_rule_without_special_patch_still_gets_location_specific_vector(tmp_path: Path) -> None:

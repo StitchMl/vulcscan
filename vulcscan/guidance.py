@@ -220,6 +220,7 @@ def _contextual_vectors(finding: Finding) -> list[str]:
     target = f"the input that reaches `{finding.sink}` at {finding.location.file}:{finding.location.line}"
     if family == "SQL":
         return [
+            *_sql_proof_vectors(finding, target),
             f"On a disposable database, send `' OR '1'='1' -- ` through {target} using test-only rows. Compare it with an invalid value; authorization, row scope and response shape must stay unchanged.",
             f"Send a single quote `'` through {target}. The response must match an ordinary invalid value and expose no database error.",
             f"Send the paired predicates `1 AND 1=1` and `1 AND 1=2` through {target}. They must not change row count, authorization, status code or response shape.",
@@ -247,6 +248,68 @@ def _contextual_vectors(finding: Finding) -> list[str]:
     if base:
         return [f"Exercise `{finding.sink}` at {finding.location.file}:{finding.location.line} on an isolated test deployment. {base[0]}"]
     return [f"Exercise the code path to `{finding.sink}` at {finding.location.file}:{finding.location.line} with boundary and malformed input. Confirm rejection causes no state change, outbound request or sensitive output."]
+
+
+def _sql_proof_vectors(finding: Finding, target: str) -> list[str]:
+    """Return data-bearing SQL probes when the traced query shape is recoverable."""
+    statement = _sql_flow_expression(finding)
+    if statement is None:
+        return []
+    lowered = statement.casefold()
+    if "select" in lowered and re.search(r"\b(?:password|passwd|credential|secret|token)\b", lowered):
+        return [
+            f"Authentication proof: submit `' OR 1=1 -- ` through {target} and use a deliberately invalid password in every other field. A privileged session, redirect or protected page proves an authorization bypass. Record only the test account/session identifier."
+        ]
+    shape = _select_shape(statement)
+    if shape is None:
+        if "select" in lowered and "where" in lowered:
+            return [_row_scope_proof(target)]
+        return []
+    columns = shape
+    marker_index = next(
+        (
+            index
+            for index, name in enumerate(columns)
+            if not re.search(r"(?i)(?:^|_)(?:id|count|price|amount|total|number|qty|quantity)(?:_|$)", name)
+        ),
+        0,
+    )
+    values = ["NULL"] * len(columns)
+    values[marker_index] = "CURRENT_USER"
+    string_payload = "' UNION SELECT " + ",".join(values) + " -- "
+    numeric_payload = "0 UNION SELECT " + ",".join(values) + " -- "
+    return [
+        _row_scope_proof(target),
+        f"Database-read proof: the traced SELECT has {len(columns)} output columns. Submit `{string_payload}` for a quoted value, or `{numeric_payload}` for a numeric value, through {target}. A database principal rendered in output column {marker_index + 1} proves that injected SQL read data outside the intended query. `CURRENT_USER` works on major SQL engines; use the engine's read-only identity function when unsupported. Use only disposable test data.",
+    ]
+
+
+def _sql_flow_expression(finding: Finding) -> str | None:
+    for step in reversed(finding.flow):
+        if step.kind != "PROPAGATION" or not re.search(r"(?i)\bselect\b", step.code):
+            continue
+        match = re.match(r"^\s*\$?[A-Za-z_]\w*\s*=\s*(.+?)\s*;?\s*$", step.code, re.DOTALL)
+        return match.group(1) if match else step.code
+    return None
+
+
+def _row_scope_proof(target: str) -> str:
+    return (
+        f"Unauthorized-row proof: submit `' OR 1=1 -- ` for a quoted value or `0 OR 1=1 -- ` for a numeric value through {target}. "
+        "Compare stable record identifiers with a request made by the least-privileged test account. Any row outside that account's normal tenant, owner or filter scope proves unauthorized data retrieval."
+    )
+
+
+def _select_shape(expression: str) -> list[str] | None:
+    """Recover a simple SELECT list from source in any supported language."""
+    match = re.search(r"(?is)\bSELECT\s+(.+?)\s+FROM\b", expression)
+    if not match or "*" in match.group(1):
+        return None
+    raw_columns = match.group(1).strip().lstrip("'\"`")
+    columns = [item.strip().rsplit(".", 1)[-1].strip("`\"[] ") for item in raw_columns.split(",")]
+    if not 1 <= len(columns) <= 20 or any(not re.fullmatch(r"[A-Za-z_]\w*", item) for item in columns):
+        return None
+    return columns
 
 
 def _short_sink(sink: str) -> str:

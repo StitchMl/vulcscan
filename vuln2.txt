@@ -1,0 +1,198 @@
+VulcScan - scan completed
+Target:        C:\Users\matte\Desktop\opt
+Files:         38 scanned, 8 skipped, 0.14s
+Network:       ENABLED
+Findings:      16  (12 high | 1 medium | 3 low)
+High confidence: 2
+Dependency vulnerabilities: 0
+
+CODE FINDINGS (most severe and most certain first)
+------------------------------------------------------------------
+F-001  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/admin/upload.php:19
+      Severity:   HIGH    Confidence: HIGH    Rule: PHP-PATH-001
+      Source:     $_FILES  @ docker-apps/allyoucansnow/app/admin/upload.php:19
+      Sink:       move_uploaded_file($_FILES['immagine']['tmp_name'], $dest_dir . $nome)  @ docker-apps/allyoucansnow/app/admin/upload.php:19
+      Flow:       line 18 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check.
+      Patch at:   docker-apps/allyoucansnow/app/admin/upload.php:19
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-002  [HIGH] Hardcoded Credential (CWE-798)
+      Location:   docker-apps/allyoucansnow/app/.env:7
+      Severity:   HIGH    Confidence: MEDIUM    Rule: SECRET-001
+      Code:       WAREHOUSE_API_KEY=wh<redacted>  @ docker-apps/allyoucansnow/app/.env:7
+      Why:        A credential-like literal is assigned to a credential name.
+      Patch at:   docker-apps/allyoucansnow/app/.env:7
+      Fix:        Move the credential out of source control and rotate it.
+                  Read it from the environment or a secret manager at runtime; treat the committed value as exposed.
+                  Patch confidence: HIGH   Patch risk: MEDIUM
+
+F-003  [HIGH] OS Command Injection (CWE-78)
+      Location:   docker-apps/allyoucansnow/app/admin/diagnostica.php:13
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-CMD-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/admin/diagnostica.php:12
+      Sink:       shell_exec('ping -c 1 ' . $host)  @ docker-apps/allyoucansnow/app/admin/diagnostica.php:13
+      Flow:       line 12 -> sink
+      Why:        Untrusted input reaches a command interpreter or selects the executed program. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/admin/diagnostica.php:13
+      Fix:        Run the program without a shell and pass arguments as a list.
+                  Select the executable in trusted code and pass every user value as its own argument. Python: subprocess.run([program, arg, value]); Node.js: execFile(program, [arg, value]).
+                  Patch confidence: HIGH   Patch risk: MEDIUM
+      Alternative: Validate the value against a strict allowlist at the input boundary.
+
+F-004  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/admin/importa.php:13
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-PATH-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/admin/importa.php:12
+      Sink:       file_get_contents($url)  @ docker-apps/allyoucansnow/app/admin/importa.php:13
+      Flow:       line 12 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/admin/importa.php:13
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-005  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/admin/importa.php:19
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-PATH-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/admin/importa.php:12
+      Sink:       file_put_contents('/var/www/allyoucansnow/img/prodotti/' . $nome, $data)  @ docker-apps/allyoucansnow/app/admin/importa.php:19
+      Flow:       line 12 -> line 18 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/admin/importa.php:19
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-006  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/admin/logs.php:18
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-PATH-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/admin/logs.php:7
+      Sink:       include($logfile);  @ docker-apps/allyoucansnow/app/admin/logs.php:18
+      Flow:       line 7 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/admin/logs.php:18
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-007  [HIGH] Server-Side Request Forgery (CWE-918)
+      Location:   docker-apps/allyoucansnow/app/admin/tracking.php:17
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-SSRF-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/admin/tracking.php:11
+      Sink:       curl_init($url)  @ docker-apps/allyoucansnow/app/admin/tracking.php:17
+      Flow:       line 11 -> line 14 -> line 15 -> sink
+      Why:        Untrusted input controls the scheme or host of an outbound request. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/admin/tracking.php:17
+      Fix:        Allowlist outbound destinations.
+                  Parse the URL, require an allowed scheme and an exact allowlisted host, and build the request from the validated parts.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Fix the host in code and let input select only a path segment.
+
+F-008  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/index.php:8
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-PATH-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/index.php:7
+      Sink:       include($tema . '.php');  @ docker-apps/allyoucansnow/app/index.php:8
+      Flow:       line 7 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/index.php:8
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-009  [HIGH] Path Traversal (CWE-22)
+      Location:   docker-apps/allyoucansnow/app/scheda.php:10
+      Severity:   HIGH    Confidence: MEDIUM    Rule: PHP-PATH-001
+      Source:     $_GET  @ docker-apps/allyoucansnow/app/scheda.php:9
+      Sink:       include('/var/www/allyoucansnow/schede/' . $doc);  @ docker-apps/allyoucansnow/app/scheda.php:10
+      Flow:       line 9 -> sink
+      Why:        Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.
+      Patch at:   docker-apps/allyoucansnow/app/scheda.php:10
+      Fix:        Resolve the path and enforce base-directory containment.
+                  Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+      Alternative: Reduce the input to a bare file name.
+
+F-010  [HIGH] Hardcoded Credential (CWE-798)
+      Location:   docker-apps/snowshop-db/Dockerfile:2
+      Severity:   HIGH    Confidence: MEDIUM    Rule: SECRET-001
+      Code:       ENV MARIADB_ROOT_PASSWORD=R0<redacted>  @ docker-apps/snowshop-db/Dockerfile:2
+      Why:        A credential-like literal is assigned to a credential name.
+      Patch at:   docker-apps/snowshop-db/Dockerfile:2
+      Fix:        Move the credential out of source control and rotate it.
+                  Read it from the environment or a secret manager at runtime; treat the committed value as exposed.
+                  Patch confidence: HIGH   Patch risk: MEDIUM
+
+F-011  [HIGH] Hardcoded Credential (CWE-798)
+      Location:   docker-apps/snowshop-db/Dockerfile:5
+      Severity:   HIGH    Confidence: MEDIUM    Rule: SECRET-001
+      Code:       ENV MARIADB_PASSWORD=Sn<redacted>  @ docker-apps/snowshop-db/Dockerfile:5
+      Why:        A credential-like literal is assigned to a credential name.
+      Patch at:   docker-apps/snowshop-db/Dockerfile:5
+      Fix:        Move the credential out of source control and rotate it.
+                  Read it from the environment or a secret manager at runtime; treat the committed value as exposed.
+                  Patch confidence: HIGH   Patch risk: MEDIUM
+
+F-012  [HIGH] Hardcoded Credential (CWE-798)
+      Location:   docker-apps/warehouse-api/app.py:39 in config()
+      Severity:   HIGH    Confidence: MEDIUM    Rule: SECRET-001
+      Code:       "wh<redacted>"  @ docker-apps/warehouse-api/app.py:39
+      Why:        A credential-like literal is assigned to a credential name.
+      Patch at:   docker-apps/warehouse-api/app.py:39 in config()
+      Fix:        Move the credential out of source control and rotate it.
+                  Read it from the environment or a secret manager at runtime; treat the committed value as exposed.
+                  Patch confidence: HIGH   Patch risk: MEDIUM
+
+F-013  [MEDIUM] Debug Mode Enabled (CWE-489)
+      Location:   docker-apps/allyoucansnow/conf/php.ini:6
+      Severity:   MEDIUM    Confidence: HIGH    Rule: DEBUG-001
+      Code:       display_errors = On  @ docker-apps/allyoucansnow/conf/php.ini:6
+      Why:        The configuration enables framework debug behavior.
+      Patch at:   docker-apps/allyoucansnow/conf/php.ini:6
+      Fix:        Disable debug mode outside development.
+                  Read the flag from configuration that defaults to false in deployed environments.
+                  Patch confidence: HIGH   Patch risk: LOW
+
+F-014  [LOW] Container Runs as Root (CWE-250)
+      Location:   docker-apps/allyoucansnow/Dockerfile:2
+      Severity:   LOW    Confidence: MEDIUM    Rule: DOCKER-ROOT-001
+      Code:       FROM ubuntu:22.04  @ docker-apps/allyoucansnow/Dockerfile:2
+      Why:        The final image stage does not switch to a non-root user.
+      Patch at:   docker-apps/allyoucansnow/Dockerfile:2
+      Fix:        Run the final image as an unprivileged user.
+                  Create a fixed UID/GID and add USER after the steps that need root.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+
+F-015  [LOW] Container Runs as Root (CWE-250)
+      Location:   docker-apps/snowshop-db/Dockerfile:1
+      Severity:   LOW    Confidence: MEDIUM    Rule: DOCKER-ROOT-001
+      Code:       FROM mariadb:10.6  @ docker-apps/snowshop-db/Dockerfile:1
+      Why:        The final image stage does not switch to a non-root user.
+      Patch at:   docker-apps/snowshop-db/Dockerfile:1
+      Fix:        Run the final image as an unprivileged user.
+                  Create a fixed UID/GID and add USER after the steps that need root.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+
+F-016  [LOW] Container Runs as Root (CWE-250)
+      Location:   docker-apps/warehouse-api/Dockerfile:1
+      Severity:   LOW    Confidence: MEDIUM    Rule: DOCKER-ROOT-001
+      Code:       FROM python:3.11-slim  @ docker-apps/warehouse-api/Dockerfile:1
+      Why:        The final image stage does not switch to a non-root user.
+      Patch at:   docker-apps/warehouse-api/Dockerfile:1
+      Fix:        Run the final image as an unprivileged user.
+                  Create a fixed UID/GID and add USER after the steps that need root.
+                  Patch confidence: MEDIUM   Patch risk: MEDIUM
+
+------------------------------------------------------------------
+Scan complete: 16 findings (12 high | 1 medium | 3 low), 2 high-confidence
+0 vulnerable dependency versions, 38 files scanned in 0.14s
+Priority: review CRITICAL/HIGH findings with HIGH confidence first.

@@ -1,0 +1,2461 @@
+{
+  "metadata": {
+    "platform": "Windows",
+    "root": "C:\\Users\\matte\\Desktop\\opt",
+    "files_discovered": 46,
+    "files_analyzed": 46,
+    "files_skipped": 0,
+    "languages": [
+      "CSS",
+      "Configuration",
+      "Dockerfile",
+      "Environment",
+      "HTML",
+      "JavaScript",
+      "PHP",
+      "Python",
+      "SQL",
+      "SVG",
+      "Shell"
+    ],
+    "frameworks": [
+      "Flask"
+    ],
+    "offline": true,
+    "network_access": "DISABLED",
+    "scan_duration": 0.145899,
+    "severity_counts": {
+      "critical": 1,
+      "high": 31,
+      "medium": 5,
+      "low": 3,
+      "info": 0
+    },
+    "finding_count": 40,
+    "dependency_count": 0,
+    "dependency_vulnerability_count": 0
+  },
+  "findings": [
+    {
+      "rule_id": "PHP-URL-INCLUDE-001",
+      "name": "Remote PHP Inclusion Enabled",
+      "cwe": "CWE-98",
+      "reference": "https://cwe.mitre.org/data/definitions/98.html",
+      "severity": "CRITICAL",
+      "confidence": "HIGH",
+      "category": "CONFIGURATION",
+      "language": "Configuration",
+      "file": "docker-apps/allyoucansnow/conf/php.ini",
+      "line": 4,
+      "column": 1,
+      "end_line": 4,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "allow_url_include",
+      "evidence": "allow_url_include = On",
+      "reason": "PHP allows URL-aware include and require operations, increasing remote file inclusion impact.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/conf/php.ini",
+        "line": 4,
+        "column": 1,
+        "end_line": 4
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Disable URL includes.",
+          "guidance": "Set allow_url_include = Off. Keep include/require targets server-owned and allowlisted.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "current": "allow_url_include = On",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "LOW",
+      "tags": []
+    },
+    {
+      "rule_id": "UPLOAD-MIME-001",
+      "name": "Unrestricted File Upload",
+      "cwe": "CWE-434",
+      "reference": "https://cwe.mitre.org/data/definitions/434.html",
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "category": "FILE_UPLOAD",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/upload.php",
+      "line": 19,
+      "column": 9,
+      "end_line": 19,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "move_uploaded_file",
+      "evidence": "move_uploaded_file($_FILES['immagine']['tmp_name'], $dest_dir . $nome);",
+      "reason": "An upload is accepted using the client-declared MIME type instead of verified file content.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/upload.php",
+        "line": 19,
+        "column": 9,
+        "end_line": 19
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Verify file content and generate the destination name.",
+          "guidance": "Inspect bytes with finfo/Fileinfo, decode the expected image format, enforce size and dimensions, generate a random server-side name, and store outside executable paths.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "move_uploaded_file($_FILES['immagine']['tmp_name'], $dest_dir . $nome);",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Upload benign text named `vulcscan-probe.php.jpg` while declaring `Content-Type: image/jpeg`; the server must reject it after inspecting the bytes."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "CLEARTEXT-PASSWORD-001",
+      "name": "Cleartext Password Storage",
+      "cwe": "CWE-256",
+      "reference": "https://cwe.mitre.org/data/definitions/256.html",
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "category": "AUTH",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 67,
+      "column": 1,
+      "end_line": 67,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL seed password",
+      "evidence": "INSERT INTO admin_users (username, password) VALUES   ('<redacted>', '<redacted>');",
+      "reason": "A password is seeded or stored as cleartext instead of a salted password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 67,
+        "column": 1,
+        "end_line": 67
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store only salted password hashes.",
+          "guidance": "Use password_hash with PASSWORD_ARGON2ID or PASSWORD_DEFAULT and verify with password_verify. Rotate seeded credentials.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "HIGH",
+          "current": "INSERT INTO admin_users (username, password) VALUES   ('<redacted>', '<redacted>');",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "HIGH",
+      "tags": []
+    },
+    {
+      "rule_id": "SECRET-001",
+      "name": "Hardcoded Credential",
+      "cwe": "CWE-798",
+      "reference": "https://cwe.mitre.org/data/definitions/798.html",
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "category": "AUTH",
+      "language": "Shell",
+      "file": "scripts/export_ordini.sh",
+      "line": 5,
+      "column": 41,
+      "end_line": 5,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "database CLI password",
+      "evidence": "docker exec snowshop-db mysql -uroot -p'R0<redacted>' -N -B \\",
+      "reason": "A credential-like literal is assigned to a credential name.",
+      "patch_location": {
+        "file": "scripts/export_ordini.sh",
+        "line": 5,
+        "column": 41,
+        "end_line": 5
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Move the credential out of source control and rotate it.",
+          "guidance": "Read it from the environment or a secret manager at runtime; treat the committed value as exposed.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "docker exec snowshop-db mysql -uroot -p'R0<redacted>' -N -B \\",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "SECRET-001",
+      "name": "Hardcoded Credential",
+      "cwe": "CWE-798",
+      "reference": "https://cwe.mitre.org/data/definitions/798.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "AUTH",
+      "language": "Environment",
+      "file": "docker-apps/allyoucansnow/app/.env",
+      "line": 7,
+      "column": 1,
+      "end_line": 7,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "WAREHOUSE_API_KEY",
+      "evidence": "WAREHOUSE_API_KEY=wh<redacted>",
+      "reason": "A credential-like literal is assigned to a credential name.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/.env",
+        "line": 7,
+        "column": 1,
+        "end_line": 7
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Move the credential out of source control and rotate it.",
+          "guidance": "Read it from the environment or a secret manager at runtime; treat the committed value as exposed.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "WAREHOUSE_API_KEY=wh<redacted>",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-CMD-001",
+      "name": "OS Command Injection",
+      "cwe": "CWE-78",
+      "reference": "https://cwe.mitre.org/data/definitions/78.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "COMMAND_EXECUTION",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+      "line": 13,
+      "column": 12,
+      "end_line": 13,
+      "end_column": 44,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+        "line": 12,
+        "column": 13,
+        "end_line": 12,
+        "end_column": 18
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+            "line": 12,
+            "column": 13,
+            "end_line": 12,
+            "end_column": 18
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+            "line": 12,
+            "column": 5,
+            "end_line": 12,
+            "end_column": 26
+          },
+          "code": "$host = $_GET['host']",
+          "description": "Value is assigned to host."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+            "line": 13,
+            "column": 12,
+            "end_line": 13,
+            "end_column": 44
+          },
+          "code": "shell_exec('ping -c 1 ' . $host)",
+          "description": "Value reaches PHP command execution."
+        }
+      ],
+      "sink": "PHP command execution",
+      "evidence": "shell_exec('ping -c 1 ' . $host)",
+      "reason": "Untrusted input reaches a command interpreter or selects the executed program. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/diagnostica.php",
+        "line": 13,
+        "column": 12,
+        "end_line": 13,
+        "end_column": 44
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Run the program without a shell and pass arguments as a list.",
+          "guidance": "Select the executable in trusted code and pass every user value as its own argument. Python: subprocess.run([program, arg, value]); Node.js: execFile(program, [arg, value]).",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "shell_exec('ping -c 1 ' . $host)",
+          "machine_applicable": false
+        },
+        {
+          "title": "Validate the value against a strict allowlist at the input boundary.",
+          "guidance": "Accept only the finite set of identifiers or the character class the operation needs, and reject everything else before the sink.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Append `; printf VULCSCAN_PROBE` to a text parameter on a disposable test instance; success means shell metacharacters were interpreted."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-PATH-001",
+      "name": "Path Traversal",
+      "cwe": "CWE-22",
+      "reference": "https://cwe.mitre.org/data/definitions/22.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "FILESYSTEM",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+      "line": 13,
+      "column": 14,
+      "end_line": 13,
+      "end_column": 37,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+        "line": 12,
+        "column": 12,
+        "end_line": 12,
+        "end_column": 17
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 12,
+            "column": 12,
+            "end_line": 12,
+            "end_column": 17
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 12,
+            "column": 5,
+            "end_line": 12,
+            "end_column": 24
+          },
+          "code": "$url = $_GET['url']",
+          "description": "Value is assigned to url."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 13,
+            "column": 14,
+            "end_line": 13,
+            "end_column": 37
+          },
+          "code": "file_get_contents($url)",
+          "description": "Value reaches filesystem API."
+        }
+      ],
+      "sink": "filesystem API",
+      "evidence": "file_get_contents($url)",
+      "reason": "Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+        "line": 13,
+        "column": 14,
+        "end_line": 13,
+        "end_column": 37
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Resolve the path and enforce base-directory containment.",
+          "guidance": "Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "file_get_contents($url)",
+          "machine_applicable": false
+        },
+        {
+          "title": "Reduce the input to a bare file name.",
+          "guidance": "Use basename/secure_filename when the caller only needs to pick a file inside one directory.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Try `../../../../etc/hostname` on Linux or `..\\..\\..\\..\\Windows\\win.ini` on Windows in an isolated test deployment.",
+        "For uploads, use the harmless name `../vulcscan-probe.txt` and benign text content; verify containment and rejection."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-SSRF-001",
+      "name": "Server-Side Request Forgery",
+      "cwe": "CWE-918",
+      "reference": "https://cwe.mitre.org/data/definitions/918.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "HTTP_REQUEST",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+      "line": 13,
+      "column": 14,
+      "end_line": 13,
+      "end_column": 37,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+        "line": 12,
+        "column": 12,
+        "end_line": 12,
+        "end_column": 17
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 12,
+            "column": 12,
+            "end_line": 12,
+            "end_column": 17
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 12,
+            "column": 5,
+            "end_line": 12,
+            "end_column": 24
+          },
+          "code": "$url = $_GET['url']",
+          "description": "Value is assigned to url."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+            "line": 13,
+            "column": 14,
+            "end_line": 13,
+            "end_column": 37
+          },
+          "code": "file_get_contents($url)",
+          "description": "Value reaches PHP URL stream wrapper."
+        }
+      ],
+      "sink": "PHP URL stream wrapper",
+      "evidence": "file_get_contents($url)",
+      "reason": "Untrusted input controls the scheme or host of an outbound request. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/importa.php",
+        "line": 13,
+        "column": 14,
+        "end_line": 13,
+        "end_column": 37
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Allowlist outbound destinations.",
+          "guidance": "Parse the URL, require an allowed scheme and an exact allowlisted host, and build the request from the validated parts.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "file_get_contents($url)",
+          "machine_applicable": false
+        },
+        {
+          "title": "Fix the host in code and let input select only a path segment.",
+          "guidance": "Build the URL from a constant base such as https://api.example.com/ and URL-encode the user value.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Start a controlled local listener, then submit `http://127.0.0.1:8000/vulcscan-probe`; any received request confirms server-side fetching.",
+        "Also test alternate loopback spelling such as `http://2130706433:8000/vulcscan-probe` against the same controlled listener."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-SQL-001",
+      "name": "SQL Injection",
+      "cwe": "CWE-89",
+      "reference": "https://cwe.mitre.org/data/definitions/89.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "SQL_EXECUTION",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/login.php",
+      "line": 22,
+      "column": 15,
+      "end_line": 22,
+      "end_column": 28,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/login.php",
+        "line": 16,
+        "column": 16,
+        "end_line": 16,
+        "end_column": 22
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 16,
+            "column": 16,
+            "end_line": 16,
+            "end_column": 22
+          },
+          "code": "$_POST",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 16,
+            "column": 38,
+            "end_line": 16,
+            "end_column": 44
+          },
+          "code": "$_POST",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 16,
+            "column": 5,
+            "end_line": 16,
+            "end_column": 61
+          },
+          "code": "$u = isset($_POST['username']) ? $_POST['username'] : ''",
+          "description": "Value is assigned to u."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 17,
+            "column": 16,
+            "end_line": 17,
+            "end_column": 22
+          },
+          "code": "$_POST",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 17,
+            "column": 38,
+            "end_line": 17,
+            "end_column": 44
+          },
+          "code": "$_POST",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 17,
+            "column": 5,
+            "end_line": 17,
+            "end_column": 61
+          },
+          "code": "$p = isset($_POST['password']) ? $_POST['password'] : ''",
+          "description": "Value is assigned to p."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 20,
+            "column": 5,
+            "end_line": 20,
+            "end_column": 93
+          },
+          "code": "$sql = \"SELECT * FROM admin_users WHERE username='\" . $u . \"' AND password='\" . $p . \"'\"",
+          "description": "Value is assigned to sql."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/login.php",
+            "line": 22,
+            "column": 15,
+            "end_line": 22,
+            "end_column": 28
+          },
+          "code": "->query($sql)",
+          "description": "Value reaches raw SQL query."
+        }
+      ],
+      "sink": "raw SQL query",
+      "evidence": "->query($sql)",
+      "reason": "Untrusted input becomes part of SQL text instead of a bound parameter. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/login.php",
+        "line": 22,
+        "column": 15,
+        "end_line": 22,
+        "end_column": 28
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Replace the raw mysqli query with a prepared statement.",
+          "guidance": "Substitute the real constant SQL, bind types and variables shown by the source-to-sink flow. Review the result before applying.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "->query($sql)",
+          "suggested": "$stmt = $db->prepare(\"SELECT ... WHERE field = ?\");\n$stmt->bind_param(\"s\", $value);\n$stmt->execute();\n$result = $stmt->get_result();",
+          "machine_applicable": false
+        },
+        {
+          "title": "Bind user values as query parameters.",
+          "guidance": "Keep the SQL text constant and pass values through the driver's parameter argument. Identifiers such as column names need an allowlist because drivers cannot bind them.",
+          "preferred": false,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        },
+        {
+          "title": "Use the ORM query API instead of raw SQL text.",
+          "guidance": "Express the filter with the ORM so values are bound by the library.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Use `' OR '1'='1' -- ` in the reported parameter with test data; compare the result with a normal invalid value.",
+        "Use a single quote `'` and confirm the application neither changes query behavior nor exposes a database error."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-PATH-001",
+      "name": "Path Traversal",
+      "cwe": "CWE-22",
+      "reference": "https://cwe.mitre.org/data/definitions/22.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "FILESYSTEM",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+      "line": 18,
+      "column": 1,
+      "end_line": 18,
+      "end_column": 19,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+        "line": 7,
+        "column": 18,
+        "end_line": 7,
+        "end_column": 23
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+            "line": 7,
+            "column": 18,
+            "end_line": 7,
+            "end_column": 23
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+            "line": 7,
+            "column": 38,
+            "end_line": 7,
+            "end_column": 43
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+            "line": 7,
+            "column": 1,
+            "end_line": 7,
+            "end_column": 84
+          },
+          "code": "$logfile = isset($_GET['logfile']) ? $_GET['logfile'] : '/var/log/nginx/access.log'",
+          "description": "Value is assigned to logfile."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+            "line": 18,
+            "column": 1,
+            "end_line": 18,
+            "end_column": 19
+          },
+          "code": "include($logfile);",
+          "description": "Value reaches file inclusion."
+        }
+      ],
+      "sink": "file inclusion",
+      "evidence": "include($logfile);",
+      "reason": "Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/logs.php",
+        "line": 18,
+        "column": 1,
+        "end_line": 18,
+        "end_column": 19
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Resolve the path and enforce base-directory containment.",
+          "guidance": "Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "include($logfile);",
+          "machine_applicable": false
+        },
+        {
+          "title": "Reduce the input to a bare file name.",
+          "guidance": "Use basename/secure_filename when the caller only needs to pick a file inside one directory.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Try `../../../../etc/hostname` on Linux or `..\\..\\..\\..\\Windows\\win.ini` on Windows in an isolated test deployment.",
+        "For uploads, use the harmless name `../vulcscan-probe.txt` and benign text content; verify containment and rejection."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-SSRF-001",
+      "name": "Server-Side Request Forgery",
+      "cwe": "CWE-918",
+      "reference": "https://cwe.mitre.org/data/definitions/918.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "HTTP_REQUEST",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+      "line": 17,
+      "column": 11,
+      "end_line": 17,
+      "end_column": 26,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+        "line": 11,
+        "column": 19,
+        "end_line": 11,
+        "end_column": 24
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 11,
+            "column": 19,
+            "end_line": 11,
+            "end_column": 24
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 11,
+            "column": 40,
+            "end_line": 11,
+            "end_column": 45
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 11,
+            "column": 1,
+            "end_line": 11,
+            "end_column": 94
+          },
+          "code": "$endpoint = isset($_GET['endpoint']) ? $_GET['endpoint'] : 'http://corriere.snow.local/track'",
+          "description": "Value is assigned to endpoint."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 14,
+            "column": 5,
+            "end_line": 14,
+            "end_column": 21
+          },
+          "code": "$url = $endpoint",
+          "description": "Value is assigned to url."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 15,
+            "column": 58,
+            "end_line": 15,
+            "end_column": 63
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 15,
+            "column": 31,
+            "end_line": 15,
+            "end_column": 70
+          },
+          "code": "$url .= '?id=' . urlencode($_GET['id'])",
+          "description": "Value is assigned to url."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+            "line": 17,
+            "column": 11,
+            "end_line": 17,
+            "end_column": 26
+          },
+          "code": "curl_init($url)",
+          "description": "Value reaches curl_init."
+        }
+      ],
+      "sink": "curl_init",
+      "evidence": "curl_init($url)",
+      "reason": "Untrusted input controls the scheme or host of an outbound request. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/tracking.php",
+        "line": 17,
+        "column": 11,
+        "end_line": 17,
+        "end_column": 26
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Allowlist outbound destinations.",
+          "guidance": "Parse the URL, require an allowed scheme and an exact allowlisted host, and build the request from the validated parts.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "curl_init($url)",
+          "machine_applicable": false
+        },
+        {
+          "title": "Fix the host in code and let input select only a path segment.",
+          "guidance": "Build the URL from a constant base such as https://api.example.com/ and URL-encode the user value.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Start a controlled local listener, then submit `http://127.0.0.1:8000/vulcscan-probe`; any received request confirms server-side fetching.",
+        "Also test alternate loopback spelling such as `http://2130706433:8000/vulcscan-probe` against the same controlled listener."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-SQL-001",
+      "name": "SQL Injection",
+      "cwe": "CWE-89",
+      "reference": "https://cwe.mitre.org/data/definitions/89.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "SQL_EXECUTION",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/cerca.php",
+      "line": 24,
+      "column": 15,
+      "end_line": 24,
+      "end_column": 28,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/cerca.php",
+        "line": 6,
+        "column": 12,
+        "end_line": 6,
+        "end_column": 17
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/cerca.php",
+            "line": 6,
+            "column": 12,
+            "end_line": 6,
+            "end_column": 17
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/cerca.php",
+            "line": 6,
+            "column": 26,
+            "end_line": 6,
+            "end_column": 31
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/cerca.php",
+            "line": 6,
+            "column": 1,
+            "end_line": 6,
+            "end_column": 41
+          },
+          "code": "$q = isset($_GET['q']) ? $_GET['q'] : ''",
+          "description": "Value is assigned to q."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/cerca.php",
+            "line": 22,
+            "column": 5,
+            "end_line": 22,
+            "end_column": 95
+          },
+          "code": "$sql = \"SELECT id, nome, prezzo, descrizione FROM prodotti WHERE nome LIKE '%\" . $q . \"%'\"",
+          "description": "Value is assigned to sql."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/cerca.php",
+            "line": 24,
+            "column": 15,
+            "end_line": 24,
+            "end_column": 28
+          },
+          "code": "->query($sql)",
+          "description": "Value reaches raw SQL query."
+        }
+      ],
+      "sink": "raw SQL query",
+      "evidence": "->query($sql)",
+      "reason": "Untrusted input becomes part of SQL text instead of a bound parameter. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/cerca.php",
+        "line": 24,
+        "column": 15,
+        "end_line": 24,
+        "end_column": 28
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Replace the raw mysqli query with a prepared statement.",
+          "guidance": "Substitute the real constant SQL, bind types and variables shown by the source-to-sink flow. Review the result before applying.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "->query($sql)",
+          "suggested": "$stmt = $db->prepare(\"SELECT ... WHERE field = ?\");\n$stmt->bind_param(\"s\", $value);\n$stmt->execute();\n$result = $stmt->get_result();",
+          "machine_applicable": false
+        },
+        {
+          "title": "Bind user values as query parameters.",
+          "guidance": "Keep the SQL text constant and pass values through the driver's parameter argument. Identifiers such as column names need an allowlist because drivers cannot bind them.",
+          "preferred": false,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        },
+        {
+          "title": "Use the ORM query API instead of raw SQL text.",
+          "guidance": "Express the filter with the ORM so values are bound by the library.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Use `' OR '1'='1' -- ` in the reported parameter with test data; compare the result with a normal invalid value.",
+        "Use a single quote `'` and confirm the application neither changes query behavior nor exposes a database error."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-XSS-001",
+      "name": "Potential Cross-Site Scripting",
+      "cwe": "CWE-79",
+      "reference": "https://cwe.mitre.org/data/definitions/79.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "OUTPUT_ENCODING",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/cerca.php",
+      "line": 42,
+      "column": 44,
+      "end_line": 42,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "PHP echo",
+      "evidence": "echo \"<p>Nessun risultato per: \" . $q . \"</p>\";",
+      "reason": "Dynamic PHP output reaches an HTML response without contextual output encoding.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/cerca.php",
+        "line": 42,
+        "column": 44,
+        "end_line": 42
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Encode dynamic values for their HTML context.",
+          "guidance": "Use htmlspecialchars(value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') for HTML text and attributes. Keep raw HTML out of stored user content.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "current": "echo \"<p>Nessun risultato per: \" . $q . \"</p>\";",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Submit `<img src=x onerror=alert('VULCSCAN_PROBE')>` as the reported field on a disposable account, then view the affected page in a test browser."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "LOW",
+      "tags": []
+    },
+    {
+      "rule_id": "DB-RACE-001",
+      "name": "Non-Atomic Check-Then-Update",
+      "cwe": "CWE-362",
+      "reference": "https://cwe.mitre.org/data/definitions/362.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "BUSINESS_LOGIC",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/checkout.php",
+      "line": 31,
+      "column": 27,
+      "end_line": 31,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "database UPDATE",
+      "evidence": "UPDATE coupon SET usi_rimanenti = usi_rimanenti - 1 WHERE codice = ?\");",
+      "reason": "A database value is checked and later decremented without an atomic predicate or transaction lock.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/checkout.php",
+        "line": 31,
+        "column": 27,
+        "end_line": 31
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Make the state transition atomic.",
+          "guidance": "Use one conditional UPDATE such as UPDATE ... SET remaining = remaining - 1 WHERE ... AND remaining > 0, then require exactly one affected row. Use a transaction and row lock when several writes must commit together.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "UPDATE coupon SET usi_rimanenti = usi_rimanenti - 1 WHERE codice = ?\");",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Send two simultaneous requests using one disposable single-use coupon or token; exactly one must succeed and the stored counter must not become negative."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-PATH-001",
+      "name": "Path Traversal",
+      "cwe": "CWE-22",
+      "reference": "https://cwe.mitre.org/data/definitions/22.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "FILESYSTEM",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/index.php",
+      "line": 8,
+      "column": 1,
+      "end_line": 8,
+      "end_column": 25,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/index.php",
+        "line": 7,
+        "column": 15,
+        "end_line": 7,
+        "end_column": 20
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/index.php",
+            "line": 7,
+            "column": 15,
+            "end_line": 7,
+            "end_column": 20
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/index.php",
+            "line": 7,
+            "column": 32,
+            "end_line": 7,
+            "end_column": 37
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/index.php",
+            "line": 7,
+            "column": 1,
+            "end_line": 7,
+            "end_column": 62
+          },
+          "code": "$tema = isset($_GET['tema']) ? $_GET['tema'] : 'temi/inverno'",
+          "description": "Value is assigned to tema."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/index.php",
+            "line": 8,
+            "column": 1,
+            "end_line": 8,
+            "end_column": 25
+          },
+          "code": "include($tema . '.php');",
+          "description": "Value reaches file inclusion."
+        }
+      ],
+      "sink": "file inclusion",
+      "evidence": "include($tema . '.php');",
+      "reason": "Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/index.php",
+        "line": 8,
+        "column": 1,
+        "end_line": 8,
+        "end_column": 25
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Resolve the path and enforce base-directory containment.",
+          "guidance": "Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "include($tema . '.php');",
+          "machine_applicable": false
+        },
+        {
+          "title": "Reduce the input to a bare file name.",
+          "guidance": "Use basename/secure_filename when the caller only needs to pick a file inside one directory.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Try `../../../../etc/hostname` on Linux or `..\\..\\..\\..\\Windows\\win.ini` on Windows in an isolated test deployment.",
+        "For uploads, use the harmless name `../vulcscan-probe.txt` and benign text content; verify containment and rejection."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-XSS-001",
+      "name": "Potential Cross-Site Scripting",
+      "cwe": "CWE-79",
+      "reference": "https://cwe.mitre.org/data/definitions/79.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "OUTPUT_ENCODING",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/prodotto.php",
+      "line": 58,
+      "column": 73,
+      "end_line": 58,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "PHP echo",
+      "evidence": "echo \"<div class='recensione'><strong>\" . htmlspecialchars($r['autore']) . \"</strong>: \"        . $r['testo'] . \"</div>\";",
+      "reason": "Dynamic PHP output reaches an HTML response without contextual output encoding.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/prodotto.php",
+        "line": 58,
+        "column": 73,
+        "end_line": 58
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Encode dynamic values for their HTML context.",
+          "guidance": "Use htmlspecialchars(value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') for HTML text and attributes. Keep raw HTML out of stored user content.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "current": "echo \"<div class='recensione'><strong>\" . htmlspecialchars($r['autore']) . \"</strong>: \"        . $r['testo'] . \"</div>\";",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Submit `<img src=x onerror=alert('VULCSCAN_PROBE')>` as the reported field on a disposable account, then view the affected page in a test browser."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "LOW",
+      "tags": []
+    },
+    {
+      "rule_id": "PHP-PATH-001",
+      "name": "Path Traversal",
+      "cwe": "CWE-22",
+      "reference": "https://cwe.mitre.org/data/definitions/22.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "FILESYSTEM",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/scheda.php",
+      "line": 10,
+      "column": 1,
+      "end_line": 10,
+      "end_column": 50,
+      "function": null,
+      "source": {
+        "file": "docker-apps/allyoucansnow/app/scheda.php",
+        "line": 9,
+        "column": 14,
+        "end_line": 9,
+        "end_column": 19
+      },
+      "flow": [
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/scheda.php",
+            "line": 9,
+            "column": 14,
+            "end_line": 9,
+            "end_column": 19
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "SOURCE",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/scheda.php",
+            "line": 9,
+            "column": 30,
+            "end_line": 9,
+            "end_column": 35
+          },
+          "code": "$_GET",
+          "description": "Untrusted PHP request superglobal."
+        },
+        {
+          "kind": "PROPAGATION",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/scheda.php",
+            "line": 9,
+            "column": 1,
+            "end_line": 9,
+            "end_column": 68
+          },
+          "code": "$doc = isset($_GET['doc']) ? $_GET['doc'] : 'pupazzo-classico.html'",
+          "description": "Value is assigned to doc."
+        },
+        {
+          "kind": "SINK",
+          "location": {
+            "file": "docker-apps/allyoucansnow/app/scheda.php",
+            "line": 10,
+            "column": 1,
+            "end_line": 10,
+            "end_column": 50
+          },
+          "code": "include('/var/www/allyoucansnow/schede/' . $doc);",
+          "description": "Value reaches file inclusion."
+        }
+      ],
+      "sink": "file inclusion",
+      "evidence": "include('/var/www/allyoucansnow/schede/' . $doc);",
+      "reason": "Untrusted input reaches a filesystem path without a verified containment check. The engine traced the value through variables without type or control-flow information.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/scheda.php",
+        "line": 10,
+        "column": 1,
+        "end_line": 10,
+        "end_column": 50
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Resolve the path and enforce base-directory containment.",
+          "guidance": "Canonicalize base and candidate (realpath/resolve), then reject the request unless the candidate stays inside the base directory.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "include('/var/www/allyoucansnow/schede/' . $doc);",
+          "machine_applicable": false
+        },
+        {
+          "title": "Reduce the input to a bare file name.",
+          "guidance": "Use basename/secure_filename when the caller only needs to pick a file inside one directory.",
+          "preferred": false,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "LOW",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Try `../../../../etc/hostname` on Linux or `..\\..\\..\\..\\Windows\\win.ini` on Windows in an isolated test deployment.",
+        "For uploads, use the harmless name `../vulcscan-probe.txt` and benign text content; verify containment and rejection."
+      ],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "SECRET-001",
+      "name": "Hardcoded Credential",
+      "cwe": "CWE-798",
+      "reference": "https://cwe.mitre.org/data/definitions/798.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "AUTH",
+      "language": "Dockerfile",
+      "file": "docker-apps/snowshop-db/Dockerfile",
+      "line": 2,
+      "column": 5,
+      "end_line": 2,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "MARIADB_ROOT_PASSWORD",
+      "evidence": "ENV MARIADB_ROOT_PASSWORD=R0<redacted>",
+      "reason": "A credential-like literal is assigned to a credential name.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/Dockerfile",
+        "line": 2,
+        "column": 5,
+        "end_line": 2
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Move the credential out of source control and rotate it.",
+          "guidance": "Read it from the environment or a secret manager at runtime; treat the committed value as exposed.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "ENV MARIADB_ROOT_PASSWORD=R0<redacted>",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "SECRET-001",
+      "name": "Hardcoded Credential",
+      "cwe": "CWE-798",
+      "reference": "https://cwe.mitre.org/data/definitions/798.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "AUTH",
+      "language": "Dockerfile",
+      "file": "docker-apps/snowshop-db/Dockerfile",
+      "line": 5,
+      "column": 5,
+      "end_line": 5,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "MARIADB_PASSWORD",
+      "evidence": "ENV MARIADB_PASSWORD=Sn<redacted>",
+      "reason": "A credential-like literal is assigned to a credential name.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/Dockerfile",
+        "line": 5,
+        "column": 5,
+        "end_line": 5
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Move the credential out of source control and rotate it.",
+          "guidance": "Read it from the environment or a secret manager at runtime; treat the committed value as exposed.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "ENV MARIADB_PASSWORD=Sn<redacted>",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 54,
+      "column": 35,
+      "end_line": 54,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('giulia.neve@example.local',   MD5('inverno2024'),  'Via dei Ghiacci 12, Aosta'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 54,
+        "column": 35,
+        "end_line": 54
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('giulia.neve@example.local',   MD5('inverno2024'),  'Via dei Ghiacci 12, Aosta'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 55,
+      "column": 35,
+      "end_line": 55,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('marco.gelo@example.local',    MD5('password1'),    'Corso Artico 4, Trento'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 55,
+        "column": 35,
+        "end_line": 55
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('marco.gelo@example.local',    MD5('password1'),    'Corso Artico 4, Trento'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 56,
+      "column": 35,
+      "end_line": 56,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('sara.brina@example.local',    MD5('pupazzo'),      'Piazza Bianca 9, Belluno'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 56,
+        "column": 35,
+        "end_line": 56
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('sara.brina@example.local',    MD5('pupazzo'),      'Piazza Bianca 9, Belluno'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 57,
+      "column": 35,
+      "end_line": 57,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('luca.fiocco@example.local',   MD5('nevicata'),     'Via Slavina 3, Sondrio'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 57,
+        "column": 35,
+        "end_line": 57
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('luca.fiocco@example.local',   MD5('nevicata'),     'Via Slavina 3, Sondrio'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 58,
+      "column": 35,
+      "end_line": 58,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('anna.polare@example.local',   MD5('freddo123'),    'Largo Iglu 7, Bolzano'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 58,
+        "column": 35,
+        "end_line": 58
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('anna.polare@example.local',   MD5('freddo123'),    'Largo Iglu 7, Bolzano'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 59,
+      "column": 35,
+      "end_line": 59,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('paolo.tundra@example.local',  MD5('artico'),       'Via Tundra 21, Cuneo'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 59,
+        "column": 35,
+        "end_line": 59
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('paolo.tundra@example.local',  MD5('artico'),       'Via Tundra 21, Cuneo'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 60,
+      "column": 35,
+      "end_line": 60,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('elisa.cristal@example.local', MD5('cristallo'),    'Vicolo Gelido 5, Como'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 60,
+        "column": 35,
+        "end_line": 60
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('elisa.cristal@example.local', MD5('cristallo'),    'Vicolo Gelido 5, Como'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 61,
+      "column": 35,
+      "end_line": 61,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('davide.nord@example.local',   MD5('borea'),        'Via Tramontana 18, Udine'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 61,
+        "column": 35,
+        "end_line": 61
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('davide.nord@example.local',   MD5('borea'),        'Via Tramontana 18, Udine'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 62,
+      "column": 35,
+      "end_line": 62,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('chiara.vetta@example.local',  MD5('valanga'),      'Corso Vetta 30, Lecco'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 62,
+        "column": 35,
+        "end_line": 62
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('chiara.vetta@example.local',  MD5('valanga'),      'Corso Vetta 30, Lecco'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 63,
+      "column": 35,
+      "end_line": 63,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('simone.brivido@example.local',MD5('brivido'),      'Via Brina 2, Verbania'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 63,
+        "column": 35,
+        "end_line": 63
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('simone.brivido@example.local',MD5('brivido'),      'Via Brina 2, Verbania'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 64,
+      "column": 35,
+      "end_line": 64,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('laura.ghiaccio@example.local',MD5('ghiaccio'),     'Piazza Nevosa 11, Aosta'),",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 64,
+        "column": 35,
+        "end_line": 64
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('laura.ghiaccio@example.local',MD5('ghiaccio'),     'Piazza Nevosa 11, Aosta'),",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "WEAK-HASH-001",
+      "name": "Weak Password Hash",
+      "cwe": "CWE-916",
+      "reference": "https://cwe.mitre.org/data/definitions/916.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "CRYPTO",
+      "language": "SQL",
+      "file": "docker-apps/snowshop-db/init.sql",
+      "line": 65,
+      "column": 35,
+      "end_line": 65,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "SQL MD5 password hash",
+      "evidence": "('marta.slitta@example.local',  MD5('slitta'),       'Via Renna 6, Trento');",
+      "reason": "Password data goes through a fast general-purpose digest instead of a password hash.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/init.sql",
+        "line": 65,
+        "column": 35,
+        "end_line": 65
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Store passwords with a password hashing function.",
+          "guidance": "Use Argon2id, scrypt, bcrypt or PBKDF2 with a per-user salt; rehash on next login.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "('marta.slitta@example.local',  MD5('slitta'),       'Via Renna 6, Trento');",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "SECRET-001",
+      "name": "Hardcoded Credential",
+      "cwe": "CWE-798",
+      "reference": "https://cwe.mitre.org/data/definitions/798.html",
+      "severity": "HIGH",
+      "confidence": "MEDIUM",
+      "category": "AUTH",
+      "language": "Python",
+      "file": "docker-apps/warehouse-api/app.py",
+      "line": 39,
+      "column": 20,
+      "end_line": 39,
+      "end_column": 43,
+      "function": "config",
+      "source": null,
+      "flow": [],
+      "sink": "api_key",
+      "evidence": "\"wh<redacted>\"",
+      "reason": "A credential-like literal is assigned to a credential name.",
+      "patch_location": {
+        "file": "docker-apps/warehouse-api/app.py",
+        "line": 39,
+        "column": 20,
+        "end_line": 39,
+        "end_column": 43,
+        "function": "config"
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Move the credential out of source control and rotate it.",
+          "guidance": "Read it from the environment or a secret manager at runtime; treat the committed value as exposed.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "\"wh<redacted>\"",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "SESSION-FIXATION-001",
+      "name": "Session Identifier Not Rotated After Login",
+      "cwe": "CWE-384",
+      "reference": "https://cwe.mitre.org/data/definitions/384.html",
+      "severity": "MEDIUM",
+      "confidence": "HIGH",
+      "category": "AUTH",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/login.php",
+      "line": 25,
+      "column": 9,
+      "end_line": 25,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "authenticated session assignment",
+      "evidence": "$_SESSION['admin'] = true;",
+      "reason": "Authentication state is stored in the session without regenerating its identifier.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/login.php",
+        "line": 25,
+        "column": 9,
+        "end_line": 25
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Rotate the session identifier after authentication.",
+          "guidance": "Call session_regenerate_id(true) immediately after credential verification and before setting authenticated session state.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "current": "$_SESSION['admin'] = true;",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "Record a disposable test session ID before login and confirm that a different ID is issued immediately after successful authentication."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "LOW",
+      "tags": []
+    },
+    {
+      "rule_id": "DEBUG-001",
+      "name": "Debug Mode Enabled",
+      "cwe": "CWE-489",
+      "reference": "https://cwe.mitre.org/data/definitions/489.html",
+      "severity": "MEDIUM",
+      "confidence": "HIGH",
+      "category": "CONFIGURATION",
+      "language": "Configuration",
+      "file": "docker-apps/allyoucansnow/conf/php.ini",
+      "line": 6,
+      "column": 1,
+      "end_line": 6,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "debug configuration",
+      "evidence": "display_errors = On",
+      "reason": "The configuration enables framework debug behavior.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/conf/php.ini",
+        "line": 6,
+        "column": 1,
+        "end_line": 6
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Disable debug mode outside development.",
+          "guidance": "Read the flag from configuration that defaults to false in deployed environments.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "LOW",
+          "current": "display_errors = On",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "HIGH",
+      "patch_risk": "LOW",
+      "tags": []
+    },
+    {
+      "rule_id": "CSRF-001",
+      "name": "Missing CSRF Protection",
+      "cwe": "CWE-352",
+      "reference": "https://cwe.mitre.org/data/definitions/352.html",
+      "severity": "MEDIUM",
+      "confidence": "MEDIUM",
+      "category": "REQUEST_INTEGRITY",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/admin/upload.php",
+      "line": 19,
+      "column": 9,
+      "end_line": 19,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "state-changing POST handler",
+      "evidence": "move_uploaded_file($_FILES['immagine']['tmp_name'], $dest_dir . $nome);         echo \"<div class='notice ok'>Immagine caricata: <a href='/img/prodotti/\" . htmlspecialchars($nome) .",
+      "reason": "A PHP POST handler changes state without an apparent anti-CSRF token check.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/admin/upload.php",
+        "line": 19,
+        "column": 9,
+        "end_line": 19
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Require a session-bound anti-CSRF token.",
+          "guidance": "Generate a cryptographically random token, store it in the session, include it in the form, and compare it with hash_equals before changing state. Use SameSite cookies as defense in depth.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "move_uploaded_file($_FILES['immagine']['tmp_name'], $dest_dir . $nome);         echo \"<div class='notice ok'>Immagine caricata: <a href='/img/prodotti/\" . htmlspecialchars($nome) .",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "From a separate test origin, submit the same POST without a CSRF token; the application must reject it before changing state."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "CSRF-001",
+      "name": "Missing CSRF Protection",
+      "cwe": "CWE-352",
+      "reference": "https://cwe.mitre.org/data/definitions/352.html",
+      "severity": "MEDIUM",
+      "confidence": "MEDIUM",
+      "category": "REQUEST_INTEGRITY",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/checkout.php",
+      "line": 31,
+      "column": 27,
+      "end_line": 31,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "state-changing POST handler",
+      "evidence": "UPDATE coupon SET usi_rimanenti = usi_rimanenti - 1 WHERE codice = ?\");     $stmt->bind_param('s', $codice);     $stmt->execute();      $stmt = $db->prepare(\"INSERT INTO ordini (ut",
+      "reason": "A PHP POST handler changes state without an apparent anti-CSRF token check.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/checkout.php",
+        "line": 31,
+        "column": 27,
+        "end_line": 31
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Require a session-bound anti-CSRF token.",
+          "guidance": "Generate a cryptographically random token, store it in the session, include it in the form, and compare it with hash_equals before changing state. Use SameSite cookies as defense in depth.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "UPDATE coupon SET usi_rimanenti = usi_rimanenti - 1 WHERE codice = ?\");     $stmt->bind_param('s', $codice);     $stmt->execute();      $stmt = $db->prepare(\"INSERT INTO ordini (ut",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "From a separate test origin, submit the same POST without a CSRF token; the application must reject it before changing state."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "CSRF-001",
+      "name": "Missing CSRF Protection",
+      "cwe": "CWE-352",
+      "reference": "https://cwe.mitre.org/data/definitions/352.html",
+      "severity": "MEDIUM",
+      "confidence": "MEDIUM",
+      "category": "REQUEST_INTEGRITY",
+      "language": "PHP",
+      "file": "docker-apps/allyoucansnow/app/recensioni.php",
+      "line": 10,
+      "column": 23,
+      "end_line": 10,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "state-changing POST handler",
+      "evidence": "INSERT INTO recensioni (prodotto_id, autore, testo) VALUES (?, ?, ?)\"); $stmt->bind_param('iss', $prodotto_id, $autore, $commento); $stmt->execute();  header('Location: /prodotto.p",
+      "reason": "A PHP POST handler changes state without an apparent anti-CSRF token check.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/app/recensioni.php",
+        "line": 10,
+        "column": 23,
+        "end_line": 10
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Require a session-bound anti-CSRF token.",
+          "guidance": "Generate a cryptographically random token, store it in the session, include it in the form, and compare it with hash_equals before changing state. Use SameSite cookies as defense in depth.",
+          "preferred": true,
+          "patch_confidence": "HIGH",
+          "patch_risk": "MEDIUM",
+          "current": "INSERT INTO recensioni (prodotto_id, autore, testo) VALUES (?, ?, ?)\"); $stmt->bind_param('iss', $prodotto_id, $autore, $commento); $stmt->execute();  header('Location: /prodotto.p",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [
+        "From a separate test origin, submit the same POST without a CSRF token; the application must reject it before changing state."
+      ],
+      "patch_confidence": "HIGH",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "DOCKER-ROOT-001",
+      "name": "Container Runs as Root",
+      "cwe": "CWE-250",
+      "reference": "https://cwe.mitre.org/data/definitions/250.html",
+      "severity": "LOW",
+      "confidence": "MEDIUM",
+      "category": "CONFIGURATION",
+      "language": "Dockerfile",
+      "file": "docker-apps/allyoucansnow/Dockerfile",
+      "line": 2,
+      "column": 1,
+      "end_line": 2,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "final Docker stage",
+      "evidence": "FROM ubuntu:22.04",
+      "reason": "The final image stage does not switch to a non-root user.",
+      "patch_location": {
+        "file": "docker-apps/allyoucansnow/Dockerfile",
+        "line": 2,
+        "column": 1,
+        "end_line": 2
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Run the final image as an unprivileged user.",
+          "guidance": "Create a fixed UID/GID and add USER after the steps that need root.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "FROM ubuntu:22.04",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "DOCKER-ROOT-001",
+      "name": "Container Runs as Root",
+      "cwe": "CWE-250",
+      "reference": "https://cwe.mitre.org/data/definitions/250.html",
+      "severity": "LOW",
+      "confidence": "MEDIUM",
+      "category": "CONFIGURATION",
+      "language": "Dockerfile",
+      "file": "docker-apps/snowshop-db/Dockerfile",
+      "line": 1,
+      "column": 1,
+      "end_line": 1,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "final Docker stage",
+      "evidence": "FROM mariadb:10.6",
+      "reason": "The final image stage does not switch to a non-root user.",
+      "patch_location": {
+        "file": "docker-apps/snowshop-db/Dockerfile",
+        "line": 1,
+        "column": 1,
+        "end_line": 1
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Run the final image as an unprivileged user.",
+          "guidance": "Create a fixed UID/GID and add USER after the steps that need root.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "FROM mariadb:10.6",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    },
+    {
+      "rule_id": "DOCKER-ROOT-001",
+      "name": "Container Runs as Root",
+      "cwe": "CWE-250",
+      "reference": "https://cwe.mitre.org/data/definitions/250.html",
+      "severity": "LOW",
+      "confidence": "MEDIUM",
+      "category": "CONFIGURATION",
+      "language": "Dockerfile",
+      "file": "docker-apps/warehouse-api/Dockerfile",
+      "line": 1,
+      "column": 1,
+      "end_line": 1,
+      "end_column": null,
+      "function": null,
+      "source": null,
+      "flow": [],
+      "sink": "final Docker stage",
+      "evidence": "FROM python:3.11-slim",
+      "reason": "The final image stage does not switch to a non-root user.",
+      "patch_location": {
+        "file": "docker-apps/warehouse-api/Dockerfile",
+        "line": 1,
+        "column": 1,
+        "end_line": 1
+      },
+      "related_locations": [],
+      "remediations": [
+        {
+          "title": "Run the final image as an unprivileged user.",
+          "guidance": "Create a fixed UID/GID and add USER after the steps that need root.",
+          "preferred": true,
+          "patch_confidence": "MEDIUM",
+          "patch_risk": "MEDIUM",
+          "current": "FROM python:3.11-slim",
+          "machine_applicable": false
+        }
+      ],
+      "test_vectors": [],
+      "patch_confidence": "MEDIUM",
+      "patch_risk": "MEDIUM",
+      "tags": []
+    }
+  ],
+  "dependencies": [],
+  "dependency_vulnerabilities": [],
+  "errors": []
+}

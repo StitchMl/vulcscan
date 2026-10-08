@@ -11,11 +11,11 @@ Requires Python 3.11 or newer.
 ### Windows (PowerShell)
 
 ```text
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install .
+py -3.11 -m pip install --user .
 vulcscan C:\path\to\service --offline
 ```
+
+No virtual environment is required. If PowerShell cannot find `vulcscan` after installation, reopen the terminal so the per-user Python Scripts directory is reloaded into `PATH`.
 
 ### Linux
 
@@ -91,11 +91,11 @@ Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `P
 
 ## Test vectors
 
-Findings include non-destructive probes adapted to the rule, language, reported sink, file and line. Text reports print them under `Test vector`; JSON exposes `test_vectors`. SQL findings receive quote, boolean and paired-predicate probes; other families receive context-specific markers or verification commands. Use them only on systems you own or are authorized to test, preferably with disposable data.
+Findings include non-destructive proof probes computed from the recovered source-to-sink flow, language, syntax context, reported sink and platform. Text reports print them under `Test vector`; JSON exposes `test_vectors`. SQL findings recover query shape and output-column count to produce row-scope and read proofs; command, XSS, path, SSRF, deserialization, code-evaluation, upload and redirect findings use family-specific canary payloads. Use them only on systems you own or are authorized to test, preferably with disposable data.
 
 ## Patch guidance
 
-Every finding has a preferred fix and up to two alternatives with patch confidence and risk. VulcScan selects patch templates by vulnerability family and language, then includes the reported sink and flow context. PHP SQL findings reconstruct simple concatenated queries with their real variables and preserve `LIKE` wildcards. Python AST rewrites cover command argument lists, parameterized SQL, safe YAML parsing and unsafe boolean switches. Review-only templates never claim machine applicability; `--generate-diff` includes only verified exact rewrites.
+Every finding has a preferred fix and up to two alternatives with patch confidence and risk. For recoverable flows, VulcScan derives the patch from the actual variables, sink call, query or command shape, path base and framework API. SQL patches reconstruct simple concatenated queries across supported languages, bind the recovered values in order and preserve `LIKE` wildcards. Other rules receive concrete review patches for configuration, secrets, CSRF, races, sessions, uploads and password storage. A patch remains review-only when imports, types, framework state or policy cannot be proven; `--generate-diff` includes only verified exact rewrites.
 
 ## Dependencies and CVE lookup
 
@@ -135,4 +135,4 @@ python -m pip install -e ".[test]"
 python -m pytest
 ```
 
-The suite covers vulnerable and safe fixtures, malformed input, CRLF, paths with spaces, binary and oversized files, symlink handling, deterministic ordering, offline network denial, dependency formats, OSV range selection, exact diff safety and zero-AI/network-import audits. SQL and XSS matrices check vulnerable source-to-sink flows and safe counterexamples across the supported languages.
+The suite covers vulnerable and safe fixtures, malformed input, CRLF, paths with spaces, binary and oversized files, symlink handling, deterministic ordering, offline network denial, dependency formats, OSV range selection, exact diff safety and zero-AI/network-import audits. Guidance tests use unrelated synthetic services in Python, JavaScript, TypeScript, Java, C#, Go, Ruby and PHP and reject generic placeholders when flow symbols can be recovered.

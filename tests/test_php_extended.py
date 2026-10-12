@@ -67,6 +67,18 @@ def test_atomic_conditional_decrement_is_not_reported() -> None:
     assert "DB-RACE-001" not in ids
 
 
+def test_check_then_decrement_does_not_depend_on_example_field_names() -> None:
+    source = """<?php
+$q = $db->query('SELECT opaque_counter FROM reservations WHERE id = 7');
+$row = $q->fetch_assoc();
+if ($row['opaque_counter'] > 0) {
+  $db->query('UPDATE reservations SET opaque_counter = opaque_counter - 1 WHERE id = 7');
+}
+"""
+    ids = {item.rule_id for item in lexical_findings("service.php", "service.php", "PHP", source)}
+    assert "DB-RACE-001" in ids
+
+
 def test_scan_attaches_deterministic_test_vectors(tmp_path) -> None:
     (tmp_path / "v.php").write_text("<?php $q = $_GET['q']; $db->query('SELECT * FROM x WHERE y=' . $q);", encoding="utf-8")
     finding = next(item for item in scan_path(tmp_path, offline=True, cve=False).findings if item.rule_id == "PHP-SQL-001")

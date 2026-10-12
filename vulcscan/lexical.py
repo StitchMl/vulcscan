@@ -258,23 +258,24 @@ def _php_xss(text: str, add: Callable[..., None]) -> None:
 def _database_race(text: str, add: Callable[..., None]) -> None:
     if re.search(r"(?i)\b(?:begin(?:_transaction)?|start\s+transaction|for\s+update)\b", text):
         return
-    select = re.search(r"(?is)\bSELECT\b[^;]{0,600}\b(?P<field>[A-Za-z_]\w*(?:remaining|rimanenti|stock|balance|credit|uses)[A-Za-z_]*)\b[^;]*;", text)
-    if not select:
-        return
-    field = select.group("field")
-    tail = text[select.end():]
-    update = re.search(
-        rf"(?is)\bUPDATE\b[^;]{{0,1200}}\b{re.escape(field)}\b\s*=\s*\b{re.escape(field)}\b\s*-\s*1\b[^;]*;",
-        tail,
+    updates = re.finditer(
+        r"(?is)\bUPDATE\b[^;]{0,1200}?\b(?P<field>[A-Za-z_]\w*)\b\s*=\s*\b(?P=field)\b\s*-\s*1\b[^;]*;",
+        text,
     )
-    check = re.search(rf"(?is)\bif\s*\([^)]*\b{re.escape(field)}\b[^)]*>\s*0", tail)
-    if not update or not check or check.start() > update.start():
+    for update in updates:
+        field = update.group("field")
+        prelude_start = max(0, update.start() - 2400)
+        prelude = text[prelude_start:update.start()]
+        select = re.search(rf"(?is)\bSELECT\b[^;]{{0,800}}\b{re.escape(field)}\b[^;]*;", prelude)
+        check = re.search(rf"(?is)\bif\s*\([^)]*\b{re.escape(field)}\b[^)]*>\s*0", prelude)
+        if not select or not check or check.start() < select.start():
+            continue
+        absolute = update.start()
+        line = text.count("\n", 0, absolute) + 1
+        column = absolute - text.rfind("\n", 0, absolute)
+        evidence = update.group(0).replace("\n", " ")[:300]
+        add("DB-RACE-001", line, column, "database UPDATE", evidence)
         return
-    absolute = select.end() + update.start()
-    line = text.count("\n", 0, absolute) + 1
-    column = absolute - text.rfind("\n", 0, absolute)
-    evidence = update.group(0).replace("\n", " ")[:300]
-    add("DB-RACE-001", line, column, "database UPDATE", evidence)
 
 
 def _php_request_security(text: str, add: Callable[..., None]) -> None:

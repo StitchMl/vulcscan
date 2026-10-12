@@ -13,13 +13,13 @@ from pathlib import Path
 
 from .binary import analyze_binary, binary_kind, looks_like_binary
 from .dependencies import is_manifest_path, scan_dependencies
+from .guidance import enrich_finding
 from .javascript import analyze_javascript
 from .lexical import lexical_findings
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
 from .python_analysis import PythonProject
 from .source import decode_source
 from .structured import CATALOGS, analyze_structured
-from .rules import test_vectors_for
 
 DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -290,7 +290,7 @@ def scan(config: ScanConfig) -> ScanResult:
         except Exception as exc:  # noqa: BLE001 - one artifact must not abort the scan
             result.errors.append(ScanError(binary.relative, "binary-analysis", f"{exc.__class__.__name__}: {exc}"))
     for finding in result.findings:
-        finding.test_vectors = test_vectors_for(finding.rule_id)
+        enrich_finding(finding)
     _dependencies(config, root, discovery.manifests, result)
     minimum = SEVERITY_RANK[config.min_severity]
     result.findings = [item for item in result.findings if SEVERITY_RANK[item.severity] <= minimum]
@@ -324,9 +324,9 @@ def _dependencies(config: ScanConfig, root: Path, manifests: list[Path], result:
     result.errors.extend(errors)
     if not config.cve:
         return
-    from .cve import OSVClient, default_cache_path
+    from .cve import OSVClient
 
-    client = OSVClient(cache_path=config.cache_path or default_cache_path(), offline=config.offline)
+    client = OSVClient(offline=config.offline)
     result.dependency_vulnerabilities = client.query(result.dependencies)
     result.errors.extend(ScanError("", "cve", message) for message in client.errors)
 

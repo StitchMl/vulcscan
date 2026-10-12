@@ -271,7 +271,6 @@ class ScanConfig:
     max_file_size: int = 2 * 1024 * 1024
     patch_preview: bool = False
     generate_diff: Path | None = None
-    cache_path: Path | None = None
     only_files: frozenset[str] | None = None  # repository-relative paths; None scans everything
 
 

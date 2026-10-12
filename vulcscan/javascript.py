@@ -19,6 +19,7 @@ from .dataflow import (
     COMMAND,
     ENVIRONMENT,
     FILESYSTEM,
+    HTML_OUTPUT,
     HTTP_REQUEST,
     LOCAL,
     NORMALIZED,
@@ -87,6 +88,8 @@ _SANITIZER_CALLS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     (re.compile(r"(?<![\w$.])encodeURIComponent\s*\("), frozenset({HTTP_REQUEST, REDIRECT})),
     (re.compile(r"(?<![\w$.])(?:shellescape|escapeShellArg|shellQuote\s*\.\s*quote)\s*\("), frozenset({COMMAND})),
     (re.compile(r"(?<![\w$.])(?:mysql|connection|conn|pool|SqlString|sqlstring)\s*\.\s*escape\s*\("), frozenset({SQL})),
+    (re.compile(r"(?<![\w$.])(?:escapeHtml|htmlEscape)\s*\("), frozenset({HTML_OUTPUT})),
+    (re.compile(r"(?<![\w$])(?:he|entities)\s*\.\s*encode\s*\("), frozenset({HTML_OUTPUT})),
 ]
 _DB_RECEIVER = re.compile(r"(?i)(?:^|\.)(?:db|database|conn|connection|pool|client|knex|sequelize|mysql|pg|sql|prisma|trx|tx|tr|cursor)$")
 
@@ -630,7 +633,9 @@ class _Analyzer:
 
     def _generic_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         last = receiver.split(".")[-1]
-        if method in {"redirect", "location"} and last in {"res", "response", "reply", "ctx"}:
+        if method in {"send", "write", "end", "html"} and last in {"res", "response", "reply", "ctx"}:
+            self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
+        elif method in {"redirect", "location"} and last in {"res", "response", "reply", "ctx"}:
             index = -1 if method == "redirect" else 0
             self._emit_argument("OPEN-REDIRECT-001", f"{last}.{method}", call_start, open_index, index)
         elif method in {"sendFile", "download"} and last in {"res", "response"}:
@@ -638,7 +643,7 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
-        elif method in {"query", "execute", "raw", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}:
+        elif method in {"query", "execute", "raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}:
             arguments = self._arguments(open_index)
             if not arguments:
                 return

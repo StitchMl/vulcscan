@@ -128,6 +128,12 @@ def test_every_rule_has_deterministic_remediation_metadata() -> None:
         assert remediations[0].guidance
 
 
+def test_every_rule_has_a_safe_verification_vector() -> None:
+    from vulcscan.rules import test_vectors_for
+
+    assert not [rule_id for rule_id in RULES if not test_vectors_for(rule_id)]
+
+
 def test_generic_rules_return_the_same_order() -> None:
     source = 'debug = True\napi_key = "prod_live_1234567890abcdef"\n'
     first = _findings(source, "Python", "app.py")

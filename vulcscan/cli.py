@@ -113,8 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--patch-preview",
+        dest="patch_preview",
         action="store_true",
-        help="include deterministic current and suggested snippets in text output",
+        default=True,
+        help="include deterministic current and suggested snippets in text output (default)",
+    )
+    parser.add_argument(
+        "--no-patch-preview",
+        dest="patch_preview",
+        action="store_false",
+        help="hide current and suggested code snippets in text output",
     )
     parser.add_argument(
         "--generate-diff",

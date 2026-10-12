@@ -18,6 +18,7 @@ from .dataflow import (
     COMMAND,
     ENVIRONMENT,
     FILESYSTEM,
+    HTML_OUTPUT,
     HTTP_REQUEST,
     LOCAL,
     NORMALIZED,
@@ -45,7 +46,7 @@ from .rules import remediations_for, rule
 from .source import LineIndex, blank_comments, code_mask, comment_style, matching_paren, split_arguments
 
 # Argument selectors
-FIRST, SECOND, THIRD, LAST, ALL, REST, TOKEN = "first", "second", "third", "last", "all", "rest", "token"
+FIRST, SECOND, THIRD, LAST, ALL, AFTER_FIRST, REST, TOKEN = "first", "second", "third", "last", "all", "after_first", "rest", "token"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,7 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\bnew\s+(?:ObjectInputStream|XMLDecoder)\s*\(", "DESER", "Java native deserialization"),
             _sink(r"\b(?:new\s+URL|URI\s*\.\s*create|HttpRequest\s*\.\s*newBuilder)\s*\(", "SSRF", "outbound URL"),
             _sink(r"\b\w*[Rr]est[Tt]emplate\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|exchange)\s*\(", "SSRF", "RestTemplate request"),
+            _sink(r"\b\w*[Rr]esponse\s*\.\s*getWriter\s*\(\s*\)\s*\.\s*(?:print|println|printf|write)\s*\(", "XSS", "servlet response writer", ALL),
         ),
         "bare",
         True,
@@ -172,6 +174,7 @@ CATALOGS: dict[str, Catalog] = {
         sanitizers=(
             (re.compile(r"\b(?:Integer|Long|Short|Double|Float|Boolean)\s*\.\s*(?:parseInt|parseLong|parseShort|parseDouble|parseFloat|parseBoolean|valueOf)\s*\(|\bUUID\s*\.\s*fromString\s*\("), _NUMERIC),
             (re.compile(r"\bFilenameUtils\s*\.\s*getName\s*\(|\.\s*getFileName\s*\(\s*\)"), frozenset({FILESYSTEM})),
+            (re.compile(r"\b(?:Encode\s*\.\s*forHtml|HtmlUtils\s*\.\s*htmlEscape|StringEscapeUtils\s*\.\s*escapeHtml4)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\.\s*(?:normalize|toRealPath|getCanonicalPath|getCanonicalFile)\s*\("),
         parameters=re.compile(r"@(?:RequestParam|PathVariable|RequestBody|RequestHeader|RequestPart|CookieValue)\b(?:\s*\([^)]*\))?\s+(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)])"),
@@ -200,6 +203,8 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\b(?:new\s+(?:BinaryFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|ObjectStateFormatter)\s*\(\s*\)|\w*[Ff]ormatter)\s*\.\s*Deserialize\s*\(", "DESER", "native .NET deserialization", requires=r"\b(?:BinaryFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|ObjectStateFormatter)\b"),
             _sink(r"\b\w*(?:[Cc]lient|[Hh]ttp)\w*\s*\.\s*(?:GetAsync|PostAsync|PutAsync|DeleteAsync|GetStringAsync|GetStreamAsync|GetByteArrayAsync|GetFromJsonAsync)\s*\(", "SSRF", "HttpClient request"),
             _sink(r"\bWebRequest\s*\.\s*Create(?:Http)?\s*\(", "SSRF", "WebRequest.Create"),
+            _sink(r"\b(?:Response\s*\.\s*)?Write(?:Async)?\s*\(", "XSS", "HTTP response writer"),
+            _sink(r"\bHtml\s*\.\s*Raw\s*\(", "XSS", "Html.Raw"),
         ),
         "bare",
         True,
@@ -207,6 +212,7 @@ CATALOGS: dict[str, Catalog] = {
         sanitizers=(
             (re.compile(r"\b(?:int|long|short|double|float|decimal|bool|Guid)\s*\.\s*(?:Parse|TryParse)\s*\(|\bConvert\s*\.\s*To(?:Int\d+|Double|Decimal|Boolean)\s*\("), _NUMERIC),
             (re.compile(r"\bPath\s*\.\s*GetFileName\s*\("), frozenset({FILESYSTEM})),
+            (re.compile(r"\b(?:HtmlEncoder\s*\.\s*Default\s*\.\s*Encode|HttpUtility\s*\.\s*HtmlEncode)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\bPath\s*\.\s*GetFullPath\s*\("),
         parameters=re.compile(r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*\))?\]\s*[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)=])"),
@@ -224,13 +230,15 @@ CATALOGS: dict[str, Catalog] = {
         (
             _sink(r"\bexec\s*\.\s*Command\s*\(", "CMD", "exec.Command", FIRST, multi_argument_safe=True),
             _sink(r"\bexec\s*\.\s*CommandContext\s*\(", "CMD", "exec.CommandContext", SECOND, multi_argument_safe=True),
-            _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x|[Cc]onn|[Ss]tmt)\s*\.\s*(?:Query|QueryRow|Exec|Prepare|Queryx|QueryRowx|MustExec)\s*\(", "SQL", "database/sql query"),
+            _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x|[Cc]onn|[Ss]tmt)\s*\.\s*(?:Query|QueryRow|Exec|Prepare|Queryx|QueryRowx|MustExec|Raw)\s*\(", "SQL", "database query"),
             _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x|[Cc]onn)\s*\.\s*(?:QueryContext|QueryRowContext|ExecContext|PrepareContext|Select|Get)\s*\(", "SQL", "database/sql query", SECOND),
             _sink(r"\b(?:os\s*\.\s*(?:Open|OpenFile|Create|Remove|RemoveAll|ReadFile|WriteFile|Mkdir|MkdirAll|ReadDir)|ioutil\s*\.\s*(?:ReadFile|WriteFile))\s*\(", "PATH", "os file access"),
             _sink(r"\bhttp\s*\.\s*ServeFile\s*\(", "PATH", "http.ServeFile", THIRD),
             _sink(r"\bhttp\s*\.\s*(?:Get|Post|Head|PostForm)\s*\(", "SSRF", "net/http request"),
             _sink(r"\bhttp\s*\.\s*NewRequest\s*\(", "SSRF", "http.NewRequest", SECOND),
             _sink(r"\bhttp\s*\.\s*NewRequestWithContext\s*\(", "SSRF", "http.NewRequestWithContext", THIRD),
+            _sink(r"\bfmt\s*\.\s*Fprint(?:f|ln)?\s*\(", "XSS", "HTTP response writer", AFTER_FIRST, requires=r"\bfmt\s*\.\s*Fprint(?:f|ln)?\s*\(\s*(?:w|writer|c\s*\.\s*Writer|ctx\s*\.\s*Writer)\s*,"),
+            _sink(r"\btemplate\s*\.\s*HTML\s*\(", "XSS", "template.HTML trust bypass"),
         ),
         "bare",
         True,
@@ -238,6 +246,7 @@ CATALOGS: dict[str, Catalog] = {
         sanitizers=(
             (re.compile(r"\bstrconv\s*\.\s*(?:Atoi|ParseInt|ParseUint|ParseFloat|ParseBool)\s*\(|\buuid\s*\.\s*Parse\s*\("), _NUMERIC),
             (re.compile(r"\bfilepath\s*\.\s*Base\s*\("), frozenset({FILESYSTEM})),
+            (re.compile(r"\bhtml\s*\.\s*EscapeString\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\bfilepath\s*\.\s*(?:Clean|Abs|Join)\s*\("),
         function_header=re.compile(r"\bfunc\b"),
@@ -266,6 +275,8 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\b(?:YAML|Psych)\s*\.\s*unsafe_load\s*\(", "DESER", "YAML.unsafe_load"),
             _sink(r"\b(?:YAML|Psych)\s*\.\s*load\s*\(", "DESER", "YAML.load (unsafe before Psych 4)", certainty=Confidence.MEDIUM),
             _sink(r"\b(?:URI\s*\.\s*open|Net::HTTP\s*\.\s*(?:get|get_response|post_form)|HTTParty\s*\.\s*(?:get|post)|Faraday\s*\.\s*(?:get|post)|RestClient\s*\.\s*(?:get|post))\s*\(", "SSRF", "outbound HTTP request"),
+            _sink(r"(?<![\w.:])raw\s*\(", "XSS", "Rails raw HTML"),
+            _sink(r"(?<![\w.:])render\s+html\s*:\s*", "XSS", "Rails HTML response", REST),
         ),
         "bare",
         False,
@@ -275,6 +286,7 @@ CATALOGS: dict[str, Catalog] = {
             (re.compile(r"\bShellwords\s*\.\s*(?:escape|shellescape)\s*\(|\.\s*shellescape\b"), frozenset({COMMAND})),
             (re.compile(r"\bFile\s*\.\s*basename\s*\("), frozenset({FILESYSTEM})),
             (re.compile(r"\b(?:sanitize_sql\w*|quote)\s*\("), frozenset({SQL})),
+            (re.compile(r"\b(?:ERB::Util\s*\.\s*html_escape|CGI\s*\.\s*escapeHTML)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\bFile\s*\.\s*(?:expand_path|realpath)\s*\("),
         interpolation=re.compile(r"#\{([^}]*)\}"),
@@ -865,6 +877,8 @@ class _Engine:
     def _select(self, sink: Sink, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
         if sink.argument == ALL:
             return spans
+        if sink.argument == AFTER_FIRST:
+            return spans[1:]
         if sink.argument == LAST:
             return spans[-1:]
         index = {FIRST: 0, SECOND: 1, THIRD: 2}.get(sink.argument, 0)

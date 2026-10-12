@@ -232,6 +232,11 @@ def test_cli_accepts_color_mode() -> None:
     assert args.color == "never"
 
 
+def test_cli_shows_patch_preview_by_default() -> None:
+    assert cli.build_parser().parse_args(["."]).patch_preview is True
+    assert cli.build_parser().parse_args([".", "--no-patch-preview"]).patch_preview is False
+
+
 def test_cli_network_is_opt_in() -> None:
     default = cli.build_parser().parse_args(["."])
     update = cli.build_parser().parse_args([".", "--update-cve"])

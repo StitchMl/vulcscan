@@ -121,7 +121,8 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"(?<![\w>$:\\])(?:mysqli_query|mysql_query|pg_query|sqlite_query|mysqli_multi_query)\s*\(", "SQL", "SQL query function", LAST),
             _sink(r"(?<![\w>$:\\])(?:eval|create_function)\s*\(", "CODE", "PHP code evaluation", LAST),
             _sink(r"(?<![\w>$:\\])(?:fopen|file_get_contents|file_put_contents|unlink|readfile|file|rmdir|mkdir|opendir|scandir|highlight_file|show_source)\s*\(", "PATH", "filesystem API"),
-            _sink(r"(?<![\w>$:\\])(?:copy|rename|symlink|move_uploaded_file)\s*\(", "PATH", "filesystem API", ALL),
+            _sink(r"(?<![\w>$:\\])(?:copy|rename|symlink)\s*\(", "PATH", "filesystem API", ALL),
+            _sink(r"(?<![\w>$:\\])move_uploaded_file\s*\(", "PATH", "upload destination", SECOND),
             _sink(r"(?<![\w>$:\\])(?:include|include_once|require|require_once)\b\s*\(?", "PATH", "file inclusion", REST),
             _sink(r"(?<![\w>$:\\])unserialize\s*\(", "DESER", "unserialize"),
             _sink(r"(?<![\w>$:\\])curl_init\s*\(", "SSRF", "curl_init"),
@@ -135,6 +136,7 @@ CATALOGS: dict[str, Catalog] = {
             (re.compile(r"(?<![\w>$])(?:intval|floatval|boolval|abs)\s*\(|\(\s*(?:int|float|bool)\s*\)"), _NUMERIC),
             (re.compile(r"(?<![\w>$])escapeshellarg\s*\("), frozenset({COMMAND})),
             (re.compile(r"(?<![\w>$])basename\s*\("), frozenset({FILESYSTEM})),
+            (re.compile(r"(?<![\w>$])(?:md5|sha1|hash)\s*\("), frozenset({FILESYSTEM})),
             (re.compile(r"->\s*quote\s*\(|(?<![\w>$])(?:mysqli_real_escape_string|pg_escape_literal|pg_escape_string)\s*\("), frozenset({SQL})),
         ),
         normalizers=re.compile(r"(?<![\w>$])realpath\s*\("),
@@ -786,7 +788,11 @@ class _Engine:
         kind = self.catalog.variables
         if kind == "dollar":
             # Variables expand inside double quotes but not inside single quotes.
-            searchable = _mask_single_quoted(text)
+            searchable_chars = list(_mask_single_quoted(text))
+            for position, character in enumerate(mask):
+                if character == " " and self.mask[start + position : start + position + 1] != " ":
+                    searchable_chars[position] = " "
+            searchable = "".join(searchable_chars)
             names.extend(re.findall(r"\$\{?([A-Za-z_]\w*)", searchable))
             names = [name for name in names if not re.fullmatch(r"_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV)|args|env|Request|this", name)]
         elif kind == "percent":

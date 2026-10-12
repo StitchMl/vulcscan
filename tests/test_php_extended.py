@@ -79,3 +79,54 @@ def test_active_svg_is_scanned(tmp_path) -> None:
     result = scan_path(tmp_path, offline=True, cve=False)
     assert "SVG-ACTIVE-001" in {item.rule_id for item in result.findings}
     assert result.metadata["files_analyzed"] == 1
+
+
+def test_php_upload_uses_content_check_not_client_mime() -> None:
+    unsafe = "<?php $type = $_FILES['f']['type']; if ($type === 'image/png') { move_uploaded_file($_FILES['f']['tmp_name'], '/srv/' . basename($_FILES['f']['name'])); }"
+    safe = "<?php $mime = finfo_file(finfo_open(FILEINFO_MIME_TYPE), $_FILES['f']['tmp_name']); move_uploaded_file($_FILES['f']['tmp_name'], '/srv/generated.png');"
+    assert "UPLOAD-MIME-001" in {item.rule_id for item in lexical_findings("upload.php", "upload.php", "PHP", unsafe)}
+    assert "UPLOAD-MIME-001" not in {item.rule_id for item in lexical_findings("upload.php", "upload.php", "PHP", safe)}
+
+
+def test_php_generated_or_basename_upload_path_is_not_traversal() -> None:
+    basename_upload = "<?php $name = basename($_FILES['f']['name']); move_uploaded_file($_FILES['f']['tmp_name'], '/srv/' . $name);"
+    digest_path = "<?php $url = $_GET['url']; $name = md5($url) . '.png'; file_put_contents('/srv/' . $name, 'x');"
+    assert "PHP-PATH-001" not in {item.rule_id for item in analyze_structured("upload.php", basename_upload, "PHP")}
+    assert "PHP-PATH-001" not in {item.rule_id for item in analyze_structured("import.php", digest_path, "PHP")}
+
+
+def test_php_state_change_without_csrf_and_session_rotation() -> None:
+    source = """<?php
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  $db->query("UPDATE users SET enabled=1");
+  $_SESSION['admin'] = true;
+}
+// password login
+"""
+    ids = {item.rule_id for item in lexical_findings("admin.php", "admin.php", "PHP", source)}
+    assert {"CSRF-001", "SESSION-FIXATION-001"} <= ids
+
+
+def test_php_csrf_and_session_rotation_suppress_findings() -> None:
+    source = """<?php
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && hash_equals($_SESSION['csrf'], $_POST['csrf'])) {
+  $db->query("UPDATE users SET enabled=1");
+  session_regenerate_id(true);
+  $_SESSION['admin'] = true;
+}
+// password login
+"""
+    ids = {item.rule_id for item in lexical_findings("admin.php", "admin.php", "PHP", source)}
+    assert "CSRF-001" not in ids
+    assert "SESSION-FIXATION-001" not in ids
+
+
+def test_sql_cleartext_password_seed() -> None:
+    source = "INSERT INTO admin_users (username, password) VALUES ('admin', 'Secret123!');"
+    ids = {item.rule_id for item in lexical_findings("init.sql", "init.sql", "SQL", source)}
+    assert "CLEARTEXT-PASSWORD-001" in ids
+
+
+def test_php_remote_include_configuration() -> None:
+    ids = {item.rule_id for item in lexical_findings("php.ini", "php.ini", "Configuration", "allow_url_include = On\n")}
+    assert "PHP-URL-INCLUDE-001" in ids

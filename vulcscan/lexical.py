@@ -156,6 +156,14 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
             continue
         if not example:
             _secret(line, number, language, add)
+        if language == "Shell":
+            password = re.search(r"(?i)\b(?:mysql|mysqldump)\b[^\n]*\s-p(?:assword)?(?:=)?\s*['\"]?([^\s'\"]{4,})", line)
+            if password:
+                add("SECRET-001", number, password.start(1) + 1, "database CLI password", _redact(line, password.group(1)), Confidence.HIGH)
+        if language == "Configuration":
+            remote_include = re.search(r"(?i)^\s*allow_url_include\s*=\s*(?:on|1|true)\s*$", line)
+            if remote_include:
+                add("PHP-URL-INCLUDE-001", number, remote_include.start() + 1, "allow_url_include", line)
         if language in _TLS_LANGUAGES:
             for pattern in _TLS_PATTERNS:
                 match = pattern.search(line)
@@ -205,6 +213,9 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language == "PHP":
         _php_xss(text, add)
         _database_race(text, add)
+        _php_request_security(text, add)
+    if language == "SQL":
+        _sql_cleartext_password(text, add)
     return findings
 
 
@@ -264,6 +275,53 @@ def _database_race(text: str, add: Callable[..., None]) -> None:
     column = absolute - text.rfind("\n", 0, absolute)
     evidence = update.group(0).replace("\n", " ")[:300]
     add("DB-RACE-001", line, column, "database UPDATE", evidence)
+
+
+def _php_request_security(text: str, add: Callable[..., None]) -> None:
+    upload = re.search(r"(?is)move_uploaded_file\s*\(", text)
+    client_mime = re.search(r"(?is)\$_FILES\s*\[[^\]]+\]\s*\[\s*['\"]type['\"]\s*\]", text)
+    content_check = re.search(r"(?i)\b(?:finfo_file|mime_content_type|getimagesize|exif_imagetype)\s*\(", text)
+    if upload and client_mime and not content_check:
+        line = text.count("\n", 0, upload.start()) + 1
+        column = upload.start() - text.rfind("\n", 0, upload.start())
+        evidence = text[upload.start() : text.find(";", upload.start()) + 1].replace("\n", " ")[:300]
+        add("UPLOAD-MIME-001", line, column, "move_uploaded_file", evidence)
+
+    state_change = re.search(
+        r"(?is)move_uploaded_file\s*\(|(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)[^;]{0,800}",
+        text,
+    )
+    post_handler = re.search(r"(?is)\$_SERVER\s*\[\s*['\"]REQUEST_METHOD['\"]\s*\].{0,80}POST|\$_POST\b", text)
+    csrf_check = re.search(r"(?i)\b(?:csrf|xsrf|anti_forgery|request_token)\b|hash_equals\s*\(", text)
+    if state_change and post_handler and not csrf_check:
+        line = text.count("\n", 0, state_change.start()) + 1
+        column = state_change.start() - text.rfind("\n", 0, state_change.start())
+        evidence = text[state_change.start() : state_change.start() + 180].replace("\n", " ")
+        add("CSRF-001", line, column, "state-changing POST handler", evidence)
+
+    authenticated = re.search(r"(?is)\$_SESSION\s*\[[^\]]+\]\s*=", text)
+    credential_check = re.search(r"(?i)password|passwd|credential|login", text)
+    if authenticated and credential_check and not re.search(r"(?i)\bsession_regenerate_id\s*\(", text):
+        line = text.count("\n", 0, authenticated.start()) + 1
+        column = authenticated.start() - text.rfind("\n", 0, authenticated.start())
+        evidence = text[authenticated.start() : text.find(";", authenticated.start()) + 1].replace("\n", " ")[:300]
+        add("SESSION-FIXATION-001", line, column, "authenticated session assignment", evidence)
+
+
+def _sql_cleartext_password(text: str, add: Callable[..., None]) -> None:
+    pattern = re.compile(
+        r"(?is)\bINSERT\s+INTO\s+([A-Za-z_]\w*)\s*\((?P<columns>[^)]*\b(?:password|passwd|pwd)\b[^)]*)\)\s*VALUES\s*(?P<values>[^;]+);"
+    )
+    for match in pattern.finditer(text):
+        values = match.group("values")
+        if re.search(r"(?i)\b(?:MD5|SHA1|SHA2|CRYPT|PASSWORD_HASH|BCRYPT|ARGON2)\s*\(", values):
+            continue
+        if not re.search(r"['\"][^'\"]{4,}['\"]", values):
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        column = match.start() - text.rfind("\n", 0, match.start())
+        evidence = re.sub(r"(['\"])[^'\"]{4,}\1", r"\1<redacted>\1", match.group(0).replace("\n", " "))[:300]
+        add("CLEARTEXT-PASSWORD-001", line, column, "SQL seed password", evidence)
 
 
 def _private_keys(lines: list[str], add: Callable[..., None]) -> None:

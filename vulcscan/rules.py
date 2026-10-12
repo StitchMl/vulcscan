@@ -390,6 +390,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             Confidence.MEDIUM,
             "A route loads a resource by a request identifier without an ownership or authorization scope in the same handler.",
         ),
+        RuleDefinition(
+            "ORM-EMPTY-AUTH-001",
+            "Unchecked Empty ORM Authorization Result",
+            "CWE-863",
+            "AUTH",
+            Severity.HIGH,
+            Confidence.HIGH,
+            "An ORM lookup can return no row without an error, then a zero-value identity reaches a privileged database operation.",
+        ),
     ):
         rules[definition.rule_id] = definition
     return rules
@@ -599,6 +608,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "Include the owner, tenant or ACL predicate in the database lookup itself, then return 404 or 403 when no scoped row exists.",
             Confidence.MEDIUM,
             "MEDIUM",
+        ),
+    ),
+    "ORM-EMPTY-AUTH-001": (
+        Advice(
+            "Reject an empty authorization lookup before using the model.",
+            "For GORM Find, require RowsAffected greater than zero before reading identity fields. First or Take can instead handle gorm.ErrRecordNotFound explicitly.",
+            Confidence.HIGH,
+            "LOW",
         ),
     ),
     "WEAK-RANDOM-001": (
@@ -863,5 +880,6 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
         "AUTHZ-SCOPE-001": ["Create one disposable resource as account A, then request the same identifier as account B. Any resource content or metadata in B's response proves missing object-level authorization."],
+        "ORM-EMPTY-AUTH-001": ["Use a random nonexistent session token on the reported state-changing request. The service must reject it before inserting, updating or deleting a row; verify that no row with an empty owner or principal was created."],
     }
     return vectors.get(family, verification.get(rule_id, []))

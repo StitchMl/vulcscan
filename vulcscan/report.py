@@ -177,7 +177,7 @@ def _render_finding(number: int, finding: Finding, patch_preview: bool, color: b
     ]
     lines.extend(_wrapped(_where(finding.location), width, first="       ", rest="       "))
     lines.extend((f"       Confidence {finding.confidence.value}  |  Rule {finding.rule_id}", ""))
-    sink_line = f"{finding.evidence[:100]}  @ {finding.location.file}:{finding.location.line}"
+    sink_line = f"{finding.evidence[:240]}  @ {finding.location.file}:{finding.location.line}"
     lines.append(_section("TRACE", color))
     if finding.source is not None:
         source_step = next((step for step in finding.flow if step.kind == "SOURCE"), None)
@@ -225,7 +225,7 @@ def _render_finding(number: int, finding: Finding, patch_preview: bool, color: b
 
 
 def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
+    return text if len(text) <= limit else text[: max(1, limit - 3)] + "..."
 
 
 def _finding_index(findings: list[Finding], width: int, color: bool) -> list[str]:

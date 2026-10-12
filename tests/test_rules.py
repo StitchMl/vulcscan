@@ -384,6 +384,150 @@ router.get('/file/:id', async (req, res) => {
     assert "AUTHZ-SCOPE-001" not in _rule_ids(safe, language="JavaScript", name="files.js")
 
 
+def test_gorm_find_identity_requires_zero_row_guard_before_mutation() -> None:
+    unsafe = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func add(c *Context) {
+    cookie, _ := c.Cookie("session")
+    var identity LoginIdentity
+    lookup := db.Where("token = ?", cookie).Find(&identity)
+    if lookup.Error != nil { return }
+    db.Create(&Record{OwnerID: identity.AccountID})
+}
+'''
+    safe = unsafe.replace(
+        "if lookup.Error != nil { return }",
+        "if lookup.Error != nil || lookup.RowsAffected == 0 { return }",
+    )
+
+    assert "ORM-EMPTY-AUTH-001" in _rule_ids(unsafe, language="Go", name="handler.go")
+    assert "ORM-EMPTY-AUTH-001" not in _rule_ids(safe, language="Go", name="handler.go")
+
+
+def test_gorm_find_identity_accepts_direct_field_guard() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func add(cookie string) {
+    var principal Principal
+    result := db.Where("token = ?", cookie).Find(&principal)
+    if result.Error != nil || principal.UserID == 0 { return }
+    db.Create(&Record{OwnerID: principal.UserID})
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" not in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_optional_non_identity_lookup_is_not_authorization_finding() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func show(slug string) {
+    var profile Profile
+    result := db.Where("slug = ?", slug).Find(&profile)
+    if result.Error != nil { return }
+    log.Print(profile.Name)
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" not in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_first_with_terminating_error_guard_is_safe() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func add(c *Context) {
+    token := c.GetHeader("Authorization")
+    var row LoginToken
+    result := db.Where("token = ?", token).First(&row)
+    if result.Error != nil { return }
+    db.Create(&Record{TenantID: row.TenantID})
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" not in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_first_without_terminating_error_guard_is_reported() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func add(c *Context) {
+    token := c.GetHeader("Authorization")
+    var row LoginToken
+    result := db.Where("token = ?", token).First(&row)
+    if result.Error != nil { log.Print(result.Error) }
+    db.Create(&Record{TenantID: row.TenantID})
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_find_into_slice_is_not_identity_finding() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func list(c *Context) {
+    tenant := c.Param("tenant")
+    var identities []Identity
+    result := db.Where("tenant = ?", tenant).Find(&identities)
+    if result.Error != nil { return }
+    for _, identity := range identities { log.Print(identity.UserID) }
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" not in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_zero_value_identity_used_for_scoped_read_is_reported() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func list(c *Context) {
+    token, _ := c.Cookie("session")
+    var auth AuthRecord
+    result := db.Where("token = ?", token).Find(&auth)
+    if result.Error != nil { return }
+    var records []Record
+    db.Where("owner_id = ?", auth.UserID).Find(&records)
+}
+'''
+
+    assert "ORM-EMPTY-AUTH-001" in _rule_ids(source, language="Go", name="handler.go")
+
+
+def test_gorm_auth_state_detection_does_not_depend_on_model_names() -> None:
+    source = '''
+package service
+import "gorm.io/gorm"
+var db *gorm.DB
+func apply(c *Context) {
+    key := c.GetHeader("X-Service-Key")
+    var x Zed
+    q := db.Where("key = ?", key).Find(&x)
+    if q.Error != nil { return }
+    db.Save(&Thing{OwnerID: x.Subject})
+}
+'''
+
+    findings = _findings(source, "Go", "renamed.go")
+    finding = next(item for item in findings if item.rule_id == "ORM-EMPTY-AUTH-001")
+
+    assert finding.confidence is Confidence.HIGH
+    assert finding.location.line == 8
+
+
 def test_python_interprocedural_argument_flow_reaches_sink() -> None:
     source = '''
 from flask import request

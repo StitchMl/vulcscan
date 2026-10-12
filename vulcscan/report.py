@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import difflib
 import json
+import shutil
+import textwrap
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -31,6 +33,7 @@ _ANSI = {
     "yellow": "\x1b[33m",
     "blue": "\x1b[34m",
     "cyan": "\x1b[36m",
+    "green": "\x1b[32m",
 }
 _SEVERITY_COLOR = {
     "CRITICAL": "bright_red",
@@ -114,46 +117,129 @@ def _field(text: str, value: str, color: bool) -> str:
     return f"      {_label(text + ':', color)} {value}"
 
 
-def _render_finding(number: int, finding: Finding, patch_preview: bool, color: bool) -> list[str]:
+def _display_width(width: int | None) -> int:
+    detected = width if width is not None else shutil.get_terminal_size((110, 24)).columns
+    return min(120, max(78, detected))
+
+
+def _wrapped(text: str, width: int, *, first: str = "    ", rest: str | None = None) -> list[str]:
+    continuation = first if rest is None else rest
+    paragraphs = str(text).splitlines() or [""]
+    lines: list[str] = []
+    for index, paragraph in enumerate(paragraphs):
+        prefix = first if index == 0 else continuation
+        if not paragraph:
+            lines.append(prefix.rstrip())
+            continue
+        lines.extend(
+            textwrap.wrap(
+                paragraph,
+                width=width,
+                initial_indent=prefix,
+                subsequent_indent=continuation,
+                break_long_words=False,
+                break_on_hyphens=False,
+                replace_whitespace=False,
+            )
+            or [prefix]
+        )
+    return lines
+
+
+def _section(title: str, color: bool, detail: str = "") -> str:
+    heading = _paint(title, "cyan", color)
+    suffix = f"  {_paint(detail, 'dim', color)}" if detail else ""
+    return f"  {heading}{suffix}"
+
+
+def _vector_lines(number: int, vector: str, width: int, color: bool) -> list[str]:
+    title, separator, body = vector.partition(":")
+    if not separator or not title.strip().casefold().endswith("proof"):
+        title, body = f"Probe {number}", vector
+    lines = [f"    {_paint(f'{number}. {title.strip()}', 'yellow', color)}"]
+    lines.extend(_wrapped(body.strip(), width, first="       ", rest="       "))
+    return lines
+
+
+def _code_block(label: str, code: str, width: int, color: bool, style: str) -> list[str]:
+    lines = [f"    {_paint(label, 'dim', color)}"]
+    for source_line in code.splitlines() or [""]:
+        wrapped = _wrapped(source_line, width, first="      ", rest="      ")
+        lines.extend(_paint(line, style, color) for line in wrapped)
+    return lines
+
+
+def _render_finding(number: int, finding: Finding, patch_preview: bool, color: bool, width: int) -> list[str]:
+    padded_severity = f"{finding.severity.value:<8}"
     lines = [
-        f"{_paint(f'F-{number:03d}', 'bold', color)}  [{_severity(finding.severity.value, color)}] "
-        f"{_paint(finding.name, 'bold', color)} ({finding.cwe})",
-        _field("Location", _where(finding.location), color),
-        _field("Severity", f"{_severity(finding.severity.value, color)}    Confidence: {finding.confidence.value}    Rule: {finding.rule_id}", color),
+        f"{_paint(f'F-{number:03d}', 'bold', color)}  {_severity(padded_severity, color)} "
+        f"{_paint(finding.name, 'bold', color)}  {_paint(finding.cwe, 'dim', color)}",
     ]
+    lines.extend(_wrapped(_where(finding.location), width, first="       ", rest="       "))
+    lines.extend((f"       Confidence {finding.confidence.value}  |  Rule {finding.rule_id}", ""))
     sink_line = f"{finding.evidence[:100]}  @ {finding.location.file}:{finding.location.line}"
+    lines.append(_section("TRACE", color))
     if finding.source is not None:
         source_step = next((step for step in finding.flow if step.kind == "SOURCE"), None)
         code = source_step.code[:80] if source_step else ""
-        lines.append(_field("Source", f"{code}  @ {finding.source.file}:{finding.source.line}".rstrip(), color))
-        lines.append(_field("Sink", sink_line, color))
+        lines.extend(_wrapped(f"SOURCE  {code}  @ {finding.source.file}:{finding.source.line}".rstrip(), width, first="    ", rest="            "))
         middle = [step for step in finding.flow if step.kind == "PROPAGATION"]
         if middle:
-            lines.append(_field("Flow", " -> ".join(f"line {step.location.line}" for step in middle[:6]) + " -> sink", color))
+            flow = " -> ".join(f"line {step.location.line}" for step in middle[:6])
+            lines.extend(_wrapped(f"VIA     {flow}", width, first="    ", rest="            "))
+        lines.extend(_wrapped(f"SINK    {sink_line}", width, first="    ", rest="            "))
     else:
-        lines.append(_field("Code", sink_line, color))
-    lines.append(_field("Why", finding.reason, color))
-    lines.append(_field("Reference", f"https://cwe.mitre.org/data/definitions/{finding.cwe.removeprefix('CWE-')}.html", color))
-    lines.append(_field("Patch at", _where(finding.patch_location), color))
+        lines.extend(_wrapped(f"CODE    {sink_line}", width, first="    ", rest="            "))
     for location in finding.related_locations[:3]:
-        lines.append(f"      Related:    {_where(location)}")
-    for index, vector in enumerate(finding.test_vectors[:3], 1):
-        label = "Test vector:" if index == 1 else "            "
-        lines.append(_field(label.rstrip(":"), vector, color) if index == 1 else f"                   {vector}")
+        lines.extend(_wrapped(f"RELATED {_where(location)}", width, first="    ", rest="            "))
+    lines.extend(("", _section("RISK", color)))
+    lines.extend(_wrapped(finding.reason, width))
+    if finding.test_vectors:
+        lines.extend(("", _section("VERIFY", color, f"{min(3, len(finding.test_vectors))} probes")))
+        for index, vector in enumerate(finding.test_vectors[:3], 1):
+            lines.extend(_vector_lines(index, vector, width, color))
     preferred = next((item for item in finding.remediations if item.preferred), None)
     if preferred is not None:
-        lines.append(_field("Patch", preferred.title, color))
-        lines.append(f"                  {preferred.guidance}")
-        lines.append(f"                  Patch confidence: {preferred.patch_confidence.value}   Patch risk: {preferred.patch_risk}")
+        mode = "exact" if preferred.machine_applicable else "review"
+        lines.extend(("", _section("FIX", color, f"confidence {preferred.patch_confidence.value} | risk {preferred.patch_risk} | {mode}")))
+        lines.extend(_wrapped(preferred.title, width))
+        lines.extend(_wrapped(preferred.guidance, width))
         if patch_preview and preferred.suggested:
-            current = (preferred.current or "").replace("\n", "\n                  ")
-            suggested = preferred.suggested.replace("\n", "\n                  ")
-            lines.append(f"      Current:    {current}")
-            lines.append(f"      Suggested:  {suggested}" + ("" if preferred.machine_applicable else "   (review before applying)"))
+            if preferred.current:
+                lines.extend(_code_block("CURRENT", preferred.current, width, color, "red"))
+            lines.extend(_code_block("SUGGESTED", preferred.suggested, width, color, "green"))
         if patch_preview:
-            for alternative in [item for item in finding.remediations if not item.preferred][:2]:
-                lines.append(f"      Alternative: {alternative.title}")
-    lines.append("")
+            alternatives = [item for item in finding.remediations if not item.preferred][:2]
+            if alternatives:
+                lines.append(f"    {_paint('ALTERNATIVES', 'dim', color)}")
+                for alternative in alternatives:
+                    lines.extend(_wrapped(alternative.title, width, first="      - ", rest="        "))
+    reference = f"https://cwe.mitre.org/data/definitions/{finding.cwe.removeprefix('CWE-')}.html"
+    lines.extend(("", _section("REFERENCE", color)))
+    lines.extend(_wrapped(reference, width))
+    patch_location = _where(finding.patch_location)
+    if patch_location and patch_location != _where(finding.location):
+        lines.extend(_wrapped(f"Patch location: {patch_location}", width))
+    lines.extend(("", _paint("-" * min(width, 120), "dim", color), ""))
+    return lines
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
+
+
+def _finding_index(findings: list[Finding], width: int, color: bool) -> list[str]:
+    location_width = max(28, width - 62)
+    lines = [
+        _paint("PRIORITY INDEX", "cyan", color),
+        f"{'ID':<6} {'SEVERITY':<9} {'CONF':<6} {'TYPE':<30} LOCATION",
+    ]
+    for number, finding in enumerate(findings, 1):
+        severity = _severity(f"{finding.severity.value:<9}", color)
+        name = _clip(finding.name, 29)
+        location = _clip(_where(finding.location), location_width)
+        lines.append(f"F-{number:03d}  {severity} {finding.confidence.value:<6} {name:<30} {location}")
+    lines.extend(("", _paint("DETAILS", "cyan", color), _paint("-" * width, "dim", color)))
     return lines
 
 
@@ -205,6 +291,7 @@ def render_text(
     *,
     patch_preview: bool = True,
     color: bool = False,
+    width: int | None = None,
 ) -> str:
     findings = _sorted_findings(result, minimum_severity)
     vulnerabilities = _sorted_vulnerabilities(result, minimum_severity)
@@ -212,25 +299,26 @@ def render_text(
     duration = metadata.get("scan_duration")
     duration_text = f"{duration:.2f}s" if isinstance(duration, (int, float)) else "unknown"
     high_confidence = sum(item.confidence.value == "HIGH" for item in findings)
-    lines = [
-        _paint("VulcScan - scan completed", "bold", color),
-        f"Target:        {metadata.get('root', '')}",
+    display_width = _display_width(width)
+    lines = [_paint("VulcScan - scan completed", "bold", color)]
+    lines.extend(_wrapped(str(metadata.get("root", "")), display_width, first="Target:        ", rest="               "))
+    lines.extend((
         f"Files:         {metadata.get('files_analyzed', 0)} scanned, {metadata.get('files_skipped', 0)} skipped, {duration_text}",
         f"Network:       {metadata.get('network_access', 'DISABLED')}",
         f"Findings:      {len(findings)}  ({_counts_line(findings, color)})",
-        f"Top types:     {_types_line(findings) if findings else 'none'}",
         f"High confidence: {high_confidence}",
         f"Dependency vulnerabilities: {len(vulnerabilities)}",
-        "",
-    ]
+    ))
+    lines.extend(_wrapped(_types_line(findings) if findings else "none", display_width, first="Top types:     ", rest="               "))
+    lines.append("")
     if findings:
+        lines.extend(_finding_index(findings, display_width, color))
         lines.extend((
-            _paint("CODE FINDINGS (most severe and most certain first)", "cyan", color),
             "Test vectors are for authorized, isolated systems. Prefer disposable data.",
-            "-" * 66,
+            _paint("-" * display_width, "dim", color),
         ))
         for number, finding in enumerate(findings, 1):
-            lines.extend(_render_finding(number, finding, patch_preview, color))
+            lines.extend(_render_finding(number, finding, patch_preview, color, display_width))
     if vulnerabilities:
         lines.extend((_paint("DEPENDENCY VULNERABILITIES", "cyan", color), "-" * 66))
         for number, item in enumerate(vulnerabilities, 1):

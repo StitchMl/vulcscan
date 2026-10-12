@@ -35,6 +35,7 @@ _KEY_VALUE = re.compile(
 _CONFIG_VALUE = re.compile(r"""^\s*(?:export\s+|ENV\s+)?(?P<key>[A-Za-z_][\w.-]*)\s*[:=]?\s*(?:=|:|\s)\s*(?P<value>[^\s#;'"]{8,})\s*$""")
 _CONFIG_LANGUAGES = {"Environment", "YAML", "Configuration", "TOML", "Dockerfile", "HCL", "Terraform"}
 _EXAMPLE_FILE = re.compile(r"(?i)(?:example|sample|template|\.dist$|\.tpl$|\.tmpl$)")
+_RUNTIME_DATA_PATH = re.compile(r"(?i)(?:^|/)(?:data|runtime|storage|volumes?)(?:/|$)")
 
 _TLS_PATTERNS = (
     re.compile(r"\brejectUnauthorized\s*['\"]?\s*:\s*false\b"),
@@ -89,6 +90,7 @@ _XXE_EXPLICIT = (
     re.compile(r"\bLIBXML_NOENT\b"),
     re.compile(r"\blibxml_disable_entity_loader\s*\(\s*false\s*\)"),
     re.compile(r"\bnoent\s*:\s*true\b"),
+    re.compile(r"\breplaceEntities\s*:\s*true\b"),
     re.compile(r"\bParseOptions::NOENT\b|\.\s*noent\b"),
     re.compile(r"""setFeature\s*\(\s*"http://(?:xml\.org/sax/features/external-(?:general|parameter)-entities|apache\.org/xml/features/nonvalidating/load-external-dtd)"\s*,\s*true\s*\)"""),
 )
@@ -140,6 +142,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
             if match:
                 add("SVG-ACTIVE-001", number, match.start() + 1, "active SVG content", line)
     example = bool(_EXAMPLE_FILE.search(file_name))
+    runtime_data = language == "JSON" and bool(_RUNTIME_DATA_PATH.search(relative_path.replace("\\", "/")))
     for number, line in enumerate(raw_lines, 1):
         if len(line) > MAX_LINE_LENGTH:
             continue
@@ -147,6 +150,11 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
             match = pattern.search(line)
             if match and not example:
                 add("SECRET-001", number, match.start() + 1, label, _redact(line, match.group(0)), Confidence.HIGH)
+    _cleartext_password_storage(text, add)
+    _unauthenticated_encryption(text, add)
+    _dynamic_svg_output(language, text, add)
+    _dynamic_expression_evaluation(language, text, add)
+    _unscoped_resource_routes(language, text, add)
     if language == "Python":
         return findings
 
@@ -154,7 +162,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     for number, line in enumerate(code_lines, 1):
         if len(line) > MAX_LINE_LENGTH or not line.strip():
             continue
-        if not example:
+        if not example and not runtime_data:
             _secret(line, number, language, add)
         if language == "Shell":
             password = re.search(r"(?i)\b(?:mysql|mysqldump)\b[^\n]*\s-p(?:assword)?(?:=)?\s*['\"]?([^\s'\"]{4,})", line)
@@ -217,6 +225,99 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language == "SQL":
         _sql_cleartext_password(text, add)
     return findings
+
+
+def _cleartext_password_storage(text: str, add: Callable[..., None]) -> None:
+    patterns = (
+        re.compile(
+            r"(?is)open\s*\([^)]*(?:password|passwd|pwd)[^)]*\)[\s\S]{0,240}?"
+            r"\.write\s*\(\s*(?:password|passwd|pwd)\s*\)"
+        ),
+        re.compile(
+            r"(?is)\.write\s*\(\s*json\.dumps\s*\(\s*\{[^}]*"
+            r"['\"](?:password|passwd|pwd)['\"]\s*:\s*(?:password|passwd|pwd)\b"
+        ),
+        re.compile(
+            r"(?is)['\"]INSERT\s+INTO\s+\w+\s*\([^)]*\b(?:password|passwd|pwd)\b[^)]*\)"
+            r"[^;]{0,500}?[\[(,]\s*[^\]\n;]*\b(?:password|passwd|pwd)\b"
+        ),
+    )
+    if re.search(r"(?i)argon2|bcrypt|scrypt|pbkdf2|password_hash|generate_password_hash", text):
+        return
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            line = text.count("\n", 0, match.start()) + 1
+            evidence = " ".join(match.group(0).split())[:300]
+            add("CLEARTEXT-PASSWORD-001", line, 1, "password persistence", evidence)
+            return
+
+
+def _unauthenticated_encryption(text: str, add: Callable[..., None]) -> None:
+    modes = re.compile(
+        r"(?i)(?:AES\s*\.\s*new\s*\([^\n]{0,180}?AES\s*\.\s*MODE_(?:CBC|CFB|OFB|CTR)\b|"
+        r"createCipheriv\s*\(\s*['\"]aes-\d+-(?:cbc|cfb|ofb|ctr)['\"]|"
+        r"Cipher\s*\.\s*getInstance\s*\(\s*['\"]AES/(?:CBC|CFB|OFB|CTR)/)"
+    )
+    integrity = re.compile(
+        r"(?i)MODE_(?:GCM|EAX|SIV|OCB)|Poly1305|createHmac|\bHMAC\b|"
+        r"encrypt_and_digest|decrypt_and_verify|\bsign\s*\(|\bverify\s*\("
+    )
+    for match in modes.finditer(text):
+        context = text[max(0, match.start() - 800) : min(len(text), match.end() + 1200)]
+        if integrity.search(context):
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        evidence = " ".join(match.group(0).split())[:300]
+        add("UNAUTH-ENCRYPTION-001", line, 1, "encryption without integrity", evidence, Confidence.MEDIUM)
+
+
+def _dynamic_svg_output(language: str, text: str, add: Callable[..., None]) -> None:
+    if language not in {"JavaScript", "TypeScript"} or not re.search(r"(?i)image/svg\+xml", text):
+        return
+    for match in re.finditer(r"(?s)>\s*\$\{(?P<value>[^}]+)\}\s*</(?:text|title|desc)\s*>", text):
+        value = match.group("value").strip()
+        if re.search(r"(?i)escape(?:Xml|Html)|encode(?:Xml|Html)", value):
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        add("JS-XSS-001", line, 1, "dynamic SVG text output", match.group(0), Confidence.MEDIUM)
+
+
+def _dynamic_expression_evaluation(language: str, text: str, add: Callable[..., None]) -> None:
+    if language != "Go" or not re.search(r"\bcel\s*\.\s*NewEnv\s*\(", text):
+        return
+    for match in re.finditer(r"\.\s*Compile\s*\(\s*(?P<value>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\)", text):
+        line = text.count("\n", 0, match.start()) + 1
+        add("GO-CODE-001", line, 1, "CEL expression compilation", match.group(0), Confidence.MEDIUM)
+
+
+def _unscoped_resource_routes(language: str, text: str, add: Callable[..., None]) -> None:
+    if language not in {"JavaScript", "TypeScript"}:
+        return
+    routes = list(
+        re.finditer(
+            r"(?i)\b(?:router|app)\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['\"](?P<path>[^'\"]*)['\"]",
+            text,
+        )
+    )
+    for index, route in enumerate(routes):
+        parameter_match = re.search(r":([A-Za-z_]\w*)", route.group("path"))
+        if parameter_match is None:
+            continue
+        end = routes[index + 1].start() if index + 1 < len(routes) else min(len(text), route.start() + 5000)
+        body = text[route.end() : end]
+        parameter = parameter_match.group(1)
+        request_value = rf"req\s*\.\s*params\s*\.\s*{re.escape(parameter)}\b"
+        destructured = rf"(?:const|let|var)\s+(?:\{{[^}}]*\b{re.escape(parameter)}\b[^}}]*\}}|{re.escape(parameter)})\s*=\s*req\s*\.\s*params"
+        if not re.search(request_value, body) and not re.search(destructured, body):
+            continue
+        if not re.search(r"(?i)\b(?:findOne|findByPk|findUnique|readFile(?:Sync)?|sendFile|download)\s*\(", body):
+            continue
+        if re.search(r"(?i)\b(?:req\s*\.\s*user|currentUser|principal|authorize|permission|canAccess|acl)\b", body):
+            continue
+        line = text.count("\n", 0, route.start()) + 1
+        evidence = f"{route.group(0)} ... lookup by req.params.{parameter} without owner/tenant scope"
+        add("AUTHZ-SCOPE-001", line, 1, f"route {route.group('path')}", evidence, Confidence.MEDIUM)
 
 
 def _php_xss(text: str, add: Callable[..., None]) -> None:

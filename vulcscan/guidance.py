@@ -156,9 +156,50 @@ def _rule_specific_remediation(finding: Finding) -> Remediation | None:
             count=1,
         )
     elif rule == "CLEARTEXT-PASSWORD-001":
+        suggested = {
+            "Python": "password_hash = argon2.PasswordHasher().hash(password)\nf.write(password_hash)",
+            "JavaScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
+            "TypeScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
+            "PHP": "$passwordHash = password_hash($password, PASSWORD_ARGON2ID);",
+        }.get(
+            finding.language,
+            "INSERT INTO users (username, password) VALUES ('<test-user>', '<argon2id-hash-generated-by-the-application>');",
+        )
+    elif rule == "UNAUTH-ENCRYPTION-001":
+        suggested = {
+            "Python": (
+                "cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)\n"
+                "plaintext = cipher.decrypt_and_verify(ciphertext, tag)"
+            ),
+            "JavaScript": (
+                "const decipher = createDecipheriv('aes-256-gcm', key, nonce);\n"
+                "decipher.setAuthTag(tag);\n"
+                "const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);"
+            ),
+            "TypeScript": (
+                "const decipher = createDecipheriv('aes-256-gcm', key, nonce);\n"
+                "decipher.setAuthTag(tag);\n"
+                "const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);"
+            ),
+            "Java": (
+                "Cipher cipher = Cipher.getInstance(\"AES/GCM/NoPadding\");\n"
+                "cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, nonce));\n"
+                "byte[] plaintext = cipher.doFinal(ciphertextAndTag);"
+            ),
+        }.get(finding.language)
+    elif rule == "GO-CODE-001" and "CEL" in finding.sink:
         suggested = (
-            "INSERT INTO admin_users (username, password) VALUES "
-            "('<test-user>', '<argon2id-hash-generated-by-the-application>');"
+            "ast, issues := env.Compile(expression)\n"
+            "if issues.Err() != nil { return issues.Err() }\n"
+            "if err := validateAllowedCelAST(ast); err != nil { return err }\n"
+            "program, err := env.Program(ast, cel.CostLimit(maxCost))"
+        )
+    elif rule == "AUTHZ-SCOPE-001" and finding.language in {"JavaScript", "TypeScript"}:
+        parameter = re.search(r"req\.params\.([A-Za-z_]\w*)", finding.evidence)
+        name = parameter.group(1) if parameter else "id"
+        suggested = (
+            f"const resource = await Model.findOne({{ where: {{ {name}: req.params.{name}, owner_id: req.user.id }} }});\n"
+            "if (!resource) throw new HttpError(404, 'Resource not found');"
         )
     if suggested is None:
         return None
@@ -188,6 +229,8 @@ def _contextual_remediation(finding: Finding) -> Remediation | None:
         computed = _computed_sql_remediation(finding)
     elif finding.rule_id == "PHP-XSS-001":
         computed = _php_xss_remediation(finding)
+    elif finding.rule_id == "JS-XSS-001" and finding.sink == "dynamic SVG text output":
+        computed = _dynamic_svg_remediation(finding)
     else:
         computed = computed_remediation(finding)
     if computed is not None:
@@ -434,6 +477,24 @@ def _php_xss_remediation(finding: Finding) -> Remediation | None:
         patch_risk="LOW",
         current=finding.evidence,
         suggested="echo " + " . ".join(safe_parts) + ";",
+        machine_applicable=False,
+    )
+
+
+def _dynamic_svg_remediation(finding: Finding) -> Remediation | None:
+    match = re.search(r"\$\{(?P<value>[^}]+)\}", finding.evidence)
+    if match is None:
+        return None
+    value = match.group("value").strip()
+    suggested = finding.evidence[: match.start()] + "${escapeXml(" + value + ")}" + finding.evidence[match.end() :]
+    return Remediation(
+        title=f"XML-encode `{value}` before inserting it into the SVG text node.",
+        guidance="Use an XML text encoder. Apply separate numeric validation to coordinates and dimensions.",
+        preferred=True,
+        patch_confidence=Confidence.HIGH,
+        patch_risk="LOW",
+        current=finding.evidence,
+        suggested=suggested,
         machine_applicable=False,
     )
 

@@ -634,6 +634,8 @@ class _Analyzer:
     def _generic_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         last = receiver.split(".")[-1]
         if method in {"send", "write", "end", "html"} and last in {"res", "response", "reply", "ctx"}:
+            if self._explicit_non_html_response(last, call_start):
+                return
             self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
         elif method in {"redirect", "location"} and last in {"res", "response", "reply", "ctx"}:
             index = -1 if method == "redirect" else 0
@@ -648,7 +650,8 @@ class _Analyzer:
             if not arguments:
                 return
             value = self._value(*arguments[0])
-            evidence = bool(SQL_KEYWORDS.search(value.text))
+            raw_sql_api = method in {"raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}
+            evidence = raw_sql_api or bool(SQL_KEYWORDS.search(value.text))
             database = bool(_DB_RECEIVER.search(receiver))
             if not evidence and not database:
                 return
@@ -656,6 +659,16 @@ class _Analyzer:
             self._emit_value("JS-SQL-001", "database query", call_start, open_index, value, certainty, unknown_origin=True, sql_evidence=evidence)
         elif method == "unserialize" and last in {"serialize", "nodeSerialize", "node_serialize"}:
             self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
+
+    def _explicit_non_html_response(self, receiver: str, call_start: int) -> bool:
+        context = self.text[max(0, call_start - 1600) : call_start]
+        content_type = re.compile(
+            rf"\b{re.escape(receiver)}\s*\.\s*(?:setHeader|header|type)\s*\(\s*"
+            r"(?:['\"]Content-Type['\"]\s*,\s*)?['\"]"
+            r"(?:application/json|application/octet-stream)(?:\s*;[^'\"]*)?['\"]\s*\)",
+            re.IGNORECASE,
+        )
+        return bool(content_type.search(context))
 
     def _arguments(self, open_index: int) -> list[tuple[int, int]]:
         close = matching_paren(self.mask, open_index)

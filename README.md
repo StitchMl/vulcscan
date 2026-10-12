@@ -65,7 +65,7 @@ vulcscan ./service --offline --severity HIGH --patch-preview
 
 ## Output
 
-The text report starts with a summary (files scanned, findings per severity, high-confidence count, vulnerable dependencies). Findings follow, sorted by severity, then confidence, file and line. Each finding has an ID (`F-001`), its location near the top, separate Severity and Confidence fields, source, sink, flow, reason, patch location and the preferred fix with patch confidence and risk. Dependency advisories are listed separately (`D-001`). Parser and read problems appear under "Scan warnings" and are not findings. When nothing matches, the report says no findings were detected by the enabled rules; that is not a proof of security.
+The text report starts with scan counts and a one-line priority index. Detailed findings use separate `TRACE`, `RISK`, `VERIFY`, `FIX` and `REFERENCE` sections. Lines wrap at a readable terminal width, capped at 120 columns. Payloads, expected proof and patch previews keep hanging indentation, so PowerShell does not turn them into one paragraph. Findings remain sorted by severity, confidence, file and line. Dependency advisories use `D-001` identifiers. Parser and read problems appear under `Scan warnings`.
 
 Paths in findings are relative to the scanned directory.
 
@@ -87,7 +87,7 @@ Sanitizers are recognized by behavior, never by function name: numeric conversio
 
 Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `-XSS-001` (CWE-79 for Python, JavaScript/TypeScript, Java, C#, Go and Ruby), `PY-SSTI-001` (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
 
-Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `WEAK-RANDOM-001` (CWE-338), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `UPLOAD-MIME-001` (CWE-434), `CSRF-001` (CWE-352), `SESSION-FIXATION-001` (CWE-384), `PHP-URL-INCLUDE-001` (CWE-98), `CLEARTEXT-PASSWORD-001` (CWE-256), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
+Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `UNAUTH-ENCRYPTION-001` malleable encryption without integrity (CWE-353), `WEAK-RANDOM-001` (CWE-338), `AUTHZ-SCOPE-001` object lookup without principal scope (CWE-639), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `UPLOAD-MIME-001` (CWE-434), `CSRF-001` (CWE-352), `SESSION-FIXATION-001` (CWE-384), `PHP-URL-INCLUDE-001` (CWE-98), `CLEARTEXT-PASSWORD-001` (CWE-256), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
 
 ## Test vectors
 
@@ -127,6 +127,7 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 - Binary analysis is header, symbol and printable-string based. It does not replace disassembly, control-flow analysis, fuzzing or memory-safety instrumentation.
 - Without `--update-cve`, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.
 - Reported findings are potential vulnerabilities; a reviewer must confirm them.
+- Object-level authorization analysis covers direct Express route lookups. Indirect policy engines and cross-service ownership checks remain outside its proof model.
 
 ## Tests
 

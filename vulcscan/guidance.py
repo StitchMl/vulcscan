@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import replace
 
 from .models import Confidence, Finding, Remediation
+from .patch_guidance import computed_remediation
 from .rules import test_vectors_for
 
 
@@ -87,7 +89,7 @@ _FAMILY_PATCHES: dict[str, dict[str, tuple[str, str]]] = {
 
 def enrich_finding(finding: Finding) -> None:
     """Attach tailored, deterministic guidance without changing detection."""
-    contextual = _contextual_remediation(finding)
+    contextual = _contextual_remediation(finding) or _rule_specific_remediation(finding)
     if contextual is not None:
         concrete = [item for item in finding.remediations if item.suggested]
         remaining = [item for item in finding.remediations if not item.suggested]
@@ -96,6 +98,81 @@ def enrich_finding(finding: Finding) -> None:
         finding.remediations = _mark_preferred(_unique_remediations(ordered)[:3])
     base = test_vectors_for(finding.rule_id)
     finding.test_vectors = _unique_text([*_contextual_vectors(finding), *base])
+
+
+def _rule_specific_remediation(finding: Finding) -> Remediation | None:
+    rule = finding.rule_id
+    suggested: str | None = None
+    title = f"Apply the safe form for {finding.sink}."
+    confidence = Confidence.MEDIUM
+    if rule == "PHP-URL-INCLUDE-001":
+        suggested = re.sub(r"(?i)\bOn\b", "Off", finding.evidence, count=1)
+        confidence = Confidence.HIGH
+    elif rule == "DEBUG-001" and "=" in finding.evidence:
+        key = finding.evidence.split("=", 1)[0].strip()
+        suggested = f"{key} = Off"
+        confidence = Confidence.HIGH
+    elif rule == "DOCKER-ROOT-001":
+        suggested = "RUN groupadd --system app && useradd --system --gid app --uid 10001 app\nUSER 10001:10001"
+    elif rule == "SECRET-001":
+        key = re.sub(r"[^A-Za-z0-9_]", "_", finding.sink).upper().strip("_") or "APP_SECRET"
+        if finding.language == "Shell" and "mysql" in finding.evidence.casefold():
+            suggested = 'mysql --defaults-extra-file="$MYSQL_CREDENTIALS_FILE" # file mode 0600, supplied at runtime'
+        elif finding.language == "Environment":
+            suggested = f"# Remove {key} from the committed file; inject it as a runtime secret named {key}."
+        elif finding.language == "Dockerfile":
+            suggested = f"# Remove ENV {key}=...; mount or inject {key} only when the container starts."
+        else:
+            suggested = f'{key} = os.environ["{key}"]'
+    elif rule == "CSRF-001" and finding.language == "PHP":
+        suggested = (
+            "$_SESSION['csrf_token'] ??= bin2hex(random_bytes(32));\n"
+            "if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {\n"
+            "    http_response_code(403); exit;\n}"
+        )
+    elif rule == "DB-RACE-001":
+        update = re.search(r"(?i)(UPDATE\s+\w+\s+SET\s+(\w+)\s*=\s*\2\s*-\s*1\s+WHERE\s+.+?)(?:[\";]|$)", finding.evidence)
+        if update:
+            sql, counter = update.group(1), update.group(2)
+            suggested = f'{sql} AND {counter} > 0;\n# Accept success only when exactly one row was affected.'
+    elif rule == "SESSION-FIXATION-001" and finding.language == "PHP":
+        suggested = f"session_regenerate_id(true);\n{finding.evidence.strip()}"
+        confidence = Confidence.HIGH
+    elif rule == "UPLOAD-MIME-001" and finding.language == "PHP":
+        field_match = re.search(r"\$_FILES\[['\"]([^'\"]+)", finding.evidence)
+        field = field_match.group(1) if field_match else "upload"
+        suggested = (
+            f"$tmp = $_FILES['{field}']['tmp_name'];\n"
+            "$mime = (new finfo(FILEINFO_MIME_TYPE))->file($tmp);\n"
+            "if (!isset(['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime])) { http_response_code(415); exit; }\n"
+            "$safeName = bin2hex(random_bytes(16)) . '.' . ['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime];\n"
+            "move_uploaded_file($tmp, $nonExecutableUploadDir . DIRECTORY_SEPARATOR . $safeName);"
+        )
+    elif rule == "WEAK-HASH-001":
+        suggested = re.sub(
+            r"(?i)MD5\s*\([^)]*\)",
+            "'<argon2id-hash-generated-by-the-application>'",
+            finding.evidence,
+            count=1,
+        )
+    elif rule == "CLEARTEXT-PASSWORD-001":
+        suggested = (
+            "INSERT INTO admin_users (username, password) VALUES "
+            "('<test-user>', '<argon2id-hash-generated-by-the-application>');"
+        )
+    if suggested is None:
+        return None
+    existing = finding.remediations[0].guidance if finding.remediations else "Review the change against application policy."
+    return Remediation(
+        title=title,
+        guidance=f"Reported evidence: {finding.evidence}. {existing}",
+        preferred=True,
+        patch_confidence=confidence,
+        patch_risk="MEDIUM",
+        current=finding.evidence or None,
+        suggested=suggested,
+        machine_applicable=False,
+    )
 
 
 def _family(rule_id: str) -> str:
@@ -107,6 +184,14 @@ def _contextual_remediation(finding: Finding) -> Remediation | None:
     by_language = _FAMILY_PATCHES.get(family)
     if not by_language:
         return None
+    if family == "SQL":
+        computed = _computed_sql_remediation(finding)
+    elif finding.rule_id == "PHP-XSS-001":
+        computed = _php_xss_remediation(finding)
+    else:
+        computed = computed_remediation(finding)
+    if computed is not None:
+        return computed
     patch = _php_sql_patch(finding) if family == "SQL" and finding.language == "PHP" else None
     patch = patch or by_language.get(finding.language)
     if patch is None:
@@ -123,6 +208,140 @@ def _contextual_remediation(finding: Finding) -> Remediation | None:
         suggested=suggested,
         machine_applicable=False,
     )
+
+
+def _computed_sql_remediation(finding: Finding) -> Remediation | None:
+    assignment = next(
+        (
+            step.code
+            for step in reversed(finding.flow)
+            if step.kind == "PROPAGATION" and re.search(r"(?i)\b(?:select|insert|update|delete)\b", step.code)
+        ),
+        None,
+    )
+    if assignment is None:
+        return None
+    match = re.match(
+        r"^\s*(?:(?:const|let|var|final|String|string|auto)\s+|[A-Za-z_][\w<>,.?\[\]]*\s+)?"
+        r"(?P<query>\$?[A-Za-z_]\w*)\s*(?::=|=)\s*(?P<expression>.+?)\s*;?\s*$",
+        assignment,
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    plan = _sql_binding_plan(match.group("expression"), finding.language)
+    if plan is None:
+        return None
+    sql, values = plan
+    suggested = _render_sql_patch(finding, sql, values)
+    if suggested is None:
+        return None
+    value_names = ", ".join(f"`{value}`" for value in values)
+    return Remediation(
+        title=f"Parameterize the recovered query `{match.group('query')}`.",
+        guidance=(
+            f"The flow builds `{match.group('query')}` by concatenating {value_names}. "
+            "Keep the recovered SQL constant and bind those values in the same order. "
+            "Confirm the placeholder syntax and parameter types for the active database driver."
+        ),
+        preferred=True,
+        patch_confidence=Confidence.HIGH,
+        patch_risk="MEDIUM",
+        current=assignment,
+        suggested=suggested,
+        machine_applicable=False,
+    )
+
+
+def _sql_binding_plan(expression: str, language: str) -> tuple[str, list[str]] | None:
+    separator = "." if language == "PHP" else "+"
+    parts = _split_string_expression(expression, separator)
+    if not parts or len(parts) < 3:
+        return None
+    decoded: list[str | None] = [_quoted_text(part) for part in parts]
+    sql = ""
+    values: list[str] = []
+    index = 0
+    while index < len(parts):
+        literal = decoded[index]
+        if literal is not None:
+            sql += literal
+            index += 1
+            continue
+        value = parts[index].strip()
+        if not re.fullmatch(r"\$?[A-Za-z_]\w*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)*", value):
+            return None
+        following = decoded[index + 1] if index + 1 < len(parts) else None
+        if following is not None and sql.endswith(("'", '"')) and following.startswith(sql[-1]):
+            sql = sql[:-1]
+            decoded[index + 1] = following[1:]
+        sql += "?"
+        values.append(value)
+        index += 1
+    if not values or not re.search(r"(?i)\b(?:select|insert|update|delete)\b", sql):
+        return None
+    return sql, values
+
+
+def _split_string_expression(expression: str, separator: str) -> list[str] | None:
+    parts: list[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(expression):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            continue
+        if char in {"'", '"', "`"}:
+            quote = "" if quote == char else char if not quote else quote
+            continue
+        if char == separator and not quote:
+            parts.append(expression[start:index].strip())
+            start = index + 1
+    if quote:
+        return None
+    parts.append(expression[start:].strip())
+    return parts if all(parts) else None
+
+
+def _quoted_text(value: str) -> str | None:
+    value = value.strip()
+    if len(value) < 2 or value[0] not in {"'", '"', "`"} or value[-1] != value[0]:
+        return None
+    body = value[1:-1]
+    return body.replace("\\" + value[0], value[0]).replace("\\\\", "\\")
+
+
+def _render_sql_patch(finding: Finding, sql: str, values: list[str]) -> str | None:
+    encoded = json.dumps(sql)
+    joined = ", ".join(values)
+    call = re.search(r"([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)+)\s*\(", finding.evidence)
+    callee = re.sub(r"\s+", "", call.group(1)) if call else "db.execute"
+    if finding.language == "Python":
+        tuple_values = joined + ("," if len(values) == 1 else "")
+        return f"{callee}({encoded}, ({tuple_values}))"
+    if finding.language in {"JavaScript", "TypeScript"}:
+        return f"await {callee}({encoded}, [{joined}]);"
+    if finding.language == "Go":
+        return f"{callee}({encoded}, {joined})"
+    if finding.language == "Ruby":
+        return f"{callee}({encoded}, [{joined}])"
+    if finding.language == "Java":
+        setters = "\n".join(f"statement.setObject({index}, {value});" for index, value in enumerate(values, 1))
+        return f"PreparedStatement statement = connection.prepareStatement({encoded});\n{setters}\nResultSet rows = statement.executeQuery();"
+    if finding.language == "C#":
+        named_sql = sql
+        for index in range(len(values)):
+            named_sql = named_sql.replace("?", f"@p{index}", 1)
+        parameters = "\n".join(
+            f'command.Parameters.Add("@p{index}", SqlDbType.NVarChar, 256).Value = {value};'
+            for index, value in enumerate(values)
+        )
+        return f"command.CommandText = {json.dumps(named_sql)};\n{parameters}\nvar rows = command.ExecuteReader();"
+    return None
 
 
 def _php_sql_patch(finding: Finding) -> tuple[str, str] | None:
@@ -184,6 +403,41 @@ def _php_sql_patch(finding: Finding) -> tuple[str, str] | None:
     )
 
 
+def _php_xss_remediation(finding: Finding) -> Remediation | None:
+    match = re.match(r"^\s*echo\s+(.+?)\s*;?\s*$", finding.evidence, re.DOTALL)
+    if match is None:
+        return None
+    parts = _split_php_concat(match.group(1))
+    if not parts:
+        return None
+    changed = False
+    safe_parts: list[str] = []
+    for part in parts:
+        stripped = part.strip()
+        if _php_string(stripped) is not None or re.match(r"(?i)^htmlspecialchars\s*\(", stripped):
+            safe_parts.append(stripped)
+            continue
+        if not re.search(r"\$[A-Za-z_]", stripped):
+            return None
+        safe_parts.append(f"htmlspecialchars({stripped}, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')")
+        changed = True
+    if not changed:
+        return None
+    return Remediation(
+        title="Encode the untrusted PHP expressions while preserving the recovered markup.",
+        guidance=(
+            f"The output expression at `{finding.sink}` mixes markup with request or stored data. "
+            "Keep literal markup unchanged and HTML-encode each dynamic expression at output time."
+        ),
+        preferred=True,
+        patch_confidence=Confidence.HIGH,
+        patch_risk="LOW",
+        current=finding.evidence,
+        suggested="echo " + " . ".join(safe_parts) + ";",
+        machine_applicable=False,
+    )
+
+
 def _split_php_concat(expression: str) -> list[str] | None:
     parts: list[str] = []
     start = 0
@@ -219,6 +473,10 @@ def _contextual_vectors(finding: Finding) -> list[str]:
     family = _family(finding.rule_id)
     target = f"the input that reaches `{finding.sink}` at {finding.location.file}:{finding.location.line}"
     if family == "SQL":
+        symbols = _traced_symbols(finding)
+        if symbols:
+            rendered = " -> ".join(f"`{symbol}`" for symbol in symbols)
+            target = f"the traced flow {rendered} reaching `{finding.sink}` at {finding.location.file}:{finding.location.line}"
         return [
             *_sql_proof_vectors(finding, target),
             f"On a disposable database, send `' OR '1'='1' -- ` through {target} using test-only rows. Compare it with an invalid value; authorization, row scope and response shape must stay unchanged.",
@@ -226,28 +484,181 @@ def _contextual_vectors(finding: Finding) -> list[str]:
             f"Send the paired predicates `1 AND 1=1` and `1 AND 1=2` through {target}. They must not change row count, authorization, status code or response shape.",
         ]
     if family == "CMD":
-        marker = "%26 echo VULCSCAN_PROBE" if finding.language in {"Batch", "PowerShell"} else "; printf VULCSCAN_PROBE"
-        return [f"On an isolated test instance, append `{marker}` through {target}. The marker must not appear in process output, files or logs as a command result."]
+        payload, channel = _command_probe(finding)
+        return [
+            f"Command-execution proof for traced value `{_traced_value(finding)}`: send `{payload}` through {target}. "
+            f"On an isolated instance, `{channel}` must contain no `VULCSCAN_CMD_` marker generated by a second command."
+        ]
     if family == "XSS":
-        return [f"Use `<img src=x onerror=console.log('VULCSCAN_PROBE')>` through {target} in a test browser. It must render as text or be removed; the console marker must not run."]
+        payload, context = _xss_probe(finding)
+        return [
+            f"XSS proof for traced value `{_traced_value(finding)}` in {context}: send `{payload}` through {target}. "
+            "Open only the isolated test page. The browser console must contain no `VULCSCAN_XSS` marker."
+        ]
     if family == "PATH":
-        return [f"Create a harmless canary outside the allowed test directory, then submit `../vulcscan-canary.txt` through {target}. The application must reject it without reading or overwriting the canary."]
+        payload = _path_probe(finding)
+        return [
+            f"Path-escape proof for traced value `{_traced_value(finding)}`: place a harmless file named `vulcscan-canary.txt` "
+            f"one directory above the configured base, then send `{payload}` through {target}. The response, download, logs and target directory must expose no canary content or write."
+        ]
     if family == "SSRF":
-        return [f"Point {target} to `http://127.0.0.1:18080/vulcscan-probe` with a controlled listener. The listener must receive no request."]
+        primary, alternate = _ssrf_probes(finding)
+        return [
+            f"SSRF proof for traced value `{_traced_value(finding)}`: run a controlled HTTP listener on loopback, then send `{primary}` through {target}. "
+            f"If the code normalizes hosts, repeat with `{alternate}`. No listener request carrying `VULCSCAN_SSRF` may arrive."
+        ]
     if family == "DESER":
-        return [f"Send valid JSON with an unexpected field and malformed type metadata through {target}. The application must reject it before constructing application objects."]
+        payload, proof = _deserialization_probe(finding)
+        return [
+            f"Deserialization proof for `{_short_sink(finding.sink)}` and traced value `{_traced_value(finding)}`: {payload} through {target}. "
+            f"The parser must reject it before object construction; {proof}"
+        ]
     if family == "CODE":
-        return [f"Send `1+1` through {target}. The application must preserve it as text and must not return or store the evaluated value `2`."]
+        payload, proof = _code_probe(finding)
+        return [
+            f"Code-evaluation proof for traced value `{_traced_value(finding)}`: send `{payload}` through {target}. "
+            f"{proof} must contain no `VULCSCAN_CODE` marker; the application must treat the payload as data."
+        ]
     if finding.rule_id == "UPLOAD-MIME-001":
-        return [f"Upload benign text as `vulcscan-probe.php.jpg` through {target} while declaring `image/jpeg`. Content inspection must reject it and no executable file may appear under the web root."]
+        name, content, declared = _upload_probe(finding)
+        return [
+            f"Upload-validation proof for `{_short_sink(finding.sink)}`: upload `{name}` through {target}, declare `{declared}`, and use harmless content `{content}`. "
+            "The server must reject the mismatch. No public URL or executable file may contain `VULCSCAN_UPLOAD`."
+        ]
     if finding.rule_id == "OPEN-REDIRECT-001":
-        return [f"Submit `https://example.invalid/vulcscan-probe` through {target}. The response must not emit that external URL in `Location`."]
+        payload = _redirect_probe(finding)
+        return [
+            f"Redirect proof for traced value `{_traced_value(finding)}`: submit `{payload}` through {target} without following redirects. "
+            "The status and `Location` header must keep navigation on the expected origin and must not contain `vulcscan-redirect.example`."
+        ]
     if finding.rule_id in {"PY-XXE-001", "XXE-001"}:
         return [f"Send a DOCTYPE containing a nonexistent local canary entity through {target}. Parsing must fail before any external entity lookup."]
     base = test_vectors_for(finding.rule_id)
     if base:
         return [f"Exercise `{finding.sink}` at {finding.location.file}:{finding.location.line} on an isolated test deployment. {base[0]}"]
     return [f"Exercise the code path to `{finding.sink}` at {finding.location.file}:{finding.location.line} with boundary and malformed input. Confirm rejection causes no state change, outbound request or sensitive output."]
+
+
+def _traced_value(finding: Finding) -> str:
+    """Recover the source variable or expression named by the data-flow trace."""
+    steps = [step for step in finding.flow if step.kind in {"SOURCE", "PROPAGATION"}]
+    for step in reversed(steps):
+        code = step.code.strip()
+        assignment = re.match(
+            r"^(?:const\s+|let\s+|var\s+|String\s+|string\s+|auto\s+)?([@$]?[A-Za-z_]\w*)\s*(?::=|=)",
+            code,
+        )
+        if assignment:
+            return assignment.group(1)
+        source = re.search(
+            r"(?:request\.(?:args|form|values)|req\.(?:query|body|params)|params|_GET|_POST|Query\(\)|FormValue)\s*(?:\[|\.|\()\s*['\"]?([A-Za-z_]\w*)",
+            code,
+            re.IGNORECASE,
+        )
+        if source:
+            return source.group(1)
+    evidence_arg = re.search(r"\(([^(),]+)\)", finding.evidence or "")
+    return evidence_arg.group(1).strip()[:80] if evidence_arg else "remote input"
+
+
+def _traced_symbols(finding: Finding) -> list[str]:
+    """Recover concrete assignment names in source-to-sink order."""
+    symbols: list[str] = []
+    for step in finding.flow:
+        if step.kind not in {"SOURCE", "PROPAGATION"}:
+            continue
+        match = re.match(
+            r"^\s*(?:(?:const|let|var|final|String|string|auto)\s+|"
+            r"[A-Za-z_][\w<>,.?\[\]]*\s+)?"
+            r"(?P<name>\$?[A-Za-z_]\w*)\s*(?::=|=|\+=|\.=)",
+            step.code,
+        )
+        if match and match.group("name") not in symbols:
+            symbols.append(match.group("name"))
+    return symbols
+
+
+def _context_text(finding: Finding) -> str:
+    return "\n".join([finding.evidence, finding.sink, *(step.code for step in finding.flow)])
+
+
+def _command_probe(finding: Finding) -> tuple[str, str]:
+    text = _context_text(finding).casefold()
+    if finding.language == "PowerShell" or any(token in text for token in ("invoke-expression", "powershell")):
+        return "; Write-Output VULCSCAN_CMD_$PID #", "captured output or PowerShell transcript"
+    if finding.language == "Batch" or any(token in text for token in ("cmd.exe", "%comspec%", "call %")):
+        return "& echo VULCSCAN_CMD_%RANDOM% & rem ", "captured output or process log"
+    if finding.language in {"C#"} and re.search(r"(?i)cmd(?:\.exe)?|/c\b", text):
+        return "& echo VULCSCAN_CMD_%RANDOM% & rem ", "captured output or process log"
+    return "; printf 'VULCSCAN_CMD_%s\\n' \"$$\"; #", "captured stdout or process log"
+
+
+def _xss_probe(finding: Finding) -> tuple[str, str]:
+    text = _context_text(finding)
+    if re.search(r"(?is)<script\b|javascript\s*:|script(?:text|content)", text):
+        return "';console.log('VULCSCAN_XSS');//", "a JavaScript string/script context"
+    if re.search(r"(?is)(?:href|src|action|value|data-[\w-]+)\s*=|setAttribute\s*\(", text):
+        return '\" autofocus onfocus=console.log(\'VULCSCAN_XSS\') x=\"', "an HTML attribute context"
+    return "<img src=x onerror=console.log('VULCSCAN_XSS')>", "an HTML text context"
+
+
+def _path_probe(finding: Finding) -> str:
+    text = _context_text(finding)
+    windows = finding.language in {"C#", "PowerShell", "Batch"} or bool(re.search(r"[A-Za-z]:\\|\\\\", text))
+    return r"..\vulcscan-canary.txt" if windows else "../vulcscan-canary.txt"
+
+
+def _ssrf_probes(finding: Finding) -> tuple[str, str]:
+    text = _context_text(finding)
+    if re.search(r"(?i)(?:baseurl|urljoin|resolve\s*\(|new\s+url\s*\()", text):
+        return "//127.0.0.1:18080/VULCSCAN_SSRF", "http://[::1]:18080/VULCSCAN_SSRF"
+    return "http://127.0.0.1:18080/VULCSCAN_SSRF", "http://[::1]:18080/VULCSCAN_SSRF"
+
+
+def _deserialization_probe(finding: Finding) -> tuple[str, str]:
+    text = _context_text(finding).casefold()
+    if finding.language == "Python" and any(name in text for name in ("pickle.load", "pickle.loads")):
+        return "generate a pickle whose `__reduce__` target is `builtins.print` with argument `VULCSCAN_DESER`, then send its bytes", "stdout and logs must contain no `VULCSCAN_DESER` marker."
+    if finding.language in {"JavaScript", "TypeScript", "Java", "C#"}:
+        return 'send `{"$type":"VULCSCAN_DESER","@type":"VULCSCAN_DESER","value":"canary"}` as valid JSON', "no runtime type lookup, constructor error or canary object may appear in logs."
+    if finding.language == "PHP":
+        return 'send `O:8:"stdClass":1:{s:6:"marker";s:15:"VULCSCAN_DESER";}`', "the application must not create or expose the marker property."
+    if finding.language == "Ruby":
+        return "send an isolated Marshal payload containing the plain string `VULCSCAN_DESER`", "the endpoint must not accept Marshal object data from the request."
+    return "send valid structured data carrying type metadata and marker `VULCSCAN_DESER`", "logs and output must show neither type resolution nor object construction."
+
+
+def _code_probe(finding: Finding) -> tuple[str, str]:
+    language = finding.language
+    if language == "Python":
+        return "(__import__('builtins').print('VULCSCAN_CODE'),0)[1]", "captured stdout and logs"
+    if language in {"JavaScript", "TypeScript"}:
+        return "console.log('VULCSCAN_CODE'),0", "browser/server console and logs"
+    if language == "PHP":
+        return "print('VULCSCAN_CODE') or 0", "response and logs"
+    if language == "Ruby":
+        return "puts('VULCSCAN_CODE'); 0", "captured stdout and logs"
+    if language == "PowerShell":
+        return "Write-Output VULCSCAN_CODE_$PID", "captured output and transcript"
+    return "1+1", "response, stored value and logs"
+
+
+def _upload_probe(finding: Finding) -> tuple[str, str, str]:
+    text = _context_text(finding).casefold()
+    if finding.language == "PHP" or ".php" in text:
+        return "vulcscan-probe.php.jpg", "<?php /* VULCSCAN_UPLOAD */ ?>", "image/jpeg"
+    if finding.language in {"JavaScript", "TypeScript"} or "node" in text:
+        return "vulcscan-probe.js.png", "/* VULCSCAN_UPLOAD */", "image/png"
+    if finding.language == "Python":
+        return "vulcscan-probe.py.png", "# VULCSCAN_UPLOAD", "image/png"
+    return "vulcscan-probe.html.jpg", "<!-- VULCSCAN_UPLOAD -->", "image/jpeg"
+
+
+def _redirect_probe(finding: Finding) -> str:
+    text = _context_text(finding)
+    if re.search(r"(?i)(?:urljoin|resolve\s*\(|new\s+url\s*\(|startsWith\s*\(\s*['\"]\/)", text):
+        return "//vulcscan-redirect.example/VULCSCAN_REDIRECT"
+    return "https://vulcscan-redirect.example/VULCSCAN_REDIRECT"
 
 
 def _sql_proof_vectors(finding: Finding, target: str) -> list[str]:

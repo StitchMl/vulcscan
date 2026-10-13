@@ -111,6 +111,8 @@ CATALOGS: dict[str, Catalog] = {
             (r"\bfilter_input\s*\(", REMOTE, "filter_input()"),
             (r"\$request\s*->\s*(?:input|query|get|post|cookie|header|all|file|route|json)\s*\(", REMOTE, "Laravel request input"),
             (r"\$request\s*->\s*(?:query|request|cookies|headers|files|attributes)\s*->\s*(?:get|all)\s*\(", REMOTE, "Symfony request input"),
+            (r"\$this\s*->\s*(?:input|request)\s*->\s*(?:get|post|getPost|getGet|cookie|getHeaderLine|getServer|uri)\s*\(", REMOTE, "framework request input"),
+            (r"\$request\s*->\s*(?:getQueryParams|getParsedBody|getUploadedFiles|getCookieParams|getHeaderLine|getAttribute)\s*\(", REMOTE, "PSR-7 request input"),
             (r"""\bfile_get_contents\s*\(\s*['"]php://input""", REMOTE, "raw request body"),
             (r"\bgetenv\s*\(|\$_ENV\b", ENVIRONMENT, "environment variable"),
             (r"\$argv\b", LOCAL, "command-line argument"),
@@ -118,6 +120,7 @@ CATALOGS: dict[str, Catalog] = {
         (
             _sink(r"(?<![\w>$:\\])(?:shell_exec|system|exec|passthru|popen|proc_open|pcntl_exec)\s*\(", "CMD", "PHP command execution"),
             _sink(r"->\s*(?:query|exec|prepare|unprepared|statement|raw|whereRaw|orderByRaw|selectRaw|havingRaw|groupByRaw)\s*\(", "SQL", "raw SQL query"),
+            _sink(r"->\s*(?:createQuery|createNativeQuery|createSQLQuery)\s*\(", "SQL", "ORM query text"),
             _sink(r"\bDB::(?:raw|select|statement|unprepared)\s*\(", "SQL", "raw SQL query"),
             _sink(r"(?<![\w>$:\\])(?:mysqli_query|mysql_query|pg_query|sqlite_query|mysqli_multi_query)\s*\(", "SQL", "SQL query function", LAST),
             _sink(r"(?<![\w>$:\\])(?:eval|create_function)\s*\(", "CODE", "PHP code evaluation", LAST),
@@ -150,6 +153,7 @@ CATALOGS: dict[str, Catalog] = {
         "JAVA",
         _sources(
             (r"\b\w*[Rr]equest\s*\.\s*(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getRequestURI|getRequestURL|getInputStream|getReader|getPathInfo|getPart)\s*\(", REMOTE, "servlet request input"),
+            (r"\b\w*[Rr]equest\s*\.\s*(?:queryParam|pathVariable|header|cookie|body)\s*\(", REMOTE, "reactive request input"),
             (r"\bSystem\s*\.\s*getenv\s*\(", ENVIRONMENT, "environment variable"),
             (r"\bSystem\s*\.\s*console\s*\(\s*\)\s*\.\s*readLine\s*\(", LOCAL, "console input"),
         ),
@@ -177,7 +181,7 @@ CATALOGS: dict[str, Catalog] = {
             (re.compile(r"\b(?:Encode\s*\.\s*forHtml|HtmlUtils\s*\.\s*htmlEscape|StringEscapeUtils\s*\.\s*escapeHtml4)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\.\s*(?:normalize|toRealPath|getCanonicalPath|getCanonicalFile)\s*\("),
-        parameters=re.compile(r"@(?:RequestParam|PathVariable|RequestBody|RequestHeader|RequestPart|CookieValue)\b(?:\s*\([^)]*\))?\s+(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)])"),
+        parameters=re.compile(r"@(?:RequestParam|PathVariable|RequestBody|RequestHeader|RequestPart|CookieValue|QueryParam|PathParam|HeaderParam|FormParam|CookieParam|MatrixParam|RestQuery|RestPath)\b(?:\s*\([^)]*\))?\s+(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)])"),
         function_header=re.compile(r"(?:public|private|protected|static|final|synchronized|abstract)?[\w<>\[\],.? ]*\s(\w+)\s*\($"),
     ),
     "C#": Catalog(
@@ -223,7 +227,7 @@ CATALOGS: dict[str, Catalog] = {
         "GO",
         _sources(
             (r"\b\w+\s*\.\s*URL\s*\.\s*Query\s*\(\s*\)(?:\s*\.\s*Get\s*\()?|\b\w+\s*\.\s*(?:FormValue|PostFormValue|PathValue)\s*\(|\b\w+\s*\.\s*Header\s*\.\s*Get\s*\(|\b\w+\s*\.\s*URL\s*\.\s*(?:Path|RawQuery)\b", REMOTE, "net/http request input"),
-            (r"\bc\s*\.\s*(?:Query|DefaultQuery|Param|PostForm|DefaultPostForm|GetHeader|Cookie|QueryParam|FormValue)\s*\(", REMOTE, "web framework request input"),
+            (r"\b(?:c|ctx|context)\s*\.\s*(?:Query|Queries|DefaultQuery|Param|Params|PostForm|DefaultPostForm|FormValue|FormFile|GetHeader|GetReqHeaders|Cookie|Cookies|QueryParam|FormParams|PathParam|Body|BodyRaw)\s*\(", REMOTE, "web framework request input"),
             (r"\bos\s*\.\s*Getenv\s*\(", ENVIRONMENT, "environment variable"),
             (r"\bos\s*\.\s*Args\b|\bflag\s*\.\s*(?:Arg|Args)\s*\(", LOCAL, "command-line argument"),
         ),
@@ -232,6 +236,7 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\bexec\s*\.\s*CommandContext\s*\(", "CMD", "exec.CommandContext", SECOND, multi_argument_safe=True),
             _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x|[Cc]onn|[Ss]tmt)\s*\.\s*(?:Query|QueryRow|Exec|Prepare|Queryx|QueryRowx|MustExec|Raw)\s*\(", "SQL", "database query"),
             _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x|[Cc]onn)\s*\.\s*(?:QueryContext|QueryRowContext|ExecContext|PrepareContext|Select|Get)\s*\(", "SQL", "database/sql query", SECOND),
+            _sink(r"\b\w*(?:[Dd][Bb]|[Tt]x)\s*\.\s*(?:Where|Not|Or|Order|Select|Table|Joins|Group|Having)\s*\(", "SQL", "ORM SQL fragment", certainty=Confidence.MEDIUM),
             _sink(r"\b(?:os\s*\.\s*(?:Open|OpenFile|Create|Remove|RemoveAll|ReadFile|WriteFile|Mkdir|MkdirAll|ReadDir)|ioutil\s*\.\s*(?:ReadFile|WriteFile))\s*\(", "PATH", "os file access"),
             _sink(r"\bhttp\s*\.\s*ServeFile\s*\(", "PATH", "http.ServeFile", THIRD),
             _sink(r"\bhttp\s*\.\s*(?:Get|Post|Head|PostForm)\s*\(", "SSRF", "net/http request"),

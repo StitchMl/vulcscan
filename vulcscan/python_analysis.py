@@ -419,6 +419,7 @@ class PythonProject:
         self.errors: list[ScanError] = []
         self.summaries: dict[tuple[str, str], Summary] = {}
         self._by_name: dict[str, list[Module]] = {}
+        self.django_routes: dict[tuple[str, str], dict[str, bool]] = {}
         for relative, text in sorted(sources, key=lambda item: item[0].casefold()):
             try:
                 tree = ast.parse(text, filename=relative)
@@ -433,6 +434,7 @@ class PythonProject:
 
     def analyze(self) -> list[Finding]:
         findings: list[Finding] = []
+        self._collect_django_routes()
         for module in self.modules:
             self._run_guarded(module, lambda module=module: self._collect_constants(module))
         for _ in range(SUMMARY_ROUNDS):
@@ -506,7 +508,50 @@ class PythonProject:
             step = FlowStep("SOURCE", location, argument.arg, "HTTP route parameter enters the handler.")
             value = source_value(step, REMOTE)
             environment[argument.arg] = sanitize(value, ALL_SINKS) if sanitized else value
+        routed = self.django_routes.get((module.relative, info.qualname), {})
+        arguments = {
+            argument.arg: argument
+            for argument in (*info.node.args.posonlyargs, *info.node.args.args, *info.node.args.kwonlyargs)
+        }
+        for name, sanitized in routed.items():
+            argument = arguments.get(name)
+            if argument is None:
+                continue
+            location = _location(module, argument, info.qualname)
+            step = FlowStep("SOURCE", location, name, "Django URL parameter enters the view.")
+            value = source_value(step, REMOTE)
+            environment[name] = sanitize(value, ALL_SINKS) if sanitized else value
         return environment
+
+    def _collect_django_routes(self) -> None:
+        """Map Django ``path``/``re_path`` declarations to function views.
+
+        This is deliberately limited to statically imported function views and
+        literal route strings. It adds cross-file evidence without guessing at
+        dynamic URL configuration or class-based dispatch.
+        """
+        for route_module in self.modules:
+            for node in ast.walk(route_module.tree):
+                if not isinstance(node, ast.Call) or len(node.args) < 2:
+                    continue
+                route_name = _canonical(route_module, node.func).rsplit(".", 1)[-1]
+                route = node.args[0]
+                if route_name not in {"path", "re_path", "url"} or not (
+                    isinstance(route, ast.Constant) and isinstance(route.value, str)
+                ):
+                    continue
+                resolved = self.resolve(route_module, None, node.args[1])
+                if resolved is None:
+                    continue
+                target_module, target, _ = resolved
+                parameters: dict[str, bool] = {}
+                for converter, name in re.findall(r"<(?:(\w+):)?([A-Za-z_]\w*)>", route.value):
+                    parameters[name] = converter in {"int", "uuid", "slug"}
+                for name in re.findall(r"\(\?P<([A-Za-z_]\w*)>", route.value):
+                    parameters[name] = False
+                if parameters:
+                    key = (target_module.relative, target.qualname)
+                    self.django_routes.setdefault(key, {}).update(parameters)
 
     def resolve(self, module: Module, function: FunctionInfo | None, func: ast.expr) -> tuple[Module, FunctionInfo, bool] | None:
         """Resolve a call target to a project function.

@@ -122,7 +122,7 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 - Python cross-module flows need a direct call to an imported function; dynamic dispatch, decorators that wrap handlers, `getattr` and callbacks are not followed.
 - JavaScript/TypeScript analysis stays within one file and does not follow higher-order functions or object properties set elsewhere.
 - PHP, Java, C#, Go, Ruby, C/C++, Shell, PowerShell and Batch have no type information or inter-procedural analysis.
-- Django view parameters from URL patterns are not treated as sources.
+- Django literal `path`/`re_path` declarations are linked to imported function views; dynamic URL configuration and class-based `as_view()` dispatch are not resolved.
 - Argument injection into a fixed program (`subprocess.run(["git", user_value])`) is not reported.
 - Binary analysis is header, symbol and printable-string based. It does not replace disassembly, control-flow analysis, fuzzing or memory-safety instrumentation.
 - Without `--update-cve`, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.

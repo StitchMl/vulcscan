@@ -247,7 +247,12 @@ _SUBPROCESS_CALLS = {
     "subprocess.check_output",
     "subprocess.Popen",
 }
-_PROGRAM_CALLS = {"asyncio.create_subprocess_exec", "os.execv", "os.execvp", "os.execl", "os.execlp"}
+_PROGRAM_CALLS = {
+    "asyncio.create_subprocess_exec",
+    "os.execv", "os.execvp", "os.execl", "os.execlp",
+    "os.execve", "os.execvpe", "os.execle", "os.execlpe",
+    "os.posix_spawn", "os.posix_spawnp",
+}
 _CODE_CALLS = {"eval", "exec", "builtins.eval", "builtins.exec"}
 _PATH_CALLS = {
     "open",

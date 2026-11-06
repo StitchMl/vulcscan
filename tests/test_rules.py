@@ -207,6 +207,22 @@ subprocess.run(command, shell=True)
     assert all(item.rule_id != "PY-CMD-001" for item in findings)
 
 
+def test_python_tainted_program_path_reaches_exec_family() -> None:
+    source = '''
+from flask import request
+import os
+
+program = request.args["program"]
+os.execve(program, [program], {})
+os.posix_spawn(program, [program], {})
+'''
+    findings, parser_error = analyze_python("app.py", source)
+
+    assert parser_error is None
+    cmd = [item for item in findings if item.rule_id == "PY-CMD-001"]
+    assert len(cmd) == 2
+
+
 def test_python_parameterized_sql_is_not_reported() -> None:
     source = '''
 from flask import request

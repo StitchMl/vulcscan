@@ -537,7 +537,7 @@ class _Engine:
 
     def _ruby_scopes(self, start: int, end: int) -> None:
         code = self.mask[start:end].strip()
-        definition = re.match(r"def\s+(?:self\.)?([\w?!=]+)\s*(?:\(([^)]*)\)|([^=]*))?", code)
+        definition = re.match(r"def\s+(?:self\.)?([\w?!=]+)\s*(?:\(([^)]*)\)|([^=]+))?", code)
         if definition:
             scope = _Scope(function=True, name=definition.group(1))
             for name in re.findall(r"[*&]*([A-Za-z_]\w*)", definition.group(2) or definition.group(3) or ""):

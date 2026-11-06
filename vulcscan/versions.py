@@ -102,7 +102,7 @@ def _semver_key(version: str):
 
 def _rubygems_key(version: str):
     text = version.strip()
-    if not re.fullmatch(r"[0-9]+(?:[.-]?[0-9A-Za-z]+)*", text):
+    if not re.fullmatch(r"[0-9]++(?:[.-]?[0-9A-Za-z]++)*+", text):
         return None
     # Gem::Version: letter segments mark a prerelease and sort before numbers,
     # so 1.2.0.pre1 < 1.2.0 < 1.2.0.1.

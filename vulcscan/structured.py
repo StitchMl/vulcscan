@@ -337,7 +337,7 @@ CATALOGS: dict[str, Catalog] = {
         "dollar",
         False,
         re.compile(r"^\s*(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?(?P<name>[A-Za-z_]\w*)(?P<op>\+?=)(?P<value>.*?)\s*$"),
-        inputs=((re.compile(r"\bread\b(?:\s+-\w+(?:\s+\S+)?)*\s+([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),
+        inputs=((re.compile(r"\bread\b(?:\s+-\w+(?:\s+\S+)?)*\s+([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),  # NOSONAR: input is a bounded shell-source line; the read-option grammar needs this backtracking
     ),
     "PowerShell": Catalog(
         "PS",

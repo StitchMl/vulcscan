@@ -390,7 +390,7 @@ class _Analyzer:
         return [], []
 
     def _is_allowlist(self, expression: str) -> bool:
-        if re.fullmatch(r"\[\s*(?:(?:'[^']*'|\"[^\"]*\"|\d+)\s*,?\s*)+\]", expression):
+        if re.fullmatch(r"\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]", expression):
             return True
         return any(expression in scope.allowlists for scope in self.scopes)
 
@@ -479,7 +479,7 @@ class _Analyzer:
         expression = self.text[start:end].strip().rstrip(";")
         return bool(
             re.fullmatch(
-                r"(?:new\s+Set\s*\(\s*)?\[\s*(?:(?:'[^']*'|\"[^\"]*\"|\d+)\s*,?\s*)+\]\s*\)?(?:\s+as\s+const)?",
+                r"(?:new\s+Set\s*\(\s*)?\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]\s*\)?(?:\s+as\s+const)?",
                 expression,
             )
         )

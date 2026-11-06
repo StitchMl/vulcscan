@@ -54,7 +54,7 @@ def _default_opener() -> Callable[..., Any]:
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _RejectRedirect(),
-        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),  # NOSONAR: create_default_context() enables certificate and hostname verification
     )
     return opener.open
 

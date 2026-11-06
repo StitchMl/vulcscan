@@ -7,7 +7,6 @@ import pytest
 from vulcscan.models import ScanConfig
 from vulcscan.scanner import scan
 
-
 SQL_CASES = (
     (
         "app.py",

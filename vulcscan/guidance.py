@@ -10,7 +10,6 @@ from .models import Confidence, Finding, Remediation
 from .patch_guidance import computed_remediation
 from .rules import test_vectors_for
 
-
 _FAMILY_PATCHES: dict[str, dict[str, tuple[str, str]]] = {
     "SQL": {
         "Python": ("Bind the value with the active database driver's placeholder.", 'cursor.execute("SELECT ... WHERE field = ?", (value,))'),
@@ -353,7 +352,7 @@ def _split_string_expression(expression: str, separator: str) -> list[str] | Non
             escaped = True
             continue
         if char in {"'", '"', "`"}:
-            quote = "" if quote == char else char if not quote else quote
+            quote = "" if quote == char else quote if quote else char
             continue
         if char == separator and not quote:
             parts.append(expression[start:index].strip())
@@ -526,7 +525,7 @@ def _split_php_concat(expression: str) -> list[str] | None:
             escaped = True
             continue
         if char in {"'", '"'}:
-            quote = "" if quote == char else char if not quote else quote
+            quote = "" if quote == char else quote if quote else char
             continue
         if char == "." and not quote:
             parts.append(expression[start:index].strip())

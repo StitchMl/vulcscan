@@ -7,7 +7,6 @@ import pytest
 from vulcscan.models import ScanConfig
 from vulcscan.scanner import scan
 
-
 XSS_CASES = (
     (
         "app.py",

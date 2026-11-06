@@ -15,7 +15,6 @@ from .models import (
     SEVERITY_RANK,
     Finding,
     Location,
-    Remediation,
     ScanResult,
     Severity,
     Vulnerability,

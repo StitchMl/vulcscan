@@ -235,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         _error("scan interrupted")
         return 130
-    except Exception as exc:  # noqa: BLE001 - CLI boundary for fatal scanner errors.
+    except Exception as exc:
         _error(str(exc))
         return 2
 

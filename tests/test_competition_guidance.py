@@ -7,7 +7,6 @@ import pytest
 
 from vulcscan.scanner import scan_path
 
-
 # These snippets model unrelated contest services.  Their domain names and data
 # shapes deliberately differ from the bundled demonstration applications.
 CASES = (

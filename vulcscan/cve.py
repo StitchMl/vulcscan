@@ -46,7 +46,7 @@ _OSV_ECOSYSTEMS = {
 
 
 class _RejectRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 - urllib signature
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, f"redirect to {newurl!r} refused", headers, fp)
 
 
@@ -112,7 +112,7 @@ class OSVClient:
             found = self._query_batch([dependency for _, dependency in chunk])
             if found is None:
                 continue
-            for (key, _), ids in zip(chunk, found):
+            for (key, _), ids in zip(chunk, found, strict=False):
                 ids_by_key[key] = ids
 
         advisories: dict[str, dict[str, Any]] = {}
@@ -155,7 +155,7 @@ class OSVClient:
             self.errors.append("OSV querybatch returned a malformed results list")
             return None
         found: list[list[str]] = []
-        for query, result in zip(queries, results):
+        for query, result in zip(queries, results, strict=False):
             ids = _ids(_dict(result))
             token = _dict(result).get("next_page_token")
             pages = 1

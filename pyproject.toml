@@ -32,3 +32,10 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["vulcscan"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["F", "I", "B", "C4", "PIE", "SIM", "RUF"]

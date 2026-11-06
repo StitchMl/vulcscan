@@ -287,7 +287,7 @@ def scan(config: ScanConfig) -> ScanResult:
     for binary in discovery.binaries:
         try:
             result.findings.extend(analyze_binary(binary.relative, binary.data))
-        except Exception as exc:  # noqa: BLE001 - one artifact must not abort the scan
+        except Exception as exc:
             result.errors.append(ScanError(binary.relative, "binary-analysis", f"{exc.__class__.__name__}: {exc}"))
     for finding in result.findings:
         enrich_finding(finding)
@@ -314,7 +314,7 @@ def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
                 result.findings.extend(analyze_javascript(source.relative, source.text, source.language))
             elif source.language in CATALOGS:
                 result.findings.extend(analyze_structured(source.relative, source.text, source.language))
-        except Exception as exc:  # noqa: BLE001 - one file must not abort the scan; the error is reported
+        except Exception as exc:
             result.errors.append(ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}"))
 
 

@@ -11,7 +11,6 @@ import pytest
 from vulcscan.models import ScanConfig
 from vulcscan.scanner import scan
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 

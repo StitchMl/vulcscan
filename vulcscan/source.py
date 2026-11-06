@@ -258,9 +258,8 @@ def _hash_starts_comment(text: str, index: int, style: str) -> bool:
         # YAML/Ruby: '#' glued to a word is part of a value (url#frag, $#)
         line_start = text.rfind("\n", 0, index) + 1
         return text[line_start:index].strip() == ""
-    if style == SHELL_STYLE and index > 0 and text[index - 1] not in " \t\n;|&(":
-        return False  # ${#var}, $#
-    return True
+    # Shell ${#var}/$#: '#' glued to a non-separator is not a comment.
+    return not (style == SHELL_STYLE and index > 0 and text[index - 1] not in " \t\n;|&(")
 
 
 def _escaped(text: str, index: int) -> bool:

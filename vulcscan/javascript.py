@@ -15,7 +15,6 @@ from dataclasses import dataclass, field, replace
 
 from .dataflow import (
     ALL_SINKS,
-    CODE,
     COMMAND,
     ENVIRONMENT,
     FILESYSTEM,
@@ -44,7 +43,14 @@ from .dataflow import (
 from .models import Confidence, Finding, FlowStep, Location
 from .regex_safety import safe_for
 from .rules import remediations_for, rule
-from .source import JS_STYLE, LineIndex, blank_comments, code_mask, matching_paren, split_arguments
+from .source import (
+    JS_STYLE,
+    LineIndex,
+    blank_comments,
+    code_mask,
+    matching_paren,
+    split_arguments,
+)
 
 _KEYWORDS = {
     "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do",
@@ -219,16 +225,14 @@ class _Analyzer:
         header = self.mask[start:brace].rstrip()
         if not header:
             return True
-        if header.endswith("=>") or header.endswith(")"):
+        if header.endswith(("=>", ")")):
             return True
         if re.search(r"(?:^|[^\w$])(?:else|try|finally|do)$", header):
             return True
         if re.search(r"\b(?:class|interface|enum|namespace)\b[^=(]*$", header):
             return True
         # function f(a): Type {  /  method(a): Promise<T> {
-        if re.search(r"\)\s*:\s*[\w$<>\[\]|&., ]+$", header):
-            return True
-        return False
+        return bool(re.search(r"\)\s*:\s*[\w$<>\[\]|&., ]+$", header))
 
     def _complete(self, start: int, newline: int) -> bool:
         current = self.mask[start:newline].strip()
@@ -512,11 +516,12 @@ class _Analyzer:
         ):
             for match in pattern.finditer(joined):
                 absolute = start + match.start()
+                origin = re.sub(r"[\s(]+", "", match.group(0))
                 step = FlowStep(
                     "SOURCE",
                     self._location(absolute, start + match.end()),
                     re.sub(r"\s+", "", self.text[absolute : start + match.end()]),
-                    f"{description} from {re.sub(r'[\s(]+', '', match.group(0))}.",
+                    f"{description} from {origin}.",
                 )
                 values.append(source_value(step, trust))
                 for position in range(match.start(), match.end()):

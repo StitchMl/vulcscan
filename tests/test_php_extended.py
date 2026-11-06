@@ -1,6 +1,6 @@
 from vulcscan.lexical import lexical_findings
-from vulcscan.structured import analyze_structured
 from vulcscan.scanner import scan_path
+from vulcscan.structured import analyze_structured
 
 
 def test_php_url_stream_is_also_ssrf() -> None:

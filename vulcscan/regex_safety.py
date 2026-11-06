@@ -34,9 +34,7 @@ def safe_for(pattern: str, fullmatch: bool) -> frozenset[str]:
         body = body[1:]
     elif body.startswith(r"\A"):
         body = body[2:]
-    if body.endswith(r"\Z"):
-        body = body[:-2]
-    elif body.endswith(r"\z"):
+    if body.endswith((r"\Z", r"\z")):
         body = body[:-2]
     elif fullmatch and body.endswith("$") and not body.endswith(r"\$"):
         body = body[:-1]

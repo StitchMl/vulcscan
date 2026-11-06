@@ -22,10 +22,8 @@ from .dataflow import (
     HTTP_REQUEST,
     LOCAL,
     NORMALIZED,
-    REDIRECT,
     REMOTE,
     SQL,
-    SQL_KEYWORDS,
     UNKNOWN,
     Value,
     concatenate,
@@ -43,7 +41,14 @@ from .models import Confidence, Finding, FlowStep, Location
 from .patches import structured_suggestion
 from .regex_safety import safe_for
 from .rules import remediations_for, rule
-from .source import LineIndex, blank_comments, code_mask, comment_style, matching_paren, split_arguments
+from .source import (
+    LineIndex,
+    blank_comments,
+    code_mask,
+    comment_style,
+    matching_paren,
+    split_arguments,
+)
 
 # Argument selectors
 FIRST, SECOND, THIRD, LAST, ALL, AFTER_FIRST, REST, TOKEN = "first", "second", "third", "last", "all", "after_first", "rest", "token"

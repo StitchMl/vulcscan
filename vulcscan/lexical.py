@@ -12,7 +12,12 @@ import re
 from collections.abc import Callable
 
 from .models import Confidence, Finding, Location
-from .names import is_credential_name, is_random_sensitive_name, looks_like_secret, mentions_password
+from .names import (
+    is_credential_name,
+    is_random_sensitive_name,
+    looks_like_secret,
+    mentions_password,
+)
 from .rules import RULES, remediations_for
 from .source import blank_comments, comment_style, split_lines
 

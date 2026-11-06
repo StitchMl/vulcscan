@@ -71,6 +71,4 @@ def looks_like_secret(value: str, identifier: str = "") -> bool:
         return False
     if candidate.startswith(("/", "./", "../", "~/")) or re.match(r"^[A-Za-z]:\\", candidate):
         return False
-    if re.match(r"(?i)^[a-z][a-z0-9+.-]*://", candidate) and "@" not in candidate:
-        return False
-    return True
+    return not (re.match(r"(?i)^[a-z][a-z0-9+.-]*://", candidate) and "@" not in candidate)

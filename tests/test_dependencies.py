@@ -48,7 +48,7 @@ version = "2.2.2"
         encoding="utf-8",
     )
 
-    dependencies, errors = scan_dependencies(tmp_path)
+    dependencies, _errors = scan_dependencies(tmp_path)
 
     requests = _by_name(dependencies, "PyPI", "requests")
     assert len(requests) == 1
@@ -126,7 +126,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         encoding="utf-8",
     )
 
-    dependencies, errors = scan_dependencies(tmp_path)
+    dependencies, _errors = scan_dependencies(tmp_path)
     versions = {(item.ecosystem, item.name): item.version for item in dependencies}
 
     assert versions[("npm", "left-pad")] == "1.3.0"
@@ -158,7 +158,7 @@ def test_scan_can_reuse_discovered_manifest_paths(tmp_path: Path) -> None:
         '{"dependencies":{"express":"4.19.2"}}', encoding="utf-8"
     )
 
-    dependencies, errors = scan_dependencies(tmp_path, [requirements])
+    dependencies, _errors = scan_dependencies(tmp_path, [requirements])
 
     assert [(item.ecosystem, item.name) for item in dependencies] == [("PyPI", "flask")]
 
@@ -192,7 +192,7 @@ def test_unlocked_manifests_preserve_constraints_and_locations(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    dependencies, errors = scan_dependencies(tmp_path)
+    dependencies, _errors = scan_dependencies(tmp_path)
 
     django = _by_name(dependencies, "PyPI", "django")[0]
     assert (django.version, django.constraint, django.resolved, django.line) == (
@@ -244,7 +244,7 @@ packages:
         encoding="utf-8",
     )
 
-    dependencies, errors = scan_dependencies(tmp_path)
+    dependencies, _errors = scan_dependencies(tmp_path)
 
     assert _by_name(dependencies, "npm", "@scope/widget")[0].version == "2.1.4"
     tiny = _by_name(dependencies, "npm", "tiny-lib")[0]

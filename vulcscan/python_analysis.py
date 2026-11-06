@@ -32,7 +32,6 @@ from .dataflow import (
     SQL_KEYWORDS,
     TEMPLATE,
     UNKNOWN,
-    XML,
     Value,
     concatenate,
     constant,
@@ -43,11 +42,15 @@ from .dataflow import (
     sanitize,
     source_value,
     unique_steps,
-    weakest,
     with_step,
 )
 from .models import Confidence, Finding, FlowStep, Location, ScanError
-from .names import is_credential_name, is_random_sensitive_name, looks_like_secret, mentions_password
+from .names import (
+    is_credential_name,
+    is_random_sensitive_name,
+    looks_like_secret,
+    mentions_password,
+)
 from .regex_safety import safe_for
 from .rules import remediations_for, rule
 from .source import split_lines, utf8_column_to_char
@@ -128,9 +131,8 @@ def _is_bound_orm_expression(node: ast.AST) -> bool:
 def _has_non_html_media_type(node: ast.Call) -> bool:
     safe_types = {"application/json", "application/octet-stream"}
     for keyword in node.keywords:
-        if keyword.arg in {"mimetype", "content_type", "media_type"}:
-            if isinstance(keyword.value, ast.Constant) and keyword.value.value in safe_types:
-                return True
+        if keyword.arg in {"mimetype", "content_type", "media_type"} and isinstance(keyword.value, ast.Constant) and keyword.value.value in safe_types:
+            return True
         if keyword.arg != "headers" or not isinstance(keyword.value, ast.Dict):
             continue
         for key, value in zip(keyword.value.keys, keyword.value.values, strict=False):
@@ -466,7 +468,7 @@ class PythonProject:
     def _run_guarded(self, module: Module, action) -> None:
         try:
             action()
-        except Exception as exc:  # noqa: BLE001 - one module must not stop the others; the error is reported
+        except Exception as exc:
             self.errors.append(ScanError(module.relative, "python-analysis", f"{exc.__class__.__name__}: {exc}"))
 
     def _collect_constants(self, module: Module) -> None:
@@ -1591,9 +1593,7 @@ def _assigned_names(statement: ast.stmt) -> list[str]:
     targets: list[ast.AST] = []
     if isinstance(statement, ast.Assign):
         targets = list(statement.targets)
-    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
-        targets = [statement.target]
-    elif isinstance(statement, (ast.For, ast.AsyncFor)):
+    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
         targets = [statement.target]
     elif isinstance(statement, (ast.With, ast.AsyncWith)):
         targets = [item.optional_vars for item in statement.items if item.optional_vars is not None]
@@ -1690,9 +1690,9 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
     arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     defaults: dict[str, ast.expr] = {}
     positional = [*node.args.posonlyargs, *node.args.args]
-    for argument, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults):
+    for argument, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults, strict=False):
         defaults[argument.arg] = default
-    for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+    for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=False):
         if default is not None:
             defaults[argument.arg] = default
     result: list[tuple[ast.arg, bool]] = []
@@ -1830,7 +1830,7 @@ def _pattern_findings(module: Module) -> list[Finding]:
         if isinstance(node, ast.Call):
             _call_patterns(module, node, function, add, hash_objects, imports_flask)
         if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values):
+            for key, value in zip(node.keys, node.values, strict=False):
                 if (
                     isinstance(key, ast.Constant)
                     and isinstance(key.value, str)
@@ -1859,9 +1859,8 @@ def _assignment_patterns(module: Module, node: ast.Assign | ast.AnnAssign, funct
         target_name = _target_name(target)
         if not target_name:
             continue
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            if is_credential_name(target_name) and looks_like_secret(value.value, target_name):
-                add("SECRET-001", value, function, target_name, _redacted(module, node))
+        if isinstance(value, ast.Constant) and isinstance(value.value, str) and is_credential_name(target_name) and looks_like_secret(value.value, target_name):
+            add("SECRET-001", value, function, target_name, _redacted(module, node))
         call = _random_call(module, value)
         if call is not None and is_random_sensitive_name(target_name):
             add("WEAK-RANDOM-001", call, function, _canonical(module, call.func), suggestion=patches.random_suggestion(module.text, call, _canonical(module, call.func)))
@@ -1890,7 +1889,7 @@ def _call_patterns(module: Module, node: ast.Call, function: str | None, add, ha
             options = keywords.get("options")
             if isinstance(options, ast.Dict) and any(
                 isinstance(key, ast.Constant) and key.value == "verify_signature" and _is_false(value)
-                for key, value in zip(options.keys, options.values)
+                for key, value in zip(options.keys, options.values, strict=False)
             ):
                 add("JWT-VERIFY-001", node, function, name)
             algorithms = keywords.get("algorithms")
@@ -1920,15 +1919,12 @@ def _call_patterns(module: Module, node: ast.Call, function: str | None, add, ha
         add("WEAK-CIPHER-001", node, function, "AES in ECB mode")
     if name in _HASH_FUNCTIONS and any(mentions_password(_dotted(item) or _constant_text(item)) for argument in node.args for item in ast.walk(argument)):
         add("WEAK-HASH-001", node, function, name)
-    elif isinstance(node.func, ast.Attribute) and node.func.attr == "update" and _dotted(node.func.value) in hash_objects:
-        if any(mentions_password(_dotted(item)) for argument in node.args for item in ast.walk(argument)):
-            add("WEAK-HASH-001", node, function, hash_objects[_dotted(node.func.value)])
-    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run":
-        if _is_true(keywords.get("debug")):
-            add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
-    if name.endswith("lxml.etree.XMLParser") or name == "lxml.etree.XMLParser":
-        if _is_true(keywords.get("resolve_entities")) or (_is_true(keywords.get("load_dtd")) and not _is_false(keywords.get("resolve_entities"))):
-            add("XXE-001", node, function, name)
+    elif isinstance(node.func, ast.Attribute) and node.func.attr == "update" and _dotted(node.func.value) in hash_objects and any(mentions_password(_dotted(item)) for argument in node.args for item in ast.walk(argument)):
+        add("WEAK-HASH-001", node, function, hash_objects[_dotted(node.func.value)])
+    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run" and _is_true(keywords.get("debug")):
+        add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
+    if (name.endswith("lxml.etree.XMLParser") or name == "lxml.etree.XMLParser") and (_is_true(keywords.get("resolve_entities")) or (_is_true(keywords.get("load_dtd")) and not _is_false(keywords.get("resolve_entities")))):
+        add("XXE-001", node, function, name)
     if isinstance(node.func, ast.Attribute) and node.func.attr == "setFeature" and len(node.args) == 2:
         feature = _canonical(module, node.args[0])
         if feature.endswith(("feature_external_ges", "feature_external_pes")) and _is_true(node.args[1]):
@@ -1956,18 +1952,17 @@ def _cors_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str
         if isinstance(resources, ast.Dict):
             for value in resources.values:
                 if isinstance(value, ast.Dict):
-                    resource_origins.extend(v for k, v in zip(value.keys, value.values) if isinstance(k, ast.Constant) and k.value == "origins")
+                    resource_origins.extend(v for k, v in zip(value.keys, value.values, strict=False) if isinstance(k, ast.Constant) and k.value == "origins")
         candidates = [item for item in (origins, *resource_origins) if item is not None]
         if not candidates or any(_is_wildcard(item) for item in candidates):
             add("CORS-001", node, function, f"{short}(supports_credentials=True) with any origin")
         return
     middleware = node.args[0] if node.args and short == "add_middleware" else None
-    if (middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware":
-        if _is_true(keywords.get("allow_credentials")) and (
-            _is_wildcard(keywords.get("allow_origins"))
-            or (isinstance(keywords.get("allow_origin_regex"), ast.Constant) and keywords["allow_origin_regex"].value in {".*", "^.*$", ".+"})
-        ):
-            add("CORS-001", node, function, "CORSMiddleware(allow_origins=['*'], allow_credentials=True)")
+    if ((middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware") and _is_true(keywords.get("allow_credentials")) and (
+        _is_wildcard(keywords.get("allow_origins"))
+        or (isinstance(keywords.get("allow_origin_regex"), ast.Constant) and keywords["allow_origin_regex"].value in {".*", "^.*$", ".+"})
+    ):
+        add("CORS-001", node, function, "CORSMiddleware(allow_origins=['*'], allow_credentials=True)")
 
 
 def _settings_patterns(assignments: dict[str, ast.Assign], add) -> None:

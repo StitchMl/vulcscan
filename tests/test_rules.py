@@ -4,13 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from vulcscan.models import Confidence, Severity
 from vulcscan.javascript import analyze_javascript
 from vulcscan.lexical import lexical_findings
+from vulcscan.models import Confidence, Severity
 from vulcscan.python_analysis import analyze_python
 from vulcscan.rules import RULES, remediations_for
 from vulcscan.structured import analyze_structured
-
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

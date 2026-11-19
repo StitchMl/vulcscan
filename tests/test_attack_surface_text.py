@@ -18,6 +18,7 @@ def test_opt_in_attack_surface_precedes_priority_index(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     result = scan_path(tmp_path, cve=False, attack_surface=True)
+    result.metadata['root'] = '/tmp/service'
     report = render_text(result, color=False, width=88)
     assert "ATTACK SURFACE" in report
     assert "GET /lookup" in report

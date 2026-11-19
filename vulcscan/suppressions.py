@@ -13,6 +13,42 @@ _DIRECTIVE = re.compile(r"^#\s*vulcscan:ignore\s+([A-Z][A-Z0-9_-]+)\s*$", re.IGN
 _JS_DIRECTIVE = re.compile(r"^//\s*vulcscan:ignore\s+([A-Z][A-Z0-9_-]+)\s*$", re.IGNORECASE)
 
 
+def _javascript_directives(text: str) -> set[tuple[int, str]]:
+    """Find real line comments outside strings, regexes and block comments."""
+    clean = blank_comments(text, JS_STYLE)
+    found: set[tuple[int, str]] = set()
+    line, line_start, index = 1, 0, 0
+    inside_block = False
+    while index < len(text):
+        if text[index] == "\\n":
+            line += 1
+            line_start = index + 1
+            index += 1
+            continue
+        pair = text[index:index + 2]
+        blanked = clean[index:index + 2] == "  "
+        if inside_block:
+            if pair == "*/":
+                inside_block = False
+                index += 2
+                continue
+        elif blanked and pair == "/*":
+            inside_block = True
+            index += 2
+            continue
+        elif blanked and pair == "//":
+            end = text.find("\\n", index)
+            end = len(text) if end < 0 else end
+            match = _JS_DIRECTIVE.fullmatch(text[index:end].strip())
+            if match:
+                target = line if clean[line_start:index].strip() else line + 1
+                found.add((target, match.group(1).upper()))
+            index = end
+            continue
+        index += 1
+    return found
+
+
 def suppression_index(files: list[Any]) -> dict[str, set[tuple[int, str]]]:
     """Recognize directive comments only (not string literals).
 
@@ -39,22 +75,7 @@ def suppression_index(files: list[Any]) -> dict[str, set[tuple[int, str]]]:
             except (tokenize.TokenError, IndentationError, SyntaxError):
                 continue
         elif source.language in {"JavaScript", "TypeScript"}:
-            # blank_comments preserves offsets and retains string contents.
-            clean = blank_comments(source.text, JS_STYLE)
-            for row, (line, visible) in enumerate(
-                zip(split_lines(source.text), split_lines(clean), strict=True), 1
-            ):
-                comment = re.search(r"//.*$", line)
-                if comment is None:
-                    continue
-                if visible[comment.start():comment.start() + 2] != "  ":
-                    continue
-                match = _JS_DIRECTIVE.fullmatch(comment.group(0).strip())
-                if match is None:
-                    continue
-                prefix = visible[:comment.start()]
-                target = row if prefix.strip() else row + 1
-                active.add((target, match.group(1).upper()))
+            active.update(_javascript_directives(source.text))
         else:
             continue
         if active:

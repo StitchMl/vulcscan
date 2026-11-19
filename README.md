@@ -175,3 +175,9 @@ the following physical line. The rule ID must match exactly, no wildcard
 suppression is supported, and directives inside strings are ignored. This
 only filters findings, not detection or source execution. Use sparingly and
 document why the finding is a false positive.
+
+### Endpoint canaries and isolated patch validation
+
+With `--attack-surface`, a Python GET endpoint associated with a traced literal query parameter may include a `verify_curl` field. The displayed command targets `127.0.0.1:8000` using the inert `VULCSCAN_CANARY` marker. It is never executed; no command is emitted for POST, dynamic routes or ambiguous inputs. Review handler behavior before running any GET request, because an application may incorrectly mutate state on GET.
+
+Python `--generate-diff` validates proposed changes independently, so one invalid patch no longer discards unrelated valid edits. Syntax validation and basic import checks do not prove functional or SLA safety.

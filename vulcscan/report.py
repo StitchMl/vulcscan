@@ -444,10 +444,20 @@ def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: 
             original = data.decode("utf-8-sig") if not data.startswith(b"\xef\xbb\xbf") else data[3:].decode("utf-8")
         except (OSError, UnicodeError):
             continue
-        patched = _apply_edits(original, edits)
+        if path.suffix.casefold() in {".py", ".pyw"}:
+            # A malformed proposal must not discard unrelated, valid fixes.
+            # Validate each accepted candidate against the complete file.
+            accepted: list[tuple[int, int, str, str]] = []
+            patched = original
+            for edit in edits:
+                candidate = _apply_edits(original, [*accepted, edit])
+                if candidate == patched or not _safe_python_patch(original, candidate):
+                    continue
+                accepted.append(edit)
+                patched = candidate
+        else:
+            patched = _apply_edits(original, edits)
         if patched == original:
-            continue
-        if path.suffix.casefold() in {".py", ".pyw"} and not _safe_python_patch(original, patched):
             continue
         chunks.extend(
             difflib.unified_diff(

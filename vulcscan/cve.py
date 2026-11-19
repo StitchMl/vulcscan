@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -53,11 +53,20 @@ class _RejectRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, f"redirect to {newurl!r} refused", headers, fp)
 
 
+def _build_request(url: str, payload: dict[str, Any] | None) -> urllib.request.Request:
+    data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
+    headers = {"Accept": "application/json", "User-Agent": "vulcscan (deterministic SAST)"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    return urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+
+
 def _default_opener() -> Callable[..., Any]:
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _RejectRedirect(),
-        urllib.request.HTTPSHandler(context=ssl.create_default_context()),  # NOSONAR: create_default_context() enables certificate and hostname verification
+        # create_default_context() enables certificate and hostname verification.
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
     )
     return opener.open
 
@@ -111,24 +120,10 @@ class OSVClient:
         selected = self._queryable(dependencies)
         if self.local_db is not None or (self.offline and self.cache_path is not None):
             return self._query_local(selected)
-        if self.offline:
+        if self.offline or not selected:
             return []
-        if not selected:
-            return []
-        ids_by_key: dict[str, list[str]] = {}
-        selected_items = list(selected.items())
-        for chunk in _chunks(selected_items, _BATCH_SIZE):
-            found = self._query_batch([dependency for _, dependency in chunk])
-            if found is None:
-                continue
-            for (key, _), ids in zip(chunk, found, strict=False):
-                ids_by_key[key] = ids
-
-        advisories: dict[str, dict[str, Any]] = {}
-        for advisory_id in sorted({item for ids in ids_by_key.values() for item in ids}):
-            fetched = self._get_advisory(advisory_id)
-            if fetched is not None:
-                advisories[advisory_id] = fetched
+        ids_by_key = self._collect_advisory_ids(selected)
+        advisories = self._fetch_advisories(ids_by_key)
 
         vulnerabilities: list[Vulnerability] = []
         for key, dependency in selected.items():
@@ -140,6 +135,24 @@ class OSVClient:
         if self.cache_path is not None and not self.errors:
             self._write_cache(selected, ids_by_key, advisories)
         return _deduplicate(vulnerabilities)
+
+    def _fetch_advisories(self, ids_by_key: dict[str, list[str]]) -> dict[str, dict[str, Any]]:
+        advisories: dict[str, dict[str, Any]] = {}
+        for advisory_id in sorted({item for ids in ids_by_key.values() for item in ids}):
+            fetched = self._get_advisory(advisory_id)
+            if fetched is not None:
+                advisories[advisory_id] = fetched
+        return advisories
+
+    def _collect_advisory_ids(self, selected: dict[str, Dependency]) -> dict[str, list[str]]:
+        ids_by_key: dict[str, list[str]] = {}
+        for chunk in _chunks(list(selected.items()), _BATCH_SIZE):
+            found = self._query_batch([dependency for _, dependency in chunk])
+            if found is None:
+                continue
+            for (key, _), ids in zip(chunk, found, strict=False):
+                ids_by_key[key] = ids
+        return ids_by_key
 
     def _write_cache(
         self,
@@ -289,36 +302,35 @@ class OSVClient:
             return None
         return self._request_json(OSV_VULNERABILITY_URL + urllib.parse.quote(advisory_id, safe=""), None)
 
+    def _fetch_object(self, opener: Callable[..., Any], request: urllib.request.Request, url: str) -> dict[str, Any]:
+        response = opener(request, timeout=self.timeout)
+        try:
+            final_url = getattr(response, "geturl", lambda: url)()
+            if final_url != url and not network_url_allowed(final_url):
+                raise ValueError(f"response came from a non-allowlisted URL {final_url}")
+            body = response.read(_MAX_RESPONSE_BYTES + 1)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+        if len(body) > _MAX_RESPONSE_BYTES:
+            raise ValueError("OSV response exceeds size limit")
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise ValueError("OSV response root is not an object")
+        return decoded
+
     def _request_json(self, url: str, payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if self.offline:
             return None
         if not network_url_allowed(url):
             self.errors.append(f"blocked non-allowlisted network endpoint: {url}")
             return None
-        data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
-        headers = {"Accept": "application/json", "User-Agent": "vulcscan (deterministic SAST)"}
-        if data is not None:
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+        request = _build_request(url, payload)
         opener = self._opener or _default_opener()
         for attempt in range(self.retries + 1):
             try:
-                response = opener(request, timeout=self.timeout)
-                try:
-                    final_url = getattr(response, "geturl", lambda: url)()
-                    if final_url != url and not network_url_allowed(final_url):
-                        raise ValueError(f"response came from a non-allowlisted URL {final_url}")
-                    body = response.read(_MAX_RESPONSE_BYTES + 1)
-                finally:
-                    close = getattr(response, "close", None)
-                    if callable(close):
-                        close()
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise ValueError("OSV response exceeds size limit")
-                decoded = json.loads(body.decode("utf-8"))
-                if not isinstance(decoded, dict):
-                    raise ValueError("OSV response root is not an object")
-                return decoded
+                return self._fetch_object(opener, request, url)
             except urllib.error.HTTPError as exc:
                 retryable = exc.code in _RETRYABLE_HTTP_CODES
                 message = f"OSV HTTP {exc.code} for {url}"
@@ -461,25 +473,7 @@ def applicable_fixed_versions(affected: list[dict[str, Any]], dependency: Depend
     every: set[str] = set()
     placed = False
     for entry in affected:
-        listed = {str(item) for item in entry.get("versions", []) if isinstance(item, (str, int))}
-        in_list = version in listed or version.removeprefix("v") in listed
-        for raw_range in entry.get("ranges", []):
-            if not isinstance(raw_range, dict) or raw_range.get("type") not in {"ECOSYSTEM", "SEMVER"}:
-                continue
-            for introduced, end, kind in _segments(raw_range.get("events", [])):
-                if kind == "fixed":
-                    every.add(end)
-                contains = _contains(ecosystem, version, introduced, end, kind)
-                if contains is None:
-                    if in_list and kind == "fixed":
-                        applicable.add(end)
-                        placed = True
-                    continue
-                if contains:
-                    placed = True
-                    if kind == "fixed":
-                        applicable.add(end)
-        if in_list:
+        if _scan_entry(entry, ecosystem, version, applicable, every):
             placed = True
     if applicable:
         return tuple(sort_versions(ecosystem, sorted(applicable))), None
@@ -490,6 +484,31 @@ def applicable_fixed_versions(affected: list[dict[str, Any]], dependency: Depend
             "The installed version could not be placed in an advisory range; the list shows every fixed version in the advisory."
         )
     return (), "The advisory publishes no fixed version."
+
+
+def _scan_entry(entry: dict[str, Any], ecosystem: str, version: str, applicable: set[str], every: set[str]) -> bool:
+    """Collect fixed versions of one affected entry; return whether the version was placed."""
+    listed = {str(item) for item in entry.get("versions", []) if isinstance(item, (str, int))}
+    in_list = version in listed or version.removeprefix("v") in listed
+    placed = in_list
+    for introduced, end, kind in _entry_segments(entry):
+        if kind == "fixed":
+            every.add(end)
+        contains = _contains(ecosystem, version, introduced, end, kind)
+        if contains is None:
+            contains = in_list and kind == "fixed"
+        if contains:
+            placed = True
+            if kind == "fixed":
+                applicable.add(end)
+    return placed
+
+
+def _entry_segments(entry: dict[str, Any]) -> Iterator[tuple[str | None, str, str]]:
+    for raw_range in entry.get("ranges", []):
+        if not isinstance(raw_range, dict) or raw_range.get("type") not in {"ECOSYSTEM", "SEMVER"}:
+            continue
+        yield from _segments(raw_range.get("events", []))
 
 
 def _segments(events: Any) -> list[tuple[str | None, str, str]]:
@@ -531,12 +550,16 @@ def _affected_ranges(affected: list[dict[str, Any]]) -> list[str]:
             if not isinstance(raw_range, dict) or raw_range.get("type") not in {"ECOSYSTEM", "SEMVER"}:
                 continue
             for introduced, end, kind in _segments(raw_range.get("events", [])):
-                start = "" if introduced in (None, "0") else f">= {introduced}"
-                bound = {"fixed": f"< {end}", "limit": f"< {end}", "last_affected": f"<= {end}", "open": ""}[kind]
-                rendered = f"{raw_range.get('type')}: " + (", ".join(part for part in (start, bound) if part) or "all versions")
+                rendered = f"{raw_range.get('type')}: " + _range_text(introduced, end, kind)
                 if rendered not in result:
                     result.append(rendered)
     return result
+
+
+def _range_text(introduced: str | None, end: str, kind: str) -> str:
+    start = "" if introduced in (None, "0") else f">= {introduced}"
+    bound = {"fixed": f"< {end}", "limit": f"< {end}", "last_affected": f"<= {end}", "open": ""}[kind]
+    return ", ".join(part for part in (start, bound) if part) or "all versions"
 
 
 def _severity(advisory: dict[str, Any], affected: list[dict[str, Any]]) -> tuple[str, float | None]:
@@ -570,7 +593,8 @@ def cvss_v3_score(vector: str) -> float | None:
     """CVSS v3.0/v3.1 base score from a vector string (FIRST specification)."""
     if not vector.startswith(("CVSS:3.0/", "CVSS:3.1/")):
         return None
-    metrics = dict(component.split(":", 1) for component in vector.split("/")[1:] if ":" in component)
+    parts = (component.partition(":") for component in vector.split("/")[1:] if ":" in component)
+    metrics = {key: value for key, _, value in parts}
     try:
         attack_vector = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}[metrics["AV"]]
         complexity = {"L": 0.77, "H": 0.44}[metrics["AC"]]

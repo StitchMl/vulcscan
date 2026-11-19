@@ -223,3 +223,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### NoSQL filter injection for JS/TS
 
 `JS-NOSQL-001` (CWE-943) identifies a whole HTTP query or body object flowing into a recognized MongoDB/Mongoose method such as `User.find(req.body)` or `collection.findOne(filter)` after a direct `filter = req.query` assignment. It deliberately avoids flagging structured filters built with explicitly named fields, unrelated JavaScript collection methods, and numeric conversions. Findings retain source-to-sink flow and MEDIUM confidence and require manual review; the scan never executes the target application or applies a patch.
+
+### Classic C/C++ unbounded buffer writes
+
+`C-BUFFER-001` (CWE-120) identifies a narrow set of potentially unbounded writes: `gets(buffer)`, bare `scanf("%s", buffer)` without an explicit field width, and direct `strcpy`/`strcat`/`sprintf` copies from `argv[n]` into a destination. Width-bounded formats, `fgets`, and constant-string copies are not automatically flagged. This review-only lexical rule is not a substitute for compiled analysis; findings are MEDIUM confidence and should be assessed with test binaries and memory sanitizers. No application is run or automatically patched.

@@ -199,3 +199,7 @@ Directly imported, locally exported named functions whose **entire body** is one
 ### JavaScript and TypeScript inline suppressions
 
 A JavaScript or TypeScript finding may be suppressed with an exact-rule `// vulcscan:ignore JS-CMD-001` comment. A trailing comment affects only its own physical line; a standalone line comment affects only the next physical line. Comments inside strings, template literals, regular expressions, or `/* ... */` blocks are ignored; wildcard rules and global file suppressions are not supported. This feature is opt-in through the source comment and preserves the existing Python `# vulcscan:ignore RULE-ID` behavior. Suppress only verified false positives.
+
+### PHP authentication comparisons and token signatures
+
+The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` comparisons between authentication-related variables and explicitly tracked request superglobal values. It recommends strict typed comparisons or `hash_equals`/`password_verify` as appropriate and never generates an automatic patch. Detection is intentionally conservative and does not prove a bypass. Secret signature matching now recognizes common `sk-proj-`, `sk-ant-`, `hf_`, `npm_` and `pypi-` prefixes without exposing the complete value in reports. These are string signatures, not proof that a credential is active; example files remain excluded from known-token alerts.

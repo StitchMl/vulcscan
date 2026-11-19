@@ -234,18 +234,7 @@ class OSVClient:
         grouped = _group_snapshot_entries(entries)
         found: list[Vulnerability] = []
         for dependency in selected.values():
-            eco = osv_ecosystem(dependency.ecosystem)
-            if eco is None:
-                continue
-            key = (eco, canonical_name(dependency.name, dependency.ecosystem), dependency.version or "")
-            for advisory in grouped.get(key, []):
-                identifier = advisory.get("id")
-                if not isinstance(identifier, str) or not _ADVISORY_ID.fullmatch(identifier):
-                    continue
-                affected = matching_affected(advisory, dependency)
-                if not _advisory_affects(affected, dependency):
-                    continue
-                found.append(to_vulnerability(dependency, advisory))
+            found.extend(_snapshot_dependency_matches(dependency, grouped))
         return _deduplicate(found)
 
     def _queryable(self, dependencies: Iterable[Dependency]) -> dict[str, Dependency]:
@@ -370,6 +359,23 @@ def to_vulnerability(dependency: Dependency, advisory: dict[str, Any]) -> Vulner
         source="OSV",
         fixed_version_note=note,
     )
+
+
+def _snapshot_dependency_matches(
+    dependency: Dependency, grouped: dict[tuple[str, str, str], list[dict[str, Any]]],
+) -> list[Vulnerability]:
+    eco = osv_ecosystem(dependency.ecosystem)
+    if eco is None:
+        return []
+    key = (eco, canonical_name(dependency.name, dependency.ecosystem), dependency.version or "")
+    found = []
+    for advisory in grouped.get(key, []):
+        identifier = advisory.get("id")
+        if not isinstance(identifier, str) or not _ADVISORY_ID.fullmatch(identifier):
+            continue
+        if _advisory_affects(matching_affected(advisory, dependency), dependency):
+            found.append(to_vulnerability(dependency, advisory))
+    return found
 
 
 def _range_matches_version(item: Any, ecosystem: str, version: str) -> bool:

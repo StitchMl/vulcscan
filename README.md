@@ -159,3 +159,19 @@ python -m vulcscan ./service --offline --no-cve --attack-surface --format json
 python -m vulcscan ./service --offline --no-cve --remote-only
 ```
 
+
+### Rule-scoped Python suppressions
+
+For a reviewed Python false positive, add an explicit exact-rule directive:
+
+```python
+dangerous_looking_call()  # vulcscan:ignore PY-CMD-001
+# vulcscan:ignore PY-CMD-001
+dangerous_looking_call()
+```
+
+An inline comment affects its own line; a standalone comment affects only
+the following physical line. The rule ID must match exactly, no wildcard
+suppression is supported, and directives inside strings are ignored. This
+only filters findings, not detection or source execution. Use sparingly and
+document why the finding is a false positive.

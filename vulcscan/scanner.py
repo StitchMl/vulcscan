@@ -22,6 +22,7 @@ from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
 from .python_analysis import PythonProject
 from .source import decode_source
 from .structured import CATALOGS, analyze_structured
+from .suppressions import is_suppressed, suppression_index
 
 DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -294,6 +295,9 @@ def scan(config: ScanConfig) -> ScanResult:
     for finding in result.findings:
         enrich_finding(finding)
     _dependencies(config, root, discovery.manifests, result)
+    suppressions = suppression_index(files)
+    if suppressions:
+        result.findings = [item for item in result.findings if not is_suppressed(item, suppressions)]
     minimum = SEVERITY_RANK[config.min_severity]
     result.findings = [item for item in result.findings if SEVERITY_RANK[item.severity] <= minimum]
     if config.remote_only:

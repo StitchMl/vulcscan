@@ -33,7 +33,8 @@ def test_lodash_merge_with_assigned_request_query(tmp_path: Path) -> None:
         "}\n",
         "ts",
     )
-    assert len(found) == 1 and found[0].location.line == 3
+    assert len(found) == 1
+    assert found[0].location.line == 3
 
 
 def test_default_values_merging_http_input(tmp_path: Path) -> None:

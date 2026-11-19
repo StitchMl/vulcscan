@@ -429,6 +429,37 @@ def analyze_python(relative_path: str, text: str) -> tuple[list[Finding], str | 
     return findings, error
 
 
+def _single_name_assignment(statement: ast.stmt) -> tuple[str, ast.expr] | None:
+    """``(name, value)`` for ``name = value`` and ``name: T = value``; None otherwise."""
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or statement.value is None:
+        return None
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        return None
+    return targets[0].id, statement.value
+
+
+def _django_route_string(module: Module, node: ast.AST) -> str | None:
+    """The literal route of a ``path``/``re_path``/``url`` call; None for other nodes."""
+    if not isinstance(node, ast.Call) or len(node.args) < 2:
+        return None
+    route_name = _canonical(module, node.func).rsplit(".", 1)[-1]
+    route = node.args[0]
+    if route_name not in {"path", "re_path", "url"} or not (isinstance(route, ast.Constant) and isinstance(route.value, str)):
+        return None
+    return route.value
+
+
+def _django_route_parameters(route: str) -> dict[str, bool]:
+    """Map URL parameter names to whether a converter already restricts them."""
+    parameters: dict[str, bool] = {}
+    for converter, name in re.findall(r"<(?:(\w+):)?([A-Za-z_]\w*)>", route):
+        parameters[name] = converter in {"int", "uuid", "slug"}
+    for name in re.findall(r"\(\?P<([A-Za-z_]\w*)>", route):
+        parameters[name] = False
+    return parameters
+
+
 class PythonProject:
     def __init__(self, sources: Iterable[tuple[str, str]]) -> None:
         self.modules: list[Module] = []
@@ -492,15 +523,13 @@ class PythonProject:
         walker = _Walker(self, module, None, None)
         environment: dict[str, Value] = {}
         for statement in _module_statements(module.tree):
-            if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or statement.value is None:
+            assigned = _single_name_assignment(statement)
+            if assigned is None:
                 continue
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-                continue
-            name = targets[0].id
+            name, expression = assigned
             if counts.get(name) != 1 or name in declared_global:
                 continue
-            value = walker.expression(statement.value, environment)
+            value = walker.expression(expression, environment)
             if not value.tainted:
                 environment[name] = value
         module.constants = environment
@@ -548,23 +577,14 @@ class PythonProject:
         """
         for route_module in self.modules:
             for node in ast.walk(route_module.tree):
-                if not isinstance(node, ast.Call) or len(node.args) < 2:
-                    continue
-                route_name = _canonical(route_module, node.func).rsplit(".", 1)[-1]
-                route = node.args[0]
-                if route_name not in {"path", "re_path", "url"} or not (
-                    isinstance(route, ast.Constant) and isinstance(route.value, str)
-                ):
+                route = _django_route_string(route_module, node)
+                if route is None:
                     continue
                 resolved = self.resolve(route_module, None, node.args[1])
                 if resolved is None:
                     continue
                 target_module, target, _ = resolved
-                parameters: dict[str, bool] = {}
-                for converter, name in re.findall(r"<(?:(\w+):)?([A-Za-z_]\w*)>", route.value):
-                    parameters[name] = converter in {"int", "uuid", "slug"}
-                for name in re.findall(r"\(\?P<([A-Za-z_]\w*)>", route.value):
-                    parameters[name] = False
+                parameters = _django_route_parameters(route)
                 if parameters:
                     key = (target_module.relative, target.qualname)
                     self.django_routes.setdefault(key, {}).update(parameters)
@@ -576,30 +596,36 @@ class PythonProject:
         the receiver as the first argument (``self.method()``).
         """
         if isinstance(func, ast.Name):
-            if function is not None:
-                nested = module.functions.get(f"{function.qualname}.{func.id}")
-                if nested is not None:
-                    return module, nested, False
-            local = module.functions.get(func.id)
-            if local is not None and local.class_name is None:
-                return module, local, False
-            target = module.imports.get(func.id)
-            return self._resolve_dotted(target, bound=False) if target else None
-        if not isinstance(func, ast.Attribute):
+            return self._resolve_name(module, function, func)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            return self._resolve_attribute(module, function, func, func.value)
+        return None
+
+    def _resolve_name(self, module: Module, function: FunctionInfo | None, func: ast.Name) -> tuple[Module, FunctionInfo, bool] | None:
+        if function is not None:
+            nested = module.functions.get(f"{function.qualname}.{func.id}")
+            if nested is not None:
+                return module, nested, False
+        local = module.functions.get(func.id)
+        if local is not None and local.class_name is None:
+            return module, local, False
+        target = module.imports.get(func.id)
+        return self._resolve_dotted(target, bound=False) if target else None
+
+    def _resolve_attribute(
+        self, module: Module, function: FunctionInfo | None, func: ast.Attribute, base: ast.Name
+    ) -> tuple[Module, FunctionInfo, bool] | None:
+        if base.id in {"self", "cls"} and function is not None and function.class_name:
+            method = module.functions.get(f"{function.class_name}.{func.attr}")
+            if method is not None:
+                return module, method, method.receives_instance
             return None
-        base = func.value
-        if isinstance(base, ast.Name):
-            if base.id in {"self", "cls"} and function is not None and function.class_name:
-                method = module.functions.get(f"{function.class_name}.{func.attr}")
-                if method is not None:
-                    return module, method, method.receives_instance
-                return None
-            if base.id in module.classes:
-                method = module.functions.get(f"{base.id}.{func.attr}")
-                return (module, method, False) if method is not None else None
-            target = module.imports.get(base.id)
-            if target:
-                return self._resolve_dotted(f"{target}.{func.attr}", bound=False)
+        if base.id in module.classes:
+            method = module.functions.get(f"{base.id}.{func.attr}")
+            return (module, method, False) if method is not None else None
+        target = module.imports.get(base.id)
+        if target:
+            return self._resolve_dotted(f"{target}.{func.attr}", bound=False)
         return None
 
     def _resolve_dotted(self, dotted: str, *, bound: bool) -> tuple[Module, FunctionInfo, bool] | None:
@@ -620,6 +646,14 @@ class PythonProject:
             return exact
         suffix = "." + dotted
         return [module for name, items in self._by_name.items() if name.endswith(suffix) for module in items]
+
+
+_Guards = tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]
+
+
+def _by_polarity(sanitized: list[tuple[str, frozenset[str]]], positive: bool) -> _Guards:
+    """Sanitizations apply when the test is true (positive) or when it is false."""
+    return (sanitized, []) if positive else ([], sanitized)
 
 
 class _Walker:
@@ -653,86 +687,107 @@ class _Walker:
         return env
 
     def statement(self, statement: ast.stmt, env: dict[str, Value]) -> dict[str, Value]:
-        if isinstance(statement, ast.Assign):
+        for kinds, handler in self._STATEMENT_HANDLERS:
+            if isinstance(statement, kinds):
+                return handler(self, statement, env)
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.expr):
+                self.expression(child, env)
+        return env
+
+    def _stmt_assign(self, statement: ast.Assign, env: dict[str, Value]) -> dict[str, Value]:
+        value = self.expression(statement.value, env)
+        for target in statement.targets:
+            self.bind(target, self._assigned(value, statement), env)
+        return env
+
+    def _stmt_annassign(self, statement: ast.AnnAssign, env: dict[str, Value]) -> dict[str, Value]:
+        if statement.value is not None:
             value = self.expression(statement.value, env)
-            for target in statement.targets:
-                self.bind(target, self._assigned(value, statement), env)
-        elif isinstance(statement, ast.AnnAssign):
-            if statement.value is not None:
-                value = self.expression(statement.value, env)
-                self.bind(statement.target, self._assigned(value, statement), env)
-        elif isinstance(statement, ast.AugAssign):
-            current = self.expression(statement.target, env)
-            added = self.expression(statement.value, env)
-            combined = concatenate([current, added]) if isinstance(statement.op, (ast.Add, ast.Mod)) else merge(current, added)
-            self.bind(statement.target, self._assigned(combined, statement), env)
-        elif isinstance(statement, ast.Expr):
-            self.expression(statement.value, env)
-            self._apply_raising_check(statement.value, env)
-        elif isinstance(statement, ast.Return):
-            value = self.expression(statement.value, env) if statement.value else Value()
-            if self.summary is not None:
-                previous = self.summary.returned
-                self.summary.returned = value if previous is None else merge(previous, value)
-        elif isinstance(statement, ast.If):
-            env = self._if(statement, env)
-        elif isinstance(statement, (ast.For, ast.AsyncFor)):
-            iterable = self.expression(statement.iter, env)
-            loop_env = dict(env)
-            for _ in range(2):
-                self.bind(statement.target, iterable, loop_env)
-                body_env = self.run(statement.body, loop_env)
-                loop_env = _merge_environments(loop_env, body_env)
-            env = self.run(statement.orelse, _merge_environments(env, loop_env))
-        elif isinstance(statement, ast.While):
-            self.expression(statement.test, env)
-            loop_env = dict(env)
-            for _ in range(2):
-                loop_env = _merge_environments(loop_env, self.run(statement.body, loop_env))
-            env = self.run(statement.orelse, _merge_environments(env, loop_env))
-        elif isinstance(statement, (ast.With, ast.AsyncWith)):
-            for item in statement.items:
-                value = self.expression(item.context_expr, env)
-                if item.optional_vars is not None:
-                    self.bind(item.optional_vars, value, env)
-            env = self.run(statement.body, env)
-        elif isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            body_env = self.run(statement.body, env)
-            handler_start = _merge_environments(env, body_env)
-            outcomes = [] if _terminates(statement.body) else [self.run(statement.orelse, body_env)]
-            for handler in statement.handlers:
-                handler_env = dict(handler_start)
-                if handler.name:
-                    handler_env[handler.name] = UNKNOWN
-                result = self.run(handler.body, handler_env)
-                if not _terminates(handler.body):
-                    outcomes.append(result)
-            env = _merge_all(outcomes) if outcomes else handler_start
-            env = self.run(statement.finalbody, env)
-        elif isinstance(statement, ast.Match):
-            subject = self.expression(statement.subject, env)
-            outcomes = []
-            for case in statement.cases:
-                case_env = dict(env)
-                for name in _pattern_names(case.pattern):
-                    case_env[name] = subject
-                result = self.run(case.body, case_env)
-                if not _terminates(case.body):
-                    outcomes.append(result)
-            env = _merge_all([env, *outcomes])
-        elif isinstance(statement, ast.Delete):
-            for target in statement.targets:
-                if isinstance(target, ast.Name):
-                    env.pop(target.id, None)
-        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            env.pop(statement.name, None)
-        elif isinstance(statement, (ast.Import, ast.ImportFrom)):
-            for alias in statement.names:
-                env.pop((alias.asname or alias.name).split(".")[0], None)
-        else:
-            for child in ast.iter_child_nodes(statement):
-                if isinstance(child, ast.expr):
-                    self.expression(child, env)
+            self.bind(statement.target, self._assigned(value, statement), env)
+        return env
+
+    def _stmt_augassign(self, statement: ast.AugAssign, env: dict[str, Value]) -> dict[str, Value]:
+        current = self.expression(statement.target, env)
+        added = self.expression(statement.value, env)
+        combined = concatenate([current, added]) if isinstance(statement.op, (ast.Add, ast.Mod)) else merge(current, added)
+        self.bind(statement.target, self._assigned(combined, statement), env)
+        return env
+
+    def _stmt_expr(self, statement: ast.Expr, env: dict[str, Value]) -> dict[str, Value]:
+        self.expression(statement.value, env)
+        self._apply_raising_check(statement.value, env)
+        return env
+
+    def _stmt_return(self, statement: ast.Return, env: dict[str, Value]) -> dict[str, Value]:
+        value = self.expression(statement.value, env) if statement.value else Value()
+        if self.summary is not None:
+            previous = self.summary.returned
+            self.summary.returned = value if previous is None else merge(previous, value)
+        return env
+
+    def _stmt_for(self, statement: ast.For | ast.AsyncFor, env: dict[str, Value]) -> dict[str, Value]:
+        iterable = self.expression(statement.iter, env)
+        loop_env = dict(env)
+        for _ in range(2):
+            self.bind(statement.target, iterable, loop_env)
+            body_env = self.run(statement.body, loop_env)
+            loop_env = _merge_environments(loop_env, body_env)
+        return self.run(statement.orelse, _merge_environments(env, loop_env))
+
+    def _stmt_while(self, statement: ast.While, env: dict[str, Value]) -> dict[str, Value]:
+        self.expression(statement.test, env)
+        loop_env = dict(env)
+        for _ in range(2):
+            loop_env = _merge_environments(loop_env, self.run(statement.body, loop_env))
+        return self.run(statement.orelse, _merge_environments(env, loop_env))
+
+    def _stmt_with(self, statement: ast.With | ast.AsyncWith, env: dict[str, Value]) -> dict[str, Value]:
+        for item in statement.items:
+            value = self.expression(item.context_expr, env)
+            if item.optional_vars is not None:
+                self.bind(item.optional_vars, value, env)
+        return self.run(statement.body, env)
+
+    def _stmt_try(self, statement: ast.Try, env: dict[str, Value]) -> dict[str, Value]:
+        body_env = self.run(statement.body, env)
+        handler_start = _merge_environments(env, body_env)
+        outcomes = [] if _terminates(statement.body) else [self.run(statement.orelse, body_env)]
+        for handler in statement.handlers:
+            handler_env = dict(handler_start)
+            if handler.name:
+                handler_env[handler.name] = UNKNOWN
+            result = self.run(handler.body, handler_env)
+            if not _terminates(handler.body):
+                outcomes.append(result)
+        env = _merge_all(outcomes) if outcomes else handler_start
+        return self.run(statement.finalbody, env)
+
+    def _stmt_match(self, statement: ast.Match, env: dict[str, Value]) -> dict[str, Value]:
+        subject = self.expression(statement.subject, env)
+        outcomes = []
+        for case in statement.cases:
+            case_env = dict(env)
+            for name in _pattern_names(case.pattern):
+                case_env[name] = subject
+            result = self.run(case.body, case_env)
+            if not _terminates(case.body):
+                outcomes.append(result)
+        return _merge_all([env, *outcomes])
+
+    def _stmt_delete(self, statement: ast.Delete, env: dict[str, Value]) -> dict[str, Value]:
+        for target in statement.targets:
+            if isinstance(target, ast.Name):
+                env.pop(target.id, None)
+        return env
+
+    def _stmt_definition(self, statement: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, env: dict[str, Value]) -> dict[str, Value]:
+        env.pop(statement.name, None)
+        return env
+
+    def _stmt_import(self, statement: ast.Import | ast.ImportFrom, env: dict[str, Value]) -> dict[str, Value]:
+        for alias in statement.names:
+            env.pop((alias.asname or alias.name).split(".")[0], None)
         return env
 
     def _if(self, statement: ast.If, env: dict[str, Value]) -> dict[str, Value]:
@@ -748,6 +803,23 @@ class _Walker:
         if not _terminates(statement.orelse):
             outcomes.append(else_result)
         return _merge_all(outcomes) if outcomes else _merge_environments(body_result, else_result)
+
+    _STATEMENT_HANDLERS = (
+        (ast.Assign, _stmt_assign),
+        (ast.AnnAssign, _stmt_annassign),
+        (ast.AugAssign, _stmt_augassign),
+        (ast.Expr, _stmt_expr),
+        (ast.Return, _stmt_return),
+        (ast.If, _if),
+        ((ast.For, ast.AsyncFor), _stmt_for),
+        (ast.While, _stmt_while),
+        ((ast.With, ast.AsyncWith), _stmt_with),
+        ((ast.Try, getattr(ast, "TryStar", ast.Try)), _stmt_try),
+        (ast.Match, _stmt_match),
+        (ast.Delete, _stmt_delete),
+        ((ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef), _stmt_definition),
+        ((ast.Import, ast.ImportFrom), _stmt_import),
+    )
 
     def _assigned(self, value: Value, node: ast.AST) -> Value:
         step = FlowStep("PROPAGATION", self.location(node), self.code(node), "Value is assigned.")
@@ -770,7 +842,7 @@ class _Walker:
 
     # Guards ---------------------------------------------------------------------
 
-    def _guard(self, test: ast.expr, env: dict[str, Value]) -> tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]:
+    def _guard(self, test: ast.expr, env: dict[str, Value]) -> _Guards:
         """Return sanitizations implied when ``test`` is true and when it is false."""
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
             when_true, when_false = self._guard(test.operand, env)
@@ -781,49 +853,72 @@ class _Walker:
                 return [item for part in parts for item in part[0]], []
             return [], [item for part in parts for item in part[1]]
         if isinstance(test, ast.Compare) and len(test.ops) == 1:
-            operator = test.ops[0]
-            left, right = test.left, test.comparators[0]
-            if isinstance(operator, (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None:
-                inner_true, inner_false = self._guard(left, env)
-                # "x is None" is true exactly when x is falsy for match objects.
-                return (inner_false, inner_true) if isinstance(operator, ast.Is) else (inner_true, inner_false)
-            if isinstance(operator, (ast.Eq, ast.NotEq)):
-                subject = left if isinstance(right, ast.Constant) else right if isinstance(left, ast.Constant) else None
-                other = right if subject is left else left
-                if subject is not None and isinstance(other, ast.Constant) and isinstance(other.value, str):
-                    sanitized = [(name, ALL_SINKS) for name in self._guarded_names(subject, env)]
-                    sanitized += self._host_guard(subject, env)
-                    return (sanitized, []) if isinstance(operator, ast.Eq) else ([], sanitized)
-            if isinstance(operator, (ast.In, ast.NotIn)):
-                names = self._guarded_names(left, env)
-                if names and self._is_allowlist(right, env):
-                    sanitized = [(name, ALL_SINKS) for name in names] + self._host_guard(left, env)
-                    return (sanitized, []) if isinstance(operator, ast.In) else ([], sanitized)
-                if isinstance(right, ast.Attribute) and right.attr == "parents":
-                    names = self._guarded_names(right.value, env)
-                    if names and NORMALIZED in self.expression(right.value, env).sanitized:
-                        sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
-                        return (sanitized, []) if isinstance(operator, ast.In) else ([], sanitized)
-            if isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left, right):
-                candidate = _commonpath_candidate(left)
-                if candidate is not None and NORMALIZED in self.expression(candidate, env).sanitized:
-                    names = self._guarded_names(candidate, env)
-                    sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
-                    return (sanitized, []) if isinstance(operator, ast.Eq) else ([], sanitized)
+            return self._guard_compare(test, env)
         if isinstance(test, ast.Call):
             return self._guard_call(test, env), []
         return [], []
 
+    def _guard_compare(self, test: ast.Compare, env: dict[str, Value]) -> _Guards:
+        operator = test.ops[0]
+        left, right = test.left, test.comparators[0]
+        for check in (self._guard_none, self._guard_literal, self._guard_membership, self._guard_commonpath):
+            result = check(operator, left, right, env)
+            if result is not None:
+                return result
+        return [], []
+
+    def _guard_none(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+        if not (isinstance(operator, (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None):
+            return None
+        inner_true, inner_false = self._guard(left, env)
+        # "x is None" is true exactly when x is falsy for match objects.
+        return (inner_false, inner_true) if isinstance(operator, ast.Is) else (inner_true, inner_false)
+
+    def _guard_literal(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+        if not isinstance(operator, (ast.Eq, ast.NotEq)):
+            return None
+        subject = None
+        if isinstance(right, ast.Constant):
+            subject = left
+        elif isinstance(left, ast.Constant):
+            subject = right
+        other = right if subject is left else left
+        if subject is None or not (isinstance(other, ast.Constant) and isinstance(other.value, str)):
+            return None
+        sanitized = [(name, ALL_SINKS) for name in self._guarded_names(subject, env)]
+        sanitized += self._host_guard(subject, env)
+        return _by_polarity(sanitized, isinstance(operator, ast.Eq))
+
+    def _guard_membership(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+        if not isinstance(operator, (ast.In, ast.NotIn)):
+            return None
+        positive = isinstance(operator, ast.In)
+        names = self._guarded_names(left, env)
+        if names and self._is_allowlist(right, env):
+            sanitized = [(name, ALL_SINKS) for name in names] + self._host_guard(left, env)
+            return _by_polarity(sanitized, positive)
+        if isinstance(right, ast.Attribute) and right.attr == "parents":
+            names = self._guarded_names(right.value, env)
+            if names and NORMALIZED in self.expression(right.value, env).sanitized:
+                return _by_polarity([(name, frozenset({FILESYSTEM})) for name in names], positive)
+        return None
+
+    def _guard_commonpath(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+        if not (isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left, right)):
+            return None
+        candidate = _commonpath_candidate(left)
+        if candidate is None or NORMALIZED not in self.expression(candidate, env).sanitized:
+            return None
+        names = self._guarded_names(candidate, env)
+        sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
+        return _by_polarity(sanitized, isinstance(operator, ast.Eq))
+
     def _guard_call(self, call: ast.Call, env: dict[str, Value]) -> list[tuple[str, frozenset[str]]]:
         name = self.canonical(call.func)
         short = _short_name(call, name)
-        if isinstance(call.func, ast.Attribute) and short in _CHARACTER_PREDICATES and not call.args:
-            return [(item, ALL_SINKS) for item in self._guarded_names(call.func.value, env)]
-        if isinstance(call.func, ast.Attribute) and short in {"is_relative_to", "startswith"} and call.args:
-            receiver = call.func.value
-            if NORMALIZED in self.expression(receiver, env).sanitized:
-                return [(item, frozenset({FILESYSTEM})) for item in self._guarded_names(receiver, env)]
-            return []
+        method = self._guard_method_call(call, short, env)
+        if method is not None:
+            return method
         if name in _REDIRECT_GUARDS or short in {"url_has_allowed_host_and_scheme", "is_safe_url"}:
             target = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "url"), None)
             if target is not None:
@@ -835,6 +930,18 @@ class _Walker:
             if categories:
                 return [(item, categories) for item in self._guarded_names(subject, env)]
         return []
+
+    def _guard_method_call(self, call: ast.Call, short: str, env: dict[str, Value]) -> list[tuple[str, frozenset[str]]] | None:
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        if short in _CHARACTER_PREDICATES and not call.args:
+            return [(item, ALL_SINKS) for item in self._guarded_names(call.func.value, env)]
+        if short in {"is_relative_to", "startswith"} and call.args:
+            receiver = call.func.value
+            if NORMALIZED in self.expression(receiver, env).sanitized:
+                return [(item, frozenset({FILESYSTEM})) for item in self._guarded_names(receiver, env)]
+            return []
+        return None
 
     def _regex_check(self, call: ast.Call, env: dict[str, Value]) -> tuple[str | None, ast.expr | None, bool]:
         name = self.canonical(call.func)

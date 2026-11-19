@@ -191,3 +191,7 @@ When `--attack-surface` is enabled in text mode, endpoints are printed before th
 ### Optional test-source noise filter
 
 Use `--exclude-tests` to skip common test and fixture directories (`test`, `tests`, `__tests__`, `spec`, `specs`, `fixtures`, `__fixtures__`) and recognizable test file names (`test_*.py`, `*_test.go`, `*.test.js/ts`, `*.spec.js/ts` and JSX/TSX variants, plus `conftest.py`). This option is **off by default** so that existing coverage and dependency discovery remain unchanged. An opt-in filtered scan can miss vulnerabilities in executable fixtures or test helpers; use a complete scan when completeness matters. Production migrations and seed files are not excluded merely for having those names.
+
+### Conservative one-hop JavaScript/TypeScript sink propagation
+
+Directly imported, locally exported named functions whose **entire body** is one direct sink call (for example `function run(value) { cp.exec(value); }`) now allow a source at the call site to be traced to the sink across one ESM/CommonJS module boundary. Initial sink families are command execution (`exec`/`execSync`), file reads (`readFile`/`readFileSync`), `fetch`, and `eval`. The new finding retains caller source evidence, adds the callee sink location, and uses **MEDIUM** confidence. Literal/sanitized arguments, ambiguous module paths, external dependencies, shadowed identifiers, guarded or transformed wrappers and deeper call chains are not inferred. This is a deliberately bounded analysis, not complete JavaScript or TypeScript interprocedural analysis.

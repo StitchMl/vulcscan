@@ -361,42 +361,51 @@ def scan(config: ScanConfig) -> ScanResult:
     return result
 
 
+def _analyze_python_sources(python_sources: list[tuple[str, str]], result: ScanResult) -> None:
+    project = PythonProject(python_sources)
+    result.findings.extend(project.analyze())
+    result.errors.extend(project.errors)
+    for relative, code in python_sources:
+        try:
+            result.findings.extend(analyze_argument_injection(relative, code))
+            result.findings.extend(analyze_tar_extraction(relative, code))
+            result.findings.extend(analyze_timing_comparisons(relative, code))
+            result.findings.extend(analyze_route_authz(relative, code))
+        except Exception as exc:
+            result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
+
+
+def _analyze_one_source(source: SourceFile, imported_sinks: dict):
+    if source.language in _CODE_ANALYSIS_SKIP:
+        return [], []
+    found = []
+    try:
+        found.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
+        if source.language in {"JavaScript", "TypeScript"}:
+            found.extend(analyze_javascript(
+                source.relative, source.text, source.language,
+                imported_sinks.get(source.relative),
+            ))
+            found.extend(analyze_javascript_timing(source.relative, source.text, source.language))
+        elif source.language in CATALOGS:
+            found.extend(analyze_structured(source.relative, source.text, source.language))
+        if source.language == "Java":
+            found.extend(analyze_java_zip_slip(source.relative, source.text))
+        if source.language == "Go":
+            found.extend(analyze_go_zip_slip(source.relative, source.text))
+        return found, []
+    except Exception as exc:
+        return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]
+
+
 def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1) -> None:
     imported_sinks = imported_sink_map(files)
     python_sources = [(item.relative, item.text) for item in files if item.language == "Python"]
     if python_sources:
-        project = PythonProject(python_sources)
-        result.findings.extend(project.analyze())
-        result.errors.extend(project.errors)
-        for relative, code in python_sources:
-            try:
-                result.findings.extend(analyze_argument_injection(relative, code))
-                result.findings.extend(analyze_tar_extraction(relative, code))
-                result.findings.extend(analyze_timing_comparisons(relative, code))
-                result.findings.extend(analyze_route_authz(relative, code))
-            except Exception as exc:
-                result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
+        _analyze_python_sources(python_sources, result)
+
     def analyze_one(source: SourceFile):
-        if source.language in _CODE_ANALYSIS_SKIP:
-            return [], []
-        found = []
-        try:
-            found.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
-            if source.language in {"JavaScript", "TypeScript"}:
-                found.extend(analyze_javascript(
-                    source.relative, source.text, source.language,
-                    imported_sinks.get(source.relative),
-                ))
-                found.extend(analyze_javascript_timing(source.relative, source.text, source.language))
-            elif source.language in CATALOGS:
-                found.extend(analyze_structured(source.relative, source.text, source.language))
-            if source.language == "Java":
-                found.extend(analyze_java_zip_slip(source.relative, source.text))
-            if source.language == "Go":
-                found.extend(analyze_go_zip_slip(source.relative, source.text))
-            return found, []
-        except Exception as exc:
-            return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]
+        return _analyze_one_source(source, imported_sinks)
 
     if workers > 1 and len(files) > 1:
         # executor.map preserves discovery order irrespective of completion order.

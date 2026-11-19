@@ -168,6 +168,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     _unchecked_orm_identity(language, text, add)
     if language in {"C", "C++"}:
         _c_format_strings(text, add)
+        _c_buffer_overflows(text, add)
     if language == "Python":
         return findings
 
@@ -444,6 +445,45 @@ _PHP_LOOSE_AUTH = re.compile(
     rf"(?P<left>{_PHP_OPERAND})\s*(?<![=!])(?P<operator>==|!=)(?!=)\s*(?P<right>{_PHP_OPERAND})",
     re.IGNORECASE,
 )
+
+
+_C_GETS = re.compile(r"\bgets\s*\(\s*[A-Za-z_]\w*\s*\)")
+_C_ARGV_COPY = re.compile(
+    r"\b(?:strcpy|strcat)\s*\(\s*[A-Za-z_]\w*\s*,\s*argv\s*\[\s*\d+\s*\]\s*\)"
+)
+_C_SCANF = re.compile(
+    r"\b(?P<name>scanf|fscanf)\s*\(\s*(?:stdin\s*,\s*)?"
+    r"(?P<format>\"(?:[^\"\\]|\\.)*\")\s*,\s*(?:&\s*)?[A-Za-z_]\w*\s*\)"
+)
+_C_SPRINTF_ARGV = re.compile(
+    r"\bsprintf\s*\(\s*[A-Za-z_]\w*\s*,\s*\"%s\"\s*,\s*argv\s*\[\s*\d+\s*\]\s*\)"
+)
+
+
+def _c_buffer_overflows(text: str, add: Callable[..., None]) -> None:
+    """Flag a few explicit unbounded writes, not every memory copy."""
+    style = comment_style("C")
+    visible = blank_comments(text, style)
+    mask = code_mask(text, style)
+    patterns = (
+        (_C_GETS, "gets (unbounded stdin input)"),
+        (_C_ARGV_COPY, "strcpy/strcat of argv"),
+        (_C_SPRINTF_ARGV, "sprintf with argv"),
+        (_C_SCANF, "scanf unbounded string"),
+    )
+    for pattern, label in patterns:
+        for match in pattern.finditer(mask if pattern in {_C_GETS, _C_ARGV_COPY} else visible):
+            if mask[match.start():match.start() + len(match.group(0).split("(", 1)[0])].strip() != match.group(0).split("(", 1)[0]:
+                continue
+            if pattern is _C_SCANF:
+                fmt = match.group("format")
+                # A literal width (e.g. %31s) makes this pattern bounded.
+                # Only a bare %s conversion is flagged.
+                if not re.search(r"%(?!\d|\*)s", fmt):
+                    continue
+            line = text.count("\n", 0, match.start()) + 1
+            column = match.start() - text.rfind("\n", 0, match.start())
+            add("C-BUFFER-001", line, column, label, match.group(0), Confidence.MEDIUM)
 
 
 _C_FORMAT_CALL = re.compile(

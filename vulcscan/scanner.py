@@ -129,6 +129,23 @@ _SPECIAL_NAMES = {
 }
 _SKIPPED_SUFFIXES = (".min.js", ".min.css", ".map", ".bundle.js")
 _CODE_ANALYSIS_SKIP = {"Manifest"}
+_TEST_DIRECTORIES = frozenset({"test", "tests", "__tests__", "spec", "specs", "fixtures", "__fixtures__"})
+_TEST_FILENAMES = frozenset({"conftest.py", "pytest.ini"})
+
+
+def _is_test_filename(relative: str) -> bool:
+    name = relative.rsplit("/", 1)[-1].casefold()
+    return (
+        name in _TEST_FILENAMES
+        or (name.startswith("test_") and name.endswith(".py"))
+        or name.endswith("_test.go")
+        or any(name.endswith(extension) for extension in (
+            ".test.js", ".test.jsx", ".test.ts", ".test.tsx",
+            ".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx",
+        ))
+    )
+
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,9 +253,13 @@ class RepositoryDiscovery:
     def _excluded_directory(self, name: str, relative: str) -> bool:
         if name.casefold() in DEFAULT_EXCLUDED_DIRECTORIES:
             return True
+        if self.config.exclude_tests and name.casefold() in _TEST_DIRECTORIES:
+            return True
         return self._matches_user_exclude(relative, directory=True)
 
     def _excluded_file(self, relative: str) -> bool:
+        if self.config.exclude_tests and _is_test_filename(relative):
+            return True
         if self.config.only_files is not None and relative not in self.config.only_files:
             return True
         return self._matches_user_exclude(relative, directory=False)

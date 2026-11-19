@@ -86,9 +86,9 @@ def _javascript_routes(relative: str, source: str) -> list[dict[str, Any]]:
 
 
 _QUERY_PARAM = re.compile(
-    r"""(?:request\\.args(?:\\.get)?\\(\\s*['"]([A-Za-z_]\\w*)['"]|"""
-    r"""request\\.args\\[\\s*['"]([A-Za-z_]\\w*)['"]\\s*\\]|"""
-    r"""req\\.query\\.([A-Za-z_]\\w*))"""
+    r"""(?:request\.args(?:\.get)?\(\s*['"]([A-Za-z_]\w*)['"]|"""
+    r"""request\.args\[\s*['"]([A-Za-z_]\w*)['"]\s*\]|"""
+    r"""req\.query\.([A-Za-z_]\w*))"""
 )
 
 

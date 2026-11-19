@@ -8,7 +8,6 @@ from __future__ import annotations
 import ast
 import re
 import shlex
-from urllib.parse import urlencode
 from typing import Any
 
 from .models import Finding
@@ -101,7 +100,7 @@ def _verification_curl(route: dict[str, Any], findings: list[Finding]) -> str | 
     path = route["path"]
     if route["method"] != ["GET"] or not path.startswith("/") or any(
         token in path for token in ("<", ">", "{", "}", ":", "?", "#", "\\n", "\\r", " ")
-    ) or path.startswith("//"):
+    ) or path.startswith("//") or any(ord(char) < 32 for char in path):
         return None
     parameters: set[str] = set()
     for finding in findings:
@@ -113,7 +112,7 @@ def _verification_curl(route: dict[str, Any], findings: list[Finding]) -> str | 
                 parameters.add(next(value for value in match.groups() if value))
     if not parameters:
         return None
-    query = urlencode([(name, "VULCSCAN_CANARY") for name in sorted(parameters)])
+    query = "&".join(name + "=VULCSCAN_CANARY" for name in sorted(parameters))
     url = "http://127.0.0.1:8000" + path + "?" + query
     return "curl --silent --show-error --max-time 5 " + shlex.quote(url)
 

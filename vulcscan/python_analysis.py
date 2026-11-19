@@ -683,6 +683,34 @@ def _special_call_value(
     return None
 
 
+def _plain_call_value(
+    name: str,
+    short: str,
+    has_receiver: bool,
+    receiver: Value,
+    arguments: list[Value],
+    keywords: dict[str, Value],
+) -> Value:
+    """Value of a call to an unresolved function: string formatting or conservative merge."""
+    if short == "format" and receiver.constant and isinstance(receiver.literal, str):
+        return concatenate([receiver, *arguments, *keywords.values()])
+    if short == "join" and receiver.constant and isinstance(receiver.literal, str):
+        return concatenate([*arguments])
+    combined = merge(receiver, *arguments, *keywords.values())
+    pure = name in _PURE_FUNCTIONS or (short in _STRING_METHODS and has_receiver and not receiver.dynamic)
+    if pure and not combined.dynamic and not combined.tainted:
+        return replace_value(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
+    return replace_value(
+        combined,
+        dynamic=True,
+        origin=_origin(name),
+        literal=NOT_CONSTANT,
+        prefix=None,
+        composed=False,
+        sanitized=combined.sanitized - {NORMALIZED},
+    )
+
+
 def _call_source(name: str, parts: list[str]) -> tuple[int | None, str]:
     if name in _LOCAL_CALLS:
         return LOCAL, f"Interactive or stdin input from {name}()."
@@ -1213,9 +1241,7 @@ class _Walker:
         name = self.canonical(node.func)
         short = _short_name(node, name)
         receiver_node = node.func.value if isinstance(node.func, ast.Attribute) else None
-        receiver = self.expression(receiver_node, env) if receiver_node is not None else Value()
-        if receiver_node is not None and _is_module_reference(receiver_node, self.module, env):
-            receiver = Value()
+        receiver = self._call_receiver(receiver_node, env)
         arguments = [self.expression(item, env) for item in node.args]
         keywords = {item.arg: self.expression(item.value, env) for item in node.keywords if item.arg}
         for item in node.keywords:
@@ -1233,23 +1259,13 @@ class _Walker:
             return special
         if resolved is not None:
             return self._summary_return(resolved, actuals or {})
-        if short == "format" and receiver.constant and isinstance(receiver.literal, str):
-            return concatenate([receiver, *arguments, *keywords.values()])
-        if short == "join" and receiver.constant and isinstance(receiver.literal, str):
-            return concatenate([*arguments])
-        combined = merge(receiver, *arguments, *keywords.values())
-        pure = name in _PURE_FUNCTIONS or (short in _STRING_METHODS and receiver_node is not None and not receiver.dynamic)
-        if pure and not combined.dynamic and not combined.tainted:
-            return replace_value(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
-        return replace_value(
-            combined,
-            dynamic=True,
-            origin=_origin(name),
-            literal=NOT_CONSTANT,
-            prefix=None,
-            composed=False,
-            sanitized=combined.sanitized - {NORMALIZED},
-        )
+        return _plain_call_value(name, short, receiver_node is not None, receiver, arguments, keywords)
+
+    def _call_receiver(self, receiver_node: ast.expr | None, env: dict[str, Value]) -> Value:
+        if receiver_node is None:
+            return Value()
+        receiver = self.expression(receiver_node, env)
+        return Value() if _is_module_reference(receiver_node, self.module, env) else receiver
 
     def _actuals(
         self,

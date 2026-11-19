@@ -215,3 +215,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### TAR extraction of HTTP uploads
 
 `PY-TAR-EXTRACT-001` identifies an HTTP-derived TAR archive passed to Python `tarfile.open` and subsequently extracted with `extractall` or `extract` without an explicit extraction filter. For older Python runtimes, unfiltered archive members can escape the target directory or contain unsafe links. On modern runtimes the default behavior can differ; this is a **MEDIUM-confidence, review-only, runtime-dependent check**, not proof of exploitability. Using an explicit safe `filter="data"` or custom filter causes the analyzer to abstain. Trusted local TARs and `zipfile.extractall` are deliberately not blanket-flagged. No archive is extracted or executed during analysis.
+
+### Timing-sensitive Python secret comparisons
+
+`PY-TIMING-001` (CWE-208) is a conservative review-only check for direct HTTP request values compared using `==` or `!=` to authentication secrets (`token`, `hmac`, `signature`, `api_key`, etc.), including simple same-function assignments. It does not report normal username/numeric equality, `hmac.compare_digest`, or values overwritten before the comparison. The rule does not claim to measure actual timing leakage: review secret types, choose `hmac.compare_digest` for equal-type secrets, and use password-KDF verification for passwords. No target code is executed or automatically modified.

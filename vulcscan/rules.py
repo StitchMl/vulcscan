@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PY-TIMING-001",
+            "Timing-Sensitive Secret Comparison",
+            "CWE-208",
+            "AUTH",
+            Severity.MEDIUM,
+            Confidence.MEDIUM,
+            "An HTTP-controlled value is compared to an authentication secret using == or !=. Timing-dependent comparison can disclose information about the secret.",
+        ),
+        RuleDefinition(
             "PY-TAR-EXTRACT-001",
             "Unfiltered TAR Archive Extraction",
             "CWE-22",
@@ -799,6 +808,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "PY-TIMING-001": (
+        Advice(
+            "Use constant-time verification for secret values.",
+            "Compare verified, same-type secret bytes or strings with hmac.compare_digest. Use a password KDF verifier for passwords; do not replace ordinary non-secret equality tests.",
+            Confidence.HIGH,
+            "MEDIUM",
+        ),
+    ),
     "PY-TAR-EXTRACT-001": (
         Advice(
             "Enable safe TAR extraction filtering.",
@@ -947,6 +964,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],
         "PY-ARG-001": ["Use a disposable workspace and send a benign string beginning with a hyphen through the reported field. Confirm it is handled as data rather than an option; do not run the test against production repositories or accounts."],

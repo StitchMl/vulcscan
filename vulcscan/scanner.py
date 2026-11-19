@@ -22,6 +22,7 @@ from .remote import has_remote_source
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
 from .python_analysis import PythonProject
 from .python_argument_injection import analyze_argument_injection
+from .python_tar_extraction import analyze_tar_extraction
 from .source import decode_source
 from .structured import CATALOGS, analyze_structured
 from .suppressions import is_suppressed, suppression_index
@@ -342,6 +343,7 @@ def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
         for relative, code in python_sources:
             try:
                 result.findings.extend(analyze_argument_injection(relative, code))
+                result.findings.extend(analyze_tar_extraction(relative, code))
             except Exception as exc:
                 result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
     for source in files:

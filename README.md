@@ -211,3 +211,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### C/C++ uncontrolled format strings
 
 `C-FORMAT-001` (CWE-134) is a conservative review-only rule for `printf`, `fprintf`, and `syslog` when the format argument is directly `argv[n]` or a nearby variable filled by `argv[n]`, `fgets`, `recv` or `read`. Passing user input as an ordinary value with a literal format (`printf("%s", value)`) is not reported. As this is static pattern matching rather than a C/C++ compiler, findings use MEDIUM confidence and may need a source review; no source code is modified or executed.
+
+### TAR extraction of HTTP uploads
+
+`PY-TAR-EXTRACT-001` identifies an HTTP-derived TAR archive passed to Python `tarfile.open` and subsequently extracted with `extractall` or `extract` without an explicit extraction filter. For older Python runtimes, unfiltered archive members can escape the target directory or contain unsafe links. On modern runtimes the default behavior can differ; this is a **MEDIUM-confidence, review-only, runtime-dependent check**, not proof of exploitability. Using an explicit safe `filter="data"` or custom filter causes the analyzer to abstain. Trusted local TARs and `zipfile.extractall` are deliberately not blanket-flagged. No archive is extracted or executed during analysis.

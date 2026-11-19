@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PY-TAR-EXTRACT-001",
+            "Unfiltered TAR Archive Extraction",
+            "CWE-22",
+            "FILESYSTEM",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "An archive derived from an HTTP upload is extracted without a safe member/path filter. On affected Python runtimes this can allow archive entries to escape the destination directory.",
+        ),
+        RuleDefinition(
             "C-FORMAT-001",
             "Uncontrolled Format String",
             "CWE-134",
@@ -790,6 +799,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "PY-TAR-EXTRACT-001": (
+        Advice(
+            "Enable safe TAR extraction filtering.",
+            "On supported Python runtimes, pass filter=\"data\" to tarfile.extractall/extract and independently validate archive member names, links and destination containment. Test the exact Python runtime used in production before deploying a patch.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "C-FORMAT-001": (
         Advice(
             "Use a literal format string.",
@@ -930,6 +947,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],
         "PY-ARG-001": ["Use a disposable workspace and send a benign string beginning with a hyphen through the reported field. Confirm it is handled as data rather than an option; do not run the test against production repositories or accounts."],
         "PHP-TYPE-JUGGLING-001": ["On a disposable test instance compare synthetic token strings that PHP may coerce, such as `0e123` and `0e456`. Authentication must reject unequal tokens; verify strict comparison or hash_equals with strings."],

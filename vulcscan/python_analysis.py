@@ -738,6 +738,48 @@ def _name_source(name: str, parts: list[str]) -> tuple[int | None, str, str | No
     return None, "", None
 
 
+_SinkHit = tuple[str, str, Value, Confidence, dict[str, bool]]
+
+_SQL_METHODS = frozenset({"execute", "executemany", "executescript", "query", "raw", "read_sql", "read_sql_query"})
+_HTML_RESPONSE_CALLS = frozenset({"flask.Response", "Response", "django.http.HttpResponse", "HttpResponse"})
+_HTML_OUTPUT_CALLS = _HTML_RESPONSE_CALLS | {
+    "flask.make_response",
+    "make_response",
+    "markupsafe.Markup",
+    "Markup",
+    "django.utils.safestring.mark_safe",
+    "mark_safe",
+}
+
+
+@dataclass(slots=True)
+class _SinkCall:
+    """A call expression with its evaluated receiver, arguments and keywords."""
+
+    node: ast.Call
+    name: str
+    short: str
+    receiver: Value
+    arguments: list[Value]
+    keywords: dict[str, Value]
+    env: dict[str, Value]
+
+    def argument(self, index: int, keyword: str | None = None) -> Value | None:
+        if keyword and keyword in self.keywords:
+            return self.keywords[keyword]
+        return self.arguments[index] if index < len(self.arguments) else None
+
+
+def _sql_evidence(statement: Value) -> bool:
+    if SQL_KEYWORDS.search(statement.text):
+        return True
+    return isinstance(statement.literal, str) and bool(SQL_KEYWORDS.search(statement.literal))
+
+
+def _is_database_receiver(receiver_name: str) -> bool:
+    return bool(_DB_RECEIVER.search(receiver_name)) or receiver_name.startswith(("pandas", "sqlite3", "psycopg"))
+
+
 class _Walker:
     """Abstract interpretation of one statement list.
 
@@ -1369,155 +1411,196 @@ class _Walker:
         for rule_id, sink, value, certainty, options in self._sinks(node, name, receiver, arguments, keywords, env):
             self._sink_reached(node, rule_id, sink, value, certainty, **options)
 
-    def _sinks(self, node: ast.Call, name: str, receiver: Value, arguments: list[Value], keywords: dict[str, Value], env: dict[str, Value]):
-        short = _short_name(node, name)
+    def _sinks(
+        self,
+        node: ast.Call,
+        name: str,
+        receiver: Value,
+        arguments: list[Value],
+        keywords: dict[str, Value],
+        env: dict[str, Value],
+    ) -> list[_SinkHit]:
+        call = _SinkCall(node, name, _short_name(node, name), receiver, arguments, keywords, env)
+        for check in self._SINK_CHECKS:
+            hits = check(self, call)
+            if hits is not None:
+                return hits
+        return []
 
-        def argument(index: int, keyword: str | None = None) -> Value | None:
-            if keyword and keyword in keywords:
-                return keywords[keyword]
-            return arguments[index] if index < len(arguments) else None
+    # Each check returns None when the call is not its kind of sink; the first
+    # check that matches decides the sinks of the call.
 
-        # Command execution.
-        if name in _SHELL_STRING_CALLS:
-            command = argument(0, "cmd")
-            if command is not None:
-                yield "PY-CMD-001", name, command, Confidence.HIGH, {"unknown_origin": True}
-            return
-        if name in _SUBPROCESS_CALLS:
-            command = argument(0, "args")
-            if command is None:
-                return
-            shell = keywords.get("shell")
-            if shell is not None and shell.constant and shell.literal is True:
-                yield "PY-CMD-001", f"{name}(shell=True)", command, Confidence.HIGH, {"unknown_origin": True}
-            elif shell is not None and not shell.constant:
-                yield "PY-CMD-001", f"{name}(shell=<dynamic>)", command, Confidence.MEDIUM, {"unknown_origin": False}
-            else:
-                program = self._program_value(node.args[0] if node.args else None, command, env)
-                if program is not None:
-                    yield "PY-CMD-001", f"{name} program path", program, Confidence.HIGH, {"unknown_origin": False}
-            return
-        if name in _PROGRAM_CALLS:
-            program = argument(0)
-            if program is not None:
-                yield "PY-CMD-001", f"{name} program path", program, Confidence.HIGH, {"unknown_origin": False}
-            return
-        # Code execution.
-        if name in _CODE_CALLS:
-            code = argument(0)
-            if code is not None:
-                yield "PY-CODE-001", name, code, Confidence.HIGH, {"unknown_origin": True}
-            return
-        if name in {"compile", "builtins.compile"} and len(arguments) >= 3:
-            mode = argument(2, "mode")
-            if mode is not None and mode.literal in {"exec", "eval", "single"}:
-                yield "PY-CODE-001", name, arguments[0], Confidence.HIGH, {"unknown_origin": True}
-            return
-        # SQL.
-        if short in {"execute", "executemany", "executescript", "query", "raw", "read_sql", "read_sql_query"} and isinstance(node.func, ast.Attribute):
-            if node.args and _is_bound_orm_expression(node.args[0]):
-                return
-            statement = argument(0, "sql")
-            if statement is None:
-                statement = keywords.get("statement") or keywords.get("query")
-            if statement is None:
-                return
-            receiver_name = self.canonical(node.func.value)
-            evidence = bool(SQL_KEYWORDS.search(statement.text)) or (isinstance(statement.literal, str) and bool(SQL_KEYWORDS.search(statement.literal)))
-            database_receiver = bool(_DB_RECEIVER.search(receiver_name)) or receiver_name.startswith(("pandas", "sqlite3", "psycopg"))
-            if short in {"query"} and not evidence:
-                return
-            if short == "raw" and "objects" not in receiver_name:
-                return
-            certainty = Confidence.HIGH if evidence or database_receiver else Confidence.MEDIUM
-            has_bound_values = len(arguments) >= 2 and bool(
-                re.search(r"(?:\?|%s|\$\d+|:[A-Za-z_]\w*)", statement.text)
-            )
-            unknown_dml = bool(re.search(r"(?i)\b(?:select|insert|update|delete)\b", statement.text))
-            yield "PY-SQL-001", name, statement, certainty, {
-                "unknown_origin": unknown_dml and not has_bound_values,
-                "sql_evidence": evidence,
-            }
-            return
-        # Deserialization.
-        if name in _DESERIALIZERS:
-            data = argument(0)
-            if data is not None:
-                yield "PY-DESER-001", name, data, Confidence.HIGH, {}
-            return
-        if name in {"yaml.load", "yaml.load_all"} and arguments:
-            loader = next((item.value for item in node.keywords if item.arg in {"Loader", "loader"}), None)
-            if loader is None and len(node.args) >= 2:
-                loader = node.args[1]
-            loader_name = self.canonical(loader) if loader is not None else ""
-            if loader_name.endswith(_SAFE_YAML_LOADERS):
-                return
-            yield "PY-DESER-001", name, arguments[0], Confidence.HIGH, {}
-            return
-        if name == "numpy.load" and arguments:
-            allow = keywords.get("allow_pickle")
-            if allow is not None and allow.literal is True:
-                yield "PY-DESER-001", "numpy.load(allow_pickle=True)", arguments[0], Confidence.HIGH, {}
-            return
-        # Template injection.
-        if name in _TEMPLATE_CALLS or (short == "from_string" and isinstance(node.func, ast.Attribute)):
-            template = argument(0, "source") or keywords.get("text")
-            if template is not None:
-                yield "PY-SSTI-001", name, template, Confidence.HIGH, {}
-            return
-        # HTML output and explicit escaping bypasses.
-        if name in {
-            "flask.make_response",
-            "make_response",
-            "flask.Response",
-            "Response",
-            "django.http.HttpResponse",
-            "HttpResponse",
-            "markupsafe.Markup",
-            "Markup",
-            "django.utils.safestring.mark_safe",
-            "mark_safe",
-        }:
-            if name in {"flask.Response", "Response", "django.http.HttpResponse", "HttpResponse"} and _has_non_html_media_type(node):
-                return
-            body = argument(0, "response") or keywords.get("content")
-            if body is not None:
-                yield "PY-XSS-001", name, body, Confidence.HIGH, {}
-            return
-        # Redirects.
-        if name in _REDIRECT_CALLS:
-            target = argument(0, "location") or keywords.get("url") or keywords.get("redirect_to") or keywords.get("to")
-            if target is not None and not is_local_path(target.prefix):
-                yield "OPEN-REDIRECT-001", name, target, Confidence.HIGH, {}
-            return
-        # Outbound requests.
-        url_index = _HTTP_FUNCTIONS.get(name)
-        if url_index is None and short in _HTTP_CLIENT_METHODS and receiver.origin in _HTTP_CLIENT_ORIGINS:
-            url_index = _HTTP_CLIENT_METHODS[short]
-        if url_index is not None:
-            target = argument(url_index, "url")
-            if target is not None and not has_fixed_host(target.prefix):
-                yield "PY-SSRF-001", name, target, Confidence.HIGH, {}
-            return
-        # XML.
-        if name in _LXML_PARSE and arguments:
-            if not any(item.arg == "parser" for item in node.keywords) and len(node.args) < 2:
-                yield "PY-XXE-001", name, arguments[0], Confidence.MEDIUM, {}
-            return
-        # Filesystem.
-        if name in _PATH_CALLS:
-            paths = [value for value in (argument(0, "file"), argument(1, "dst") if name in _TWO_PATH_CALLS else None) if value is not None]
-            for path in paths:
-                yield "PY-PATH-001", name, path, Confidence.HIGH, {}
-            return
-        if isinstance(node.func, ast.Attribute):
-            if short in _PATH_METHODS_ANY_RECEIVER or (
-                short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX)
-            ):
-                yield "PY-PATH-001", f"Path.{short}", receiver, Confidence.HIGH, {}
-                return
-            if short == "save" and receiver.origin == "upload" and arguments:
-                yield "PY-PATH-001", "uploaded file save()", arguments[0], Confidence.HIGH, {}
+    def _check_shell_string(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _SHELL_STRING_CALLS:
+            return None
+        command = call.argument(0, "cmd")
+        return [] if command is None else [("PY-CMD-001", call.name, command, Confidence.HIGH, {"unknown_origin": True})]
+
+    def _check_subprocess(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _SUBPROCESS_CALLS:
+            return None
+        command = call.argument(0, "args")
+        if command is None:
+            return []
+        shell = call.keywords.get("shell")
+        if shell is not None and shell.constant and shell.literal is True:
+            return [("PY-CMD-001", f"{call.name}(shell=True)", command, Confidence.HIGH, {"unknown_origin": True})]
+        if shell is not None and not shell.constant:
+            return [("PY-CMD-001", f"{call.name}(shell=<dynamic>)", command, Confidence.MEDIUM, {"unknown_origin": False})]
+        program = self._program_value(call.node.args[0] if call.node.args else None, command, call.env)
+        if program is None:
+            return []
+        return [("PY-CMD-001", f"{call.name} program path", program, Confidence.HIGH, {"unknown_origin": False})]
+
+    def _check_program_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _PROGRAM_CALLS:
+            return None
+        program = call.argument(0)
+        if program is None:
+            return []
+        return [("PY-CMD-001", f"{call.name} program path", program, Confidence.HIGH, {"unknown_origin": False})]
+
+    def _check_code_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _CODE_CALLS:
+            return None
+        code = call.argument(0)
+        return [] if code is None else [("PY-CODE-001", call.name, code, Confidence.HIGH, {"unknown_origin": True})]
+
+    def _check_compile(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in {"compile", "builtins.compile"} or len(call.arguments) < 3:
+            return None
+        mode = call.argument(2, "mode")
+        if mode is not None and mode.literal in {"exec", "eval", "single"}:
+            return [("PY-CODE-001", call.name, call.arguments[0], Confidence.HIGH, {"unknown_origin": True})]
+        return []
+
+    def _check_sql(self, call: _SinkCall) -> list[_SinkHit] | None:
+        node, short, keywords = call.node, call.short, call.keywords
+        if short not in _SQL_METHODS or not isinstance(node.func, ast.Attribute):
+            return None
+        if node.args and _is_bound_orm_expression(node.args[0]):
+            return []
+        statement = call.argument(0, "sql")
+        if statement is None:
+            statement = keywords.get("statement") or keywords.get("query")
+        if statement is None:
+            return []
+        receiver_name = self.canonical(node.func.value)
+        evidence = _sql_evidence(statement)
+        if short == "query" and not evidence:
+            return []
+        if short == "raw" and "objects" not in receiver_name:
+            return []
+        certainty = Confidence.HIGH if evidence or _is_database_receiver(receiver_name) else Confidence.MEDIUM
+        has_bound_values = len(call.arguments) >= 2 and bool(re.search(r"(?:\?|%s|\$\d+|:[A-Za-z_]\w*)", statement.text))
+        unknown_dml = bool(re.search(r"(?i)\b(?:select|insert|update|delete)\b", statement.text))
+        options = {"unknown_origin": unknown_dml and not has_bound_values, "sql_evidence": evidence}
+        return [("PY-SQL-001", call.name, statement, certainty, options)]
+
+    def _check_deserializer(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _DESERIALIZERS:
+            return None
+        data = call.argument(0)
+        return [] if data is None else [("PY-DESER-001", call.name, data, Confidence.HIGH, {})]
+
+    def _check_yaml(self, call: _SinkCall) -> list[_SinkHit] | None:
+        node = call.node
+        if call.name not in {"yaml.load", "yaml.load_all"} or not call.arguments:
+            return None
+        loader = next((item.value for item in node.keywords if item.arg in {"Loader", "loader"}), None)
+        if loader is None and len(node.args) >= 2:
+            loader = node.args[1]
+        loader_name = self.canonical(loader) if loader is not None else ""
+        if loader_name.endswith(_SAFE_YAML_LOADERS):
+            return []
+        return [("PY-DESER-001", call.name, call.arguments[0], Confidence.HIGH, {})]
+
+    def _check_numpy_load(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name != "numpy.load" or not call.arguments:
+            return None
+        allow = call.keywords.get("allow_pickle")
+        if allow is not None and allow.literal is True:
+            return [("PY-DESER-001", "numpy.load(allow_pickle=True)", call.arguments[0], Confidence.HIGH, {})]
+        return []
+
+    def _check_template(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _TEMPLATE_CALLS and not (call.short == "from_string" and isinstance(call.node.func, ast.Attribute)):
+            return None
+        template = call.argument(0, "source") or call.keywords.get("text")
+        return [] if template is None else [("PY-SSTI-001", call.name, template, Confidence.HIGH, {})]
+
+    def _check_html(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _HTML_OUTPUT_CALLS:
+            return None
+        if call.name in _HTML_RESPONSE_CALLS and _has_non_html_media_type(call.node):
+            return []
+        body = call.argument(0, "response") or call.keywords.get("content")
+        return [] if body is None else [("PY-XSS-001", call.name, body, Confidence.HIGH, {})]
+
+    def _check_redirect(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _REDIRECT_CALLS:
+            return None
+        keywords = call.keywords
+        target = call.argument(0, "location") or keywords.get("url") or keywords.get("redirect_to") or keywords.get("to")
+        if target is not None and not is_local_path(target.prefix):
+            return [("OPEN-REDIRECT-001", call.name, target, Confidence.HIGH, {})]
+        return []
+
+    def _check_http(self, call: _SinkCall) -> list[_SinkHit] | None:
+        url_index = _HTTP_FUNCTIONS.get(call.name)
+        if url_index is None and call.short in _HTTP_CLIENT_METHODS and call.receiver.origin in _HTTP_CLIENT_ORIGINS:
+            url_index = _HTTP_CLIENT_METHODS[call.short]
+        if url_index is None:
+            return None
+        target = call.argument(url_index, "url")
+        if target is not None and not has_fixed_host(target.prefix):
+            return [("PY-SSRF-001", call.name, target, Confidence.HIGH, {})]
+        return []
+
+    def _check_xml(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _LXML_PARSE or not call.arguments:
+            return None
+        if not any(item.arg == "parser" for item in call.node.keywords) and len(call.node.args) < 2:
+            return [("PY-XXE-001", call.name, call.arguments[0], Confidence.MEDIUM, {})]
+        return []
+
+    def _check_path_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _PATH_CALLS:
+            return None
+        second = call.argument(1, "dst") if call.name in _TWO_PATH_CALLS else None
+        paths = [value for value in (call.argument(0, "file"), second) if value is not None]
+        return [("PY-PATH-001", call.name, path, Confidence.HIGH, {}) for path in paths]
+
+    def _check_path_method(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if not isinstance(call.node.func, ast.Attribute):
+            return None
+        short, receiver = call.short, call.receiver
+        if short in _PATH_METHODS_ANY_RECEIVER or (
+            short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX)
+        ):
+            return [("PY-PATH-001", f"Path.{short}", receiver, Confidence.HIGH, {})]
+        if short == "save" and receiver.origin == "upload" and call.arguments:
+            return [("PY-PATH-001", "uploaded file save()", call.arguments[0], Confidence.HIGH, {})]
+        return []
+
+    _SINK_CHECKS = (
+        _check_shell_string,
+        _check_subprocess,
+        _check_program_call,
+        _check_code_call,
+        _check_compile,
+        _check_sql,
+        _check_deserializer,
+        _check_yaml,
+        _check_numpy_load,
+        _check_template,
+        _check_html,
+        _check_redirect,
+        _check_http,
+        _check_xml,
+        _check_path_call,
+        _check_path_method,
+    )
 
     def _program_value(self, node: ast.expr | None, value: Value, env: dict[str, Value]) -> Value | None:
         """Value that selects the executed program when no shell is used."""

@@ -97,3 +97,19 @@ def test_spring_literal_path_required(tmp_path: Path) -> None:
         '}\n',
     )
     assert routes == []
+
+
+def test_method_mapping_in_following_noncontroller_is_not_attributed(tmp_path: Path) -> None:
+    routes = _routes(tmp_path,
+        '@RestController\n'
+        'class ValidController {\n'
+        '  @GetMapping("/real")\n'
+        '  public String real() { return "ok"; }\n'
+        '}\n'
+        'class UnrelatedClass {\n'
+        '  @GetMapping("/not-a-controller")\n'
+        '  public String fake() { return "wrong"; }\n'
+        '}\n',
+    )
+    assert len(routes) == 1
+    assert routes[0]["path"] == "/real"

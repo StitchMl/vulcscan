@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "JS-NOSQL-001",
+            "NoSQL Query Operator Injection",
+            "CWE-943",
+            "SQL_EXECUTION",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "An entire HTTP-controlled object is passed directly to a MongoDB-style query method, allowing untrusted query operators or selectors.",
+        ),
+        RuleDefinition(
             "PY-TIMING-001",
             "Timing-Sensitive Secret Comparison",
             "CWE-208",
@@ -808,6 +817,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "JS-NOSQL-001": (
+        Advice(
+            "Construct a schema-validated query object.",
+            "Select allowed fields and operators explicitly and validate scalar types before constructing a MongoDB/Mongoose filter. Do not pass req.body, req.query, or other client-controlled objects directly as selectors.",
+            Confidence.HIGH,
+            "MEDIUM",
+        ),
+    ),
     "PY-TIMING-001": (
         Advice(
             "Use constant-time verification for secret values.",
@@ -964,6 +981,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "JS-NOSQL-001": ["In a disposable test database, submit a harmless object with an unexpected MongoDB operator key such as $ne where a scalar is expected. The service must reject unsupported operators before querying."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],

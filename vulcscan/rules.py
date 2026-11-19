@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PHP-TYPE-JUGGLING-001",
+            "Loose PHP Comparison of Authentication Values",
+            "CWE-697",
+            "AUTH",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A loose comparison of an authentication value with user-controlled input can permit PHP type coercion and unexpected equality.",
+        ),
+        RuleDefinition(
             "AUTHZ-SCOPE-001",
             "Unscoped Resource Access",
             "CWE-639",
@@ -761,6 +770,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "Set allow_url_include = Off. Keep include/require targets server-owned and allowlisted.",
             Confidence.HIGH,
             "LOW",
+        ),
+    ),
+    "PHP-TYPE-JUGGLING-001": (
+        Advice(
+            "Use strict comparisons or a purpose-built credential verifier.",
+            "Replace loose ==/!= checks with ===/!== for ordinary typed values. For secret hashes or MACs use hash_equals with verified string types; for password storage use password_verify. Confirm expected input types and regression-test authentication flows.",
+            Confidence.HIGH,
+            "MEDIUM",
         ),
     ),
     "CLEARTEXT-PASSWORD-001": (

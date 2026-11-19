@@ -231,21 +231,7 @@ class OSVClient:
         if not isinstance(entries, list) or len(entries) > 100000:
             self.errors.append("local OSV snapshot has invalid entries")
             return []
-        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            eco = entry.get("ecosystem")
-            name = entry.get("name")
-            version = entry.get("version")
-            advisories = entry.get("advisories")
-            if not all(isinstance(item, str) and item for item in (eco, name, version)):
-                continue
-            if not isinstance(advisories, list) or len(advisories) > 1000:
-                continue
-            ecosystem = osv_ecosystem(eco) or eco
-            key = (ecosystem, canonical_name(name, eco), version)
-            grouped.setdefault(key, []).extend(item for item in advisories if isinstance(item, dict))
+        grouped = _group_snapshot_entries(entries)
         found: list[Vulnerability] = []
         for dependency in selected.values():
             eco = osv_ecosystem(dependency.ecosystem)
@@ -393,6 +379,27 @@ def _range_matches_version(item: Any, ecosystem: str, version: str) -> bool:
         _contains(ecosystem, version, first, end, kind) is True
         for first, end, kind in _segments(item.get("events", []))
     )
+
+
+def _group_snapshot_entries(
+    entries: list[Any],
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        eco = entry.get("ecosystem")
+        name = entry.get("name")
+        version = entry.get("version")
+        advisories = entry.get("advisories")
+        if not all(isinstance(item, str) and item for item in (eco, name, version)):
+            continue
+        if not isinstance(advisories, list) or len(advisories) > 1000:
+            continue
+        ecosystem = osv_ecosystem(eco) or eco
+        key = (ecosystem, canonical_name(name, eco), version)
+        grouped.setdefault(key, []).extend(item for item in advisories if isinstance(item, dict))
+    return grouped
 
 
 def _advisory_affects(affected: list[dict[str, Any]], dependency: Dependency) -> bool:

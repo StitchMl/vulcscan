@@ -78,11 +78,11 @@ def analyze_route_authz(path: str, source: str) -> list[Finding]:
     for function in ast.walk(tree):
         if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        routes = [item for decorator in function.decorator_list if (item := _route(decorator))]
+        routes = [(item, decorator) for decorator in function.decorator_list if (item := _route(decorator))]
         if not routes or _scoped(function):
             continue
         parameters = {arg.arg for arg in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)}
-        for method, route in routes:
+        for (method, route), route_node in routes:
             names = {value for match in _PATH_PARAM.finditer(route) for value in match.groups() if value}
             for name in sorted(names):
                 if name not in parameters or not _ID_NAME.search(name):
@@ -91,7 +91,6 @@ def analyze_route_authz(path: str, source: str) -> list[Finding]:
                     if not _lookup(node, name):
                         continue
                     sink = _location(path, node)
-                    route_node = function.decorator_list[routes.index((method, route))]
                     origin = _location(path, route_node)
                     evidence = (ast.get_source_segment(source, node) or ast.unparse(node))[:300]
                     findings.append(Finding(

@@ -72,7 +72,7 @@ jobs:
               else:
                   print(json.dumps(data, ensure_ascii=False)[:6000])
           
-          for branch_params in ({"branch": "main"},):
+          for branch_params in ({"pullRequest": "38"},):
               section = list(branch_params.items())[0]
               print("ISSUES", section[0], section[1])
               first = retrieve("issues/search", {"componentKeys": PROJECT, **branch_params, "ps": 500, "p": 1})

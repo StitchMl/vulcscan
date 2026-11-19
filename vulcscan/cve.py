@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 import re
 import socket
 import ssl
@@ -89,6 +91,7 @@ class OSVClient:
         offline: bool = False,
         *,
         local_db: Path | None = None,
+        cache_path: Path | None = None,
         timeout: float = 8.0,
         retries: int = 1,
         opener: Callable[..., Any] | None = None,
@@ -96,6 +99,7 @@ class OSVClient:
     ) -> None:
         self.offline = bool(offline)
         self.local_db = local_db
+        self.cache_path = cache_path
         self.timeout = max(0.1, float(timeout))
         self.retries = max(0, min(int(retries), 3))
         self._opener = opener
@@ -105,7 +109,7 @@ class OSVClient:
     def query(self, dependencies: Iterable[Dependency]) -> list[Vulnerability]:
         self.errors.clear()
         selected = self._queryable(dependencies)
-        if self.local_db is not None:
+        if self.local_db is not None or (self.offline and self.cache_path is not None):
             return self._query_local(selected)
         if self.offline:
             return []
@@ -133,7 +137,69 @@ class OSVClient:
                 if advisory is None:
                     continue
                 vulnerabilities.append(to_vulnerability(dependency, advisory))
+        if self.cache_path is not None and not self.errors:
+            self._write_cache(selected, ids_by_key, advisories)
         return _deduplicate(vulnerabilities)
+
+    def _write_cache(
+        self,
+        selected: dict[str, Dependency],
+        ids_by_key: dict[str, list[str]],
+        advisories: dict[str, dict[str, Any]],
+    ) -> None:
+        """Atomically persist only a complete live OSV response.
+
+        Do not overwrite a valid cache after network errors, and never write
+        through a symlink. A temporary file is private on POSIX systems.
+        """
+        path = self.cache_path
+        if path is None:
+            return
+        if set(selected) != set(ids_by_key):
+            self.errors.append("cannot refresh OSV cache: query results incomplete")
+            return
+        expected = {item for ids in ids_by_key.values() for item in ids}
+        if not expected.issubset(advisories):
+            self.errors.append("cannot refresh OSV cache: advisories incomplete")
+            return
+        entries = []
+        for key, dependency in selected.items():
+            entries.append({
+                "ecosystem": osv_ecosystem(dependency.ecosystem),
+                "name": dependency.name,
+                "version": dependency.version,
+                "advisories": [advisories[advisory_id] for advisory_id in ids_by_key[key]],
+            })
+        snapshot = {"format": "vulcscan-osv-v1", "entries": entries}
+        try:
+            data = json.dumps(snapshot, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(data) > _MAX_RESPONSE_BYTES:
+                raise ValueError("generated OSV snapshot exceeds size limit")
+            if path.is_symlink() or path.is_dir():
+                raise ValueError("OSV cache target cannot be a symlink or directory")
+            temporary: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=path.parent, prefix=".vulcscan-osv-", suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = handle.name
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                # Avoid following a replaced symlink at the target path.
+                if path.is_symlink() or path.is_dir():
+                    raise ValueError("OSV cache target changed during refresh")
+                os.replace(temporary, path)
+                temporary = None
+            finally:
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            self.errors.append(f"cannot write OSV cache: {exc}")
 
     def _query_local(self, selected: dict[str, Dependency]) -> list[Vulnerability]:
         """Read a user-supplied exact-version snapshot without any network call.
@@ -144,7 +210,7 @@ class OSVClient:
         """
         if not selected:
             return []
-        path = self.local_db
+        path = self.local_db or self.cache_path
         if path is None:
             return []
         try:

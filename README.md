@@ -297,3 +297,7 @@ With `--attack-surface`, VulcScan now lists direct literal route registrations s
 ### Spring MVC literal Attack Surface routes
 
 With `--attack-surface`, Java files containing annotated Spring controllers are inspected for literal `@GetMapping`, `@PostMapping`, `@PutMapping`, `@PatchMapping`, `@DeleteMapping` and `@RequestMapping` paths. Literal class-level `@RequestMapping("/prefix")` values are joined with method paths, and a visible `@PreAuthorize`, `@Secured` or related authorization annotation is recorded for the handler. Dynamic route expressions and unrecognized prefix expressions are omitted instead of guessing. The inventory is static and does not load the Java application or expand composed annotations, inheritance or programmatic registrations.
+
+### Django URL patterns in Attack Surface
+
+With `--attack-surface`, VulcScan statically inspects literal `urlpatterns = [path(...)]` declarations in Django `urls.py` modules. It reports the route (prefixed with `/`), unknown HTTP method (`ANY`), file, line, and a directly named view handler. Relative imports from sibling `views.py` are linked when the module is scanned; wrappers such as `login_required(handler)` are marked as authenticating. Unresolved `include(...)`, computed paths and regex routes are omitted instead of being invented. This inventory does not execute Django or expand runtime URL prefixes.

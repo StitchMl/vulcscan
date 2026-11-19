@@ -670,6 +670,25 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
+        elif (receiver == "Object" and method == "assign") or (
+            receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
+        ):
+            arguments = self._arguments(open_index)
+            if len(arguments) < 2:
+                return
+            original = self.text[arguments[1][0]:arguments[1][1]].strip()
+            if not re.fullmatch(
+                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
+                original,
+            ):
+                return
+            value = self._value(*arguments[1])
+            if value.trust != REMOTE or not value.sources:
+                return
+            self._emit_value(
+                "JS-PROTOTYPE-001", receiver + "." + method,
+                call_start, open_index, value, Confidence.MEDIUM,
+            )
         elif method in {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"} and (
             receiver in {"collection", "Model", "User", "Account"}
             or receiver.startswith(("db.collection", "mongoose.model"))

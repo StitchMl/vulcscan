@@ -26,6 +26,7 @@ from .python_analysis import PythonProject
 from .python_argument_injection import analyze_argument_injection
 from .python_tar_extraction import analyze_tar_extraction
 from .python_timing import analyze_timing_comparisons
+from .python_route_authz import analyze_route_authz
 from .source import decode_source
 from .structured import CATALOGS, analyze_structured
 from .suppressions import is_suppressed, suppression_index
@@ -358,6 +359,7 @@ def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1
                 result.findings.extend(analyze_argument_injection(relative, code))
                 result.findings.extend(analyze_tar_extraction(relative, code))
                 result.findings.extend(analyze_timing_comparisons(relative, code))
+                result.findings.extend(analyze_route_authz(relative, code))
             except Exception as exc:
                 result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
     def analyze_one(source: SourceFile):

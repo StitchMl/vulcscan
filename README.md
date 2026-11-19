@@ -269,3 +269,7 @@ For well-formed PE32 and PE32+ images, VulcScan now reads DLL import descriptors
 ### ELF dynamic symbol import table
 
 For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefined imports from `.dynsym` linked to `.dynstr` instead of treating every ASCII occurrence of dangerous API names as an imported function. It skips defined symbols, rejects truncated or invalid tables, and keeps the legacy byte heuristic as a fallback when the structural table is missing or unsupported. This is a bounded, execution-free import audit, not a complete ELF dynamic-loader emulator.
+
+### Flask/FastAPI object authorization scope
+
+`AUTHZ-SCOPE-001` now includes a bounded Python AST heuristic for Flask/FastAPI routes with path identifiers such as `/users/<int:user_id>` and `/accounts/{account_id}` used directly in `Model.query.get(id)`, `get_or_404`, or `db.session.get(Model, id)` calls. A recognizable owner/tenant filter or explicit authorization/ownership check in the same handler makes the analyzer abstain. Authentication decorators alone do not prove object-level authorization. Findings retain an HTTP route SOURCE and ORM SINK, including compatibility with `--remote-only`; they are MEDIUM-confidence and review-only, not proof of IDOR exploitation.

@@ -99,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum finding severity: CRITICAL, HIGH, MEDIUM, LOW, or INFO",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="analyze independent files with 1-8 workers (default 1); ordered results",
+    )
+    parser.add_argument(
         "--exclude-tests",
         action="store_true",
         help="skip common test and fixture directories and test source files (opt-in)",
@@ -234,6 +241,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not root.is_dir():
         _error(f"scan path is not a directory: {root}")
         return 2
+    if args.workers < 1 or args.workers > 8:
+        _error("--workers must be an integer between 1 and 8")
+        return 2
     if args.offline and args.update_cve:
         _error("--offline and --update-cve cannot be used together")
         return 2
@@ -284,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         attack_surface=args.attack_surface,
         remote_only=args.remote_only,
         exclude_tests=args.exclude_tests,
+        workers=args.workers,
         cve_db=args.cve_db.expanduser() if args.cve_db else None,
     )
     try:

@@ -7,6 +7,7 @@ import os
 import platform
 import stat
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -311,12 +312,22 @@ def scan(config: ScanConfig) -> ScanResult:
         },
         errors=list(discovery.errors),
     )
-    _analyze_files(files, result)
-    for binary in discovery.binaries:
+    if not 1 <= config.workers <= 8:
+        raise ValueError("workers must be between 1 and 8")
+    _analyze_files(files, result, config.workers)
+    def analyze_one_binary(binary: BinaryFile):
         try:
-            result.findings.extend(analyze_binary(binary.relative, binary.data))
+            return analyze_binary(binary.relative, binary.data), []
         except Exception as exc:
-            result.errors.append(ScanError(binary.relative, "binary-analysis", f"{exc.__class__.__name__}: {exc}"))
+            return [], [ScanError(binary.relative, "binary-analysis", f"{exc.__class__.__name__}: {exc}")]
+    if config.workers > 1 and len(discovery.binaries) > 1:
+        with ThreadPoolExecutor(max_workers=config.workers) as executor:
+            binary_results = list(executor.map(analyze_one_binary, discovery.binaries))
+    else:
+        binary_results = [analyze_one_binary(binary) for binary in discovery.binaries]
+    for findings, errors in binary_results:
+        result.findings.extend(findings)
+        result.errors.extend(errors)
     for finding in result.findings:
         enrich_finding(finding)
     _dependencies(config, root, discovery.manifests, result)
@@ -334,7 +345,7 @@ def scan(config: ScanConfig) -> ScanResult:
     return result
 
 
-def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
+def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1) -> None:
     imported_sinks = imported_sink_map(files)
     python_sources = [(item.relative, item.text) for item in files if item.language == "Python"]
     if python_sources:
@@ -348,20 +359,32 @@ def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
                 result.findings.extend(analyze_timing_comparisons(relative, code))
             except Exception as exc:
                 result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
-    for source in files:
+    def analyze_one(source: SourceFile):
         if source.language in _CODE_ANALYSIS_SKIP:
-            continue
+            return [], []
+        found = []
         try:
-            result.findings.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
+            found.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
             if source.language in {"JavaScript", "TypeScript"}:
-                result.findings.extend(analyze_javascript(
+                found.extend(analyze_javascript(
                     source.relative, source.text, source.language,
                     imported_sinks.get(source.relative),
                 ))
             elif source.language in CATALOGS:
-                result.findings.extend(analyze_structured(source.relative, source.text, source.language))
+                found.extend(analyze_structured(source.relative, source.text, source.language))
+            return found, []
         except Exception as exc:
-            result.errors.append(ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}"))
+            return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]
+
+    if workers > 1 and len(files) > 1:
+        # executor.map preserves discovery order irrespective of completion order.
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(analyze_one, files))
+    else:
+        results = [analyze_one(source) for source in files]
+    for findings, errors in results:
+        result.findings.extend(findings)
+        result.errors.extend(errors)
 
 
 def _dependencies(config: ScanConfig, root: Path, manifests: list[Path], result: ScanResult) -> None:

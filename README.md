@@ -249,3 +249,7 @@ Snapshots are limited to 16 MiB; symbolic-link snapshots are rejected. No databa
 ### C/C++ allocation-size overflow
 
 `C-ALLOC-001` (CWE-190) reviews malloc size multiplications where the count comes directly from CLI input via atoi/atol/strtoul. A recognized SIZE_MAX division guard or overwritten count prevents the alert. This is conservative lexical detection, not proof of exploitability or an automated patch.
+
+### Deterministic per-file parallel analysis
+
+Use `--workers N` with `N` from 1 to 8 to analyze independent source files and binaries concurrently (default `1`, preserving existing behavior). Python cross-module flow analysis and dependency discovery remain ordered and sequential. Results are collected in discovery order before normal sorting; the report content is equivalent to the serial scan aside from `scan_duration`. Execution uses Python's standard-library thread pool and never runs target code. Thread scheduling and the GIL mean a speedup is workload dependent, not guaranteed.

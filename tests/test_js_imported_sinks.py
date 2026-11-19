@@ -75,7 +75,7 @@ def test_guarded_or_transformed_wrappers_are_not_summarized(tmp_path: Path) -> N
         "  const clean = parseInt(value, 10);\n"
         "  cp.exec(clean);\n"
         "}\n")
-    assert not _cmd_findings(tmp_path)
+    assert not _cmd_findings(tmp_path, sourced=True)
 
 
 def test_ambiguous_module_specifier_is_not_guessed(tmp_path: Path) -> None:
@@ -88,14 +88,14 @@ def test_ambiguous_module_specifier_is_not_guessed(tmp_path: Path) -> None:
     _write(tmp_path, "service.js",
         "const cp = require('child_process');\n"
         "export function unsafe(value) { cp.exec(value); }\n")
-    assert not _cmd_findings(tmp_path)
+    assert not _cmd_findings(tmp_path, sourced=True)
 
 
 def test_non_local_import_does_not_gain_sink_summary(tmp_path: Path) -> None:
     _write(tmp_path, "routes.js",
         "import { unsafe } from 'remote-library';\n"
         "function handler(req) { unsafe(req.query.cmd); }\n")
-    assert not _cmd_findings(tmp_path)
+    assert not _cmd_findings(tmp_path, sourced=True)
 
 
 def test_ordinary_local_script_findings_remain_intact(tmp_path: Path) -> None:

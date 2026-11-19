@@ -23,8 +23,26 @@ def test_opt_in_attack_surface_precedes_priority_index(tmp_path: Path) -> None:
     assert "GET /lookup" in report
     assert "auth: unknown" in report
     assert report.index("ATTACK SURFACE") < report.index("PRIORITY INDEX")
-    assert "VERIFY (review before use)" in report
     assert max(len(line) for line in report.splitlines()) <= 88
+
+
+def test_available_verification_command_is_displayed() -> None:
+    result = ScanResult(metadata={
+        "root": "/tmp/project",
+        "attack_surface": [{
+            "method": ["GET"],
+            "path": "/items",
+            "file": "app.py",
+            "line": 3,
+            "handler": "lookup",
+            "authentication": "unknown",
+            "finding_rules": ["PY-CMD-001"],
+            "verify_curl": "curl --silent --show-error --max-time 5 'http://127.0.0.1:8000/items?item=VULCSCAN_CANARY'",
+        }],
+    })
+    report = render_text(result, width=120)
+    assert "VERIFY (review before use)" in report
+    assert "127.0.0.1:8000/items?item=VULCSCAN_CANARY" in report
 
 
 def test_default_text_report_does_not_add_inventory() -> None:

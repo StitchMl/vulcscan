@@ -433,7 +433,8 @@ def _unchecked_orm_identity(language: str, text: str, add: Callable[..., None]) 
 
 _PHP_AUTH_VAR = re.compile(
     r"(?i)^\$?(?:[A-Za-z_]\w*(?:password|passwd|pwd|token|secret|hash|signature|auth|hmac)"
-    r"|(?:password|passwd|pwd|token|secret|hash|signature|auth|hmac)[A-Za-z_]\w*)$"
+    r"|(?:password|passwd|pwd|token|secret|hash|signature|auth|hmac)[A-Za-z_]\w*"
+    r"|password|passwd|pwd|token|secret|hash|signature|auth|hmac)$"
 )
 _PHP_UNTRUSTED = re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[", re.IGNORECASE)
 _PHP_OPERAND = r"(?:\$_(?:GET|POST|REQUEST|COOKIE)\s*\[\s*['\"][^'\"]+['\"]\s*\]|\$[A-Za-z_]\w*)"

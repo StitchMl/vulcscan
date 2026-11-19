@@ -23,7 +23,7 @@ def test_excluding_tests_is_strictly_opt_in(tmp_path: Path) -> None:
     selected = scan_path(tmp_path, cve=False, exclude_tests=True)
     assert default.metadata["files_analyzed"] == 7
     assert selected.metadata["files_analyzed"] == 2
-    assert selected.metadata["files_discovered"] == 5
+    assert selected.metadata["files_discovered"] == 2
     assert "migrations" not in str(selected.errors)
 
 

@@ -301,3 +301,7 @@ With `--attack-surface`, Java files containing annotated Spring controllers are 
 ### Django URL patterns in Attack Surface
 
 With `--attack-surface`, VulcScan statically inspects literal `urlpatterns = [path(...)]` declarations in Django `urls.py` modules. It reports the route (prefixed with `/`), unknown HTTP method (`ANY`), file, line, and a directly named view handler. Relative imports from sibling `views.py` are linked when the module is scanned; wrappers such as `login_required(handler)` are marked as authenticating. Unresolved `include(...)`, computed paths and regex routes are omitted instead of being invented. This inventory does not execute Django or expand runtime URL prefixes.
+
+### Java ZIP entry extraction traversal
+
+`JAVA-ZIPSLIP-001` (CWE-22) conservatively checks a direct `ZipEntry` obtained from `getNextEntry`/`nextElement`/`getEntry`, whose `getName()` is combined with an output directory in `new File(...)` and subsequently written via `FileOutputStream` or `Files.copy`. A recognizable canonical or normalized containment check makes the detector abstain, but does not constitute proof that an implementation is secure. It is review-only, with a non-destructive disposable ZIP verification suggestion. General ZipFile streaming, alternate path APIs, symlink races and indirect assignments remain outside this narrow rule. No archive is opened or extracted during the scan.

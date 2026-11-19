@@ -1,4 +1,4 @@
-"""Explicit, rule-scoped Python comment suppressions without executing target code."""
+"""Explicit, rule-scoped Python/JavaScript/TypeScript comment suppressions."""
 from __future__ import annotations
 
 import io

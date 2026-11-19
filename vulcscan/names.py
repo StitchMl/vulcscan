@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 
 _COMPONENT = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|\b|_)|[A-Z]?[a-z]+|\d+")
 
@@ -72,3 +74,16 @@ def looks_like_secret(value: str, identifier: str = "") -> bool:
     if candidate.startswith(("/", "./", "../", "~/")) or re.match(r"^[A-Za-z]:\\", candidate):
         return False
     return not (re.match(r"(?i)^[a-z][a-z0-9+.-]*://", candidate) and "@" not in candidate)
+
+
+def shannon_entropy(value: str) -> float:
+    """Return Shannon information in bits per character."""
+    if not value:
+        return 0.0
+    length = len(value)
+    return -sum((count / length) * math.log2(count / length) for count in Counter(value).values())
+
+
+def generic_secret_is_repetitive(value: str, identifier: str) -> bool:
+    """Identify repetitive generic literals without suppressing their findings."""
+    return is_credential_name(identifier) and len(value) >= 16 and shannon_entropy(value) < 2.5

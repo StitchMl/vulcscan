@@ -253,3 +253,7 @@ Snapshots are limited to 16 MiB; symbolic-link snapshots are rejected. No databa
 ### Deterministic per-file parallel analysis
 
 Use `--workers N` with `N` from 1 to 8 to analyze independent source files and binaries concurrently (default `1`, preserving existing behavior). Python cross-module flow analysis and dependency discovery remain ordered and sequential. Results are collected in discovery order before normal sorting; the report content is equivalent to the serial scan aside from `scan_duration`. Execution uses Python's standard-library thread pool and never runs target code. Thread scheduling and the GIL mean a speedup is workload dependent, not guaranteed.
+
+### Entropy-aware generic secret confidence
+
+Generic secret literals under credential-like identifiers now use Shannon entropy to calibrate confidence: long (16+ character) highly repetitive values below 2.5 bits/character remain reported but are classified MEDIUM instead of HIGH confidence. Random-looking generic credential strings remain HIGH confidence, as do recognizable known-token prefixes. No finding is suppressed purely because of low entropy; long weak passwords and tokens still merit review. This is an ordering heuristic, not a test of cryptographic key strength.

@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 from .models import Confidence, Finding, Location
 from .names import (
+    generic_secret_is_repetitive,
     is_credential_name,
     is_random_sensitive_name,
     looks_like_secret,
@@ -759,7 +760,8 @@ def _secret(line: str, number: int, language: str, add: Callable[..., None]) -> 
     for match in _KEY_VALUE.finditer(line):
         key = match.group("key").rsplit(".", 1)[-1]
         if is_credential_name(key) and looks_like_secret(match.group("value"), key):
-            add("SECRET-001", number, match.start("key") + 1, key, _redact(line, match.group("value")))
+            confidence = Confidence.MEDIUM if generic_secret_is_repetitive(match.group("value"), key) else Confidence.HIGH
+            add("SECRET-001", number, match.start("key") + 1, key, _redact(line, match.group("value")), confidence)
             return
     if language in _CONFIG_LANGUAGES:
         match = _CONFIG_VALUE.match(line)
@@ -767,7 +769,8 @@ def _secret(line: str, number: int, language: str, add: Callable[..., None]) -> 
             key = match.group("key").rsplit(".", 1)[-1]
             value = match.group("value")
             if is_credential_name(key) and looks_like_secret(value, key) and not value.startswith(("$", "%", "{")):
-                add("SECRET-001", number, match.start("key") + 1, key, _redact(line, value))
+                confidence = Confidence.MEDIUM if generic_secret_is_repetitive(value, key) else Confidence.HIGH
+                add("SECRET-001", number, match.start("key") + 1, key, _redact(line, value), confidence)
 
 
 def _java_digest(lines: list[str], add: Callable[..., None]) -> None:

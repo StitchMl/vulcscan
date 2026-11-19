@@ -40,6 +40,7 @@ from .dataflow import (
     unique_steps,
     with_step,
 )
+from .js_interproc import ImportedSink
 from .models import Confidence, Finding, FlowStep, Location
 from .regex_safety import safe_for
 from .rules import remediations_for, rule
@@ -119,7 +120,7 @@ class _Statement:
 
 
 class _Analyzer:
-    def __init__(self, path: str, text: str, language: str) -> None:
+    def __init__(self, path: str, text: str, language: str, imported_sinks: dict[str, ImportedSink] | None = None) -> None:
         self.path = path
         self.language = language
         self.text = blank_comments(text, JS_STYLE)
@@ -129,6 +130,7 @@ class _Analyzer:
         self.findings: list[Finding] = []
         self.objects: dict[str, str] = {}
         self.functions: dict[str, tuple[str, str]] = {}
+        self.imported_sinks = imported_sinks or {}
         self._collect_imports()
 
     # Imports ----------------------------------------------------------------------
@@ -596,6 +598,24 @@ class _Analyzer:
         if method in self.objects:
             self._dispatch(call_start, open_index, self.objects[method], "__call__", "")
             return
+        if method in self.imported_sinks:
+            summary = self.imported_sinks[method]
+            old_count = len(self.findings)
+            self._emit_argument(
+                summary.rule_id, "imported " + summary.sink,
+                call_start, open_index, summary.parameter_index,
+                unknown_origin=summary.rule_id in {"JS-CMD-001", "JS-CODE-001"},
+            )
+            if len(self.findings) > old_count:
+                finding = self.findings[-1]
+                sink_location = Location(summary.file, summary.line, function=None)
+                finding.related_locations.append(sink_location)
+                finding.flow.append(FlowStep(
+                    "SINK", sink_location, summary.sink,
+                    "Argument reaches a direct sink in an imported local function.",
+                ))
+                finding.confidence = Confidence.MEDIUM
+            return
         if method == "eval":
             self._emit_argument("JS-CODE-001", "eval", call_start, open_index, 0, unknown_origin=True)
         elif method == "Function":
@@ -751,8 +771,11 @@ class _Analyzer:
         return Location(self.path, line, column, end_line, end_column, self._enclosing_name())
 
 
-def analyze_javascript(relative_path: str, text: str, language: str) -> list[Finding]:
-    return _Analyzer(relative_path, text, language).run()
+def analyze_javascript(
+    relative_path: str, text: str, language: str,
+    imported_sinks: dict[str, ImportedSink] | None = None,
+) -> list[Finding]:
+    return _Analyzer(relative_path, text, language, imported_sinks).run()
 
 
 def _parameter_names(text: str) -> list[str]:

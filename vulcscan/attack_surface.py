@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
+from urllib.parse import urlencode
 from typing import Any
 
 from .models import Finding
@@ -83,6 +85,39 @@ def _javascript_routes(relative: str, source: str) -> list[dict[str, Any]]:
     return endpoints
 
 
+_QUERY_PARAM = re.compile(
+    r"""(?:request\\.args(?:\\.get)?\\(\\s*['"]([A-Za-z_]\\w*)['"]|"""
+    r"""request\\.args\\[\\s*['"]([A-Za-z_]\\w*)['"]\\s*\\]|"""
+    r"""req\\.query\\.([A-Za-z_]\\w*))"""
+)
+
+
+def _verification_curl(route: dict[str, Any], findings: list[Finding]) -> str | None:
+    """Generate a copyable, never-executed GET canary for confidently linked traces.
+
+    No placeholder substitution, request body, credentials or state-changing
+    methods are inferred. Do not guess when the route is dynamic.
+    """
+    path = route["path"]
+    if route["method"] != ["GET"] or not path.startswith("/") or any(
+        token in path for token in ("<", ">", "{", "}", ":", "?", "#", "\\n", "\\r", " ")
+    ) or path.startswith("//"):
+        return None
+    parameters: set[str] = set()
+    for finding in findings:
+        for step in finding.flow:
+            if step.kind.upper() != "SOURCE":
+                continue
+            match = _QUERY_PARAM.search(step.code)
+            if match:
+                parameters.add(next(value for value in match.groups() if value))
+    if not parameters:
+        return None
+    query = urlencode([(name, "VULCSCAN_CANARY") for name in sorted(parameters)])
+    url = "http://127.0.0.1:8000" + path + "?" + query
+    return "curl --silent --show-error --max-time 5 " + shlex.quote(url)
+
+
 def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[str, Any]]:
     """Return stable endpoint metadata, with conservative same-file finding references."""
     routes: list[dict[str, Any]] = []
@@ -101,4 +136,7 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             ))
         ]
         route["finding_rules"] = sorted({finding.rule_id for finding in matches})
+        probe = _verification_curl(route, matches)
+        if probe is not None:
+            route["verify_curl"] = probe
     return sorted(routes, key=lambda route: (route["file"].casefold(), route["line"], route["path"], route["method"]))

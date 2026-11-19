@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "JS-SSTI-001",
+            "Server-Side JavaScript Template Injection",
+            "CWE-1336",
+            "TEMPLATE",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "HTTP-controlled template source text is compiled or rendered by a server-side template engine instead of being passed as context data.",
+        ),
+        RuleDefinition(
             "JS-PROTOTYPE-001",
             "Prototype Pollution via Untrusted Object Merge",
             "CWE-1321",
@@ -853,6 +862,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "JS-SSTI-001": (
+        Advice(
+            "Keep template source server-controlled.",
+            "Use a fixed trusted template file and pass request input only as escaped context values. Do not compile or render req.body or req.query strings as EJS, Pug, Handlebars or Nunjucks template source.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
     "JS-PROTOTYPE-001": (
         Advice(
             "Validate object keys and merge only explicit schema fields.",
@@ -1049,6 +1066,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "JS-SSTI-001": ["On a disposable instance, submit harmless template arithmetic like <%= 7*7 %> for EJS or {{7*7}} for supported engines. The input must remain data, not be rendered as a template."],
         "JS-PROTOTYPE-001": ["In an isolated test application, submit a harmless JSON object containing an unexpected __proto__ or constructor key; confirm the server rejects the key and no inherited property appears in subsequently constructed objects."],
         "C-ALLOC-001": ["With a disposable instrumented build, test small valid counts and an oversized synthetic count. The application must reject allocation-size overflow before allocating or copying data."],
         "C-BUFFER-001": ["Use a disposable debug build under ASan or UBSan and send boundary-length non-secret strings. Check that input is bounded to destination capacity and that any truncation preserves a valid terminator."],

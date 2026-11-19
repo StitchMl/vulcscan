@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "C-BUFFER-001",
+            "Potential C/C++ Buffer Overflow",
+            "CWE-120",
+            "MEMORY_SAFETY",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "An unbounded C input/copy primitive or unbounded copy of command-line data can write beyond a fixed destination buffer.",
+        ),
+        RuleDefinition(
             "JS-NOSQL-001",
             "NoSQL Query Operator Injection",
             "CWE-943",
@@ -817,6 +826,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "C-BUFFER-001": (
+        Advice(
+            "Bound the write by the destination buffer size.",
+            "Avoid gets and unbounded scanf %s; use fgets or a width-constrained format matched to the true buffer capacity. For copies from argv, validate the destination capacity, reserve space for the terminator, and prefer explicit bounds.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "JS-NOSQL-001": (
         Advice(
             "Construct a schema-validated query object.",
@@ -981,6 +998,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "C-BUFFER-001": ["Use a disposable debug build under ASan or UBSan and send boundary-length non-secret strings. Check that input is bounded to destination capacity and that any truncation preserves a valid terminator."],
         "JS-NOSQL-001": ["In a disposable test database, submit a harmless object with an unexpected MongoDB operator key such as $ne where a scalar is expected. The service must reject unsupported operators before querying."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],

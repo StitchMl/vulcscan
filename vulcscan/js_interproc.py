@@ -124,8 +124,8 @@ def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
             # parameter cannot safely be treated as the imported binding.
             escaped = re.escape(alias)
             if re.search(
-                rf"\\b(?:function|class)\\s+{escaped}\\b|"
-                rf"\\b(?:function|catch)\\s*(?:[A-Za-z_$][\\w$]*)?\\s*\\([^)]*\\b{escaped}\\b",
+                rf"\b(?:function|class)\s+{escaped}\b|"
+                rf"\b(?:function|catch)\s*(?:[A-Za-z_$][\w$]*)?\s*\([^)]*\b{escaped}\b",
                 clean,
             ):
                 continue

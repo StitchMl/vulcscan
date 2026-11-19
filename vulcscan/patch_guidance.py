@@ -7,6 +7,11 @@ import re
 from .models import Confidence, Finding, Remediation
 
 _SUPPORTED = frozenset({"CMD", "XSS", "PATH", "SSRF", "DESER", "CODE"})
+_QUOTES = frozenset({"'", '"', "`"})
+_ASSIGNMENT_PREFIX = re.compile(r"\.\s*CommandText\s*=|\b(?:include|require)(?:_once)?\s+")
+_QUOTE_CHAR = re.compile(r"""["']""")
+_DRIVE_PREFIX = re.compile(r"[A-Za-z]:[\\/]")
+_CALLEE = re.compile(r"([A-Za-z_$][\w$:.>\-]*)\s*\(")
 
 
 def computed_remediation(finding: Finding) -> Remediation | None:
@@ -51,14 +56,24 @@ def _tainted_expression(finding: Finding) -> str | None:
         index = _sink_argument_index(finding, evidence, len(arguments))
         if index is not None:
             return _clean_expression(arguments[index])
-    assignment = re.search(r"(?s)(?:\.\s*CommandText\s*=|\b(?:include|require)(?:_once)?\s+)\s*(.+?);?$", evidence)
-    if assignment:
-        return _clean_expression(assignment.group(1))
+    assigned = _assigned_expression(evidence)
+    if assigned:
+        return _clean_expression(assigned)
     for name in reversed(names):
         if _contains_name(evidence, name):
             return name
     source = next((step.code.strip() for step in finding.flow if step.kind == "SOURCE"), "")
     return _clean_expression(source) if source and len(source) <= 120 else None
+
+
+def _assigned_expression(evidence: str) -> str | None:
+    prefix = _ASSIGNMENT_PREFIX.search(evidence)
+    if prefix is None:
+        return None
+    rest = evidence[prefix.end() :].lstrip()
+    if len(rest) > 1 and rest.endswith(";"):
+        rest = rest[:-1]
+    return rest or None
 
 
 def _flow_names(finding: Finding) -> list[str]:
@@ -95,25 +110,29 @@ def _call_arguments(text: str) -> list[str]:
     return _split_arguments(text[open_index + 1 : close_index])
 
 
+def _quote_state(char: str, quote: str, escaped: bool) -> tuple[str, bool, bool]:
+    """Advance string-literal tracking; return (quote, escaped, consumed)."""
+    if escaped:
+        return quote, False, True
+    if quote:
+        if char == "\\":
+            return quote, True, True
+        return ("" if char == quote else quote), False, True
+    if char in _QUOTES:
+        return char, False, True
+    return quote, False, False
+
+
 def _matching_close(text: str, open_index: int) -> int:
     depth = 0
     quote = ""
     escaped = False
     for index in range(open_index, len(text)):
         char = text[index]
-        if escaped:
-            escaped = False
+        quote, escaped, consumed = _quote_state(char, quote, escaped)
+        if consumed:
             continue
-        if char == "\\" and quote:
-            escaped = True
-            continue
-        if quote:
-            if char == quote:
-                quote = ""
-            continue
-        if char in {"'", '"', "`"}:
-            quote = char
-        elif char == "(":
+        if char == "(":
             depth += 1
         elif char == ")":
             depth -= 1
@@ -125,31 +144,19 @@ def _matching_close(text: str, open_index: int) -> int:
 def _split_arguments(body: str) -> list[str]:
     parts: list[str] = []
     start = 0
-    depth = 0
     quote = ""
     escaped = False
     pairs = {"(": ")", "[": "]", "{": "}"}
     stack: list[str] = []
     for index, char in enumerate(body):
-        if escaped:
-            escaped = False
+        quote, escaped, consumed = _quote_state(char, quote, escaped)
+        if consumed:
             continue
-        if char == "\\" and quote:
-            escaped = True
-            continue
-        if quote:
-            if char == quote:
-                quote = ""
-            continue
-        if char in {"'", '"', "`"}:
-            quote = char
-        elif char in pairs:
+        if char in pairs:
             stack.append(pairs[char])
-            depth += 1
         elif stack and char == stack[-1]:
             stack.pop()
-            depth -= 1
-        elif char == "," and depth == 0:
+        elif char == "," and not stack:
             parts.append(body[start:index].strip())
             start = index + 1
     tail = body[start:].strip()
@@ -158,16 +165,22 @@ def _split_arguments(body: str) -> list[str]:
     return parts
 
 
+def _go_sink_index(compact: str, count: int) -> int | None:
+    if "newrequestwithcontext" in compact:
+        return 2 if count > 2 else None
+    if "newrequest" in compact:
+        return 1 if count > 1 else None
+    if re.search(r"fmt\s*\.\s*fprint", compact):
+        return count - 1 if count > 1 else None
+    return 0
+
+
 def _sink_argument_index(finding: Finding, evidence: str, count: int) -> int | None:
     if count == 0:
         return None
     compact = evidence.casefold()
-    if finding.language == "Go" and "newrequestwithcontext" in compact:
-        return 2 if count > 2 else None
-    if finding.language == "Go" and "newrequest" in compact:
-        return 1 if count > 1 else None
-    if finding.language == "Go" and re.search(r"fmt\s*\.\s*fprint", compact):
-        return count - 1 if count > 1 else None
+    if finding.language == "Go":
+        return _go_sink_index(compact, count)
     if finding.language == "PHP" and re.search(r"\b(?:mysqli_query|pg_query|curl_setopt)\b", compact):
         return count - 1
     if finding.language == "JavaScript" and re.search(r"\b(?:writefile|copyfile|rename)\w*\s*\(", compact):
@@ -223,7 +236,7 @@ def _command_patch(language: str, value: str, _evidence: str) -> tuple[str, str]
 
 def _command_parts(expression: str) -> tuple[str | None, list[str], str | None]:
     match = re.match(
-        r'''^\s*["'](?P<prefix>[\w./\\-]+(?:\s+[\w./\\-]+)*)\s+["']\s*(?:\+|\.)\s*(?P<arg>.+)$''',
+        r'''^\s*["'](?P<prefix>(?:[\w./\\-]+\s+)+)["']\s*[+.]\s*(?P<arg>\S.*)$''',
         expression,
     )
     if match:
@@ -333,21 +346,48 @@ def _code_patch(language: str, value: str, evidence: str) -> tuple[str, str] | N
     return f"Parse `{value}` as data and map operation names to fixed functions. Remove runtime evaluation through `{_callee(evidence)}`.", suggested
 
 
-def _path_base(text: str) -> str | None:
-    literals = re.findall(r'''["']((?:[A-Za-z]:[\\/]|/)[^"']*[\\/])[^"']*["']''', text)
-    if not literals:
+def _literal_base(literal: str) -> str | None:
+    """Directory prefix (through its last separator) of an absolute-path string literal."""
+    drive = _DRIVE_PREFIX.match(literal)
+    if drive is None and not literal.startswith("/"):
         return None
-    return max(literals, key=len).replace("\\\\", "\\")
+    cut = max(literal.rfind("/"), literal.rfind("\\"))
+    return literal[: cut + 1] if cut >= (3 if drive else 1) else None
+
+
+def _path_bases(text: str) -> list[str]:
+    bases: list[str] = []
+    cursor = 0
+    while True:
+        start = _QUOTE_CHAR.search(text, cursor)
+        if start is None:
+            return bases
+        end = _QUOTE_CHAR.search(text, start.end())
+        if end is None:
+            return bases
+        base = _literal_base(text[start.end() : end.start()])
+        if base is None:
+            cursor = start.end()
+        else:
+            bases.append(base)
+            cursor = end.end()
+
+
+def _path_base(text: str) -> str | None:
+    bases = _path_bases(text)
+    if not bases:
+        return None
+    return max(bases, key=len).replace("\\\\", "\\")
 
 
 def _path_input(text: str) -> str | None:
-    match = re.search(r'''["'](?:[A-Za-z]:[\\/]|/)[^"']*[\\/]["']\s*(?:\+|\.)\s*(\$?[A-Za-z_]\w*)''', text)
+    match = re.search(r'''["'](?:[A-Za-z]:[\\/]|/)[^"']*[\\/]["']\s*[+.]\s*(\$?[A-Za-z_]\w*)''', text)
     return match.group(1) if match else None
 
 
 def _callee(evidence: str) -> str:
-    match = re.search(r"([A-Za-z_$][\w$:.>\-]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(", evidence)
-    return re.sub(r"\s+", "", match.group(1)) if match else "the reported sink"
+    match = _CALLEE.search(re.sub(r"\s*\.\s*(?=[A-Za-z_$])", ".", evidence))
+    return match.group(1) if match else "the reported sink"
 
 
 def _quote(value: str) -> str:

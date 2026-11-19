@@ -277,3 +277,7 @@ For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefi
 ### Node.js server-side template injection
 
 `JS-SSTI-001` (CWE-1336) traces direct HTTP-sourced strings into template **source** APIs: `ejs.render`/`ejs.compile`, `pug.render`/`pug.compile`, `Handlebars.compile` and `nunjucks.renderString`. User data passed as context to a fixed trusted template is not reported. Findings include HTTP SOURCE and template compilation SINK and work with `--remote-only`. This is conservative, MEDIUM-confidence, review-only analysis; it does not execute the application or infer arbitrary aliased template engines.
+
+### PHP Twig template-source injection
+
+`PHP-SSTI-001` (CWE-1336) identifies direct HTTP GET/POST/REQUEST values, or simple variable aliases assigned from them, passed to `$twig->createTemplate(...)` for compilation as Twig template source. It deliberately does not flag rendering a fixed template with request fields supplied as context. Long call chains, custom engines and unknown transforms are not inferred. Findings are MEDIUM-confidence review-only guidance and do not execute PHP or apply patches.

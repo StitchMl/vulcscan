@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PHP-SSTI-001",
+            "Twig Server-Side Template Injection",
+            "CWE-1336",
+            "TEMPLATE",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "An HTTP-controlled string is compiled directly into Twig template source using createTemplate.",
+        ),
+        RuleDefinition(
             "JS-SSTI-001",
             "Server-Side JavaScript Template Injection",
             "CWE-1336",
@@ -862,6 +871,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "PHP-SSTI-001": (
+        Advice(
+            "Render fixed Twig templates instead of compiling request text.",
+            "Keep template source in server-owned files and pass request fields only as escaped context values. Do not call Twig createTemplate with a string taken from GET or POST data.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
     "JS-SSTI-001": (
         Advice(
             "Keep template source server-controlled.",
@@ -1066,6 +1083,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "PHP-SSTI-001": ["On a disposable test service, supply a harmless arithmetic marker such as {{7*7}} as the template field. The marker must be kept as data rather than compiled into Twig source."],
         "JS-SSTI-001": ["On a disposable instance, submit harmless template arithmetic like <%= 7*7 %> for EJS or {{7*7}} for supported engines. The input must remain data, not be rendered as a template."],
         "JS-PROTOTYPE-001": ["In an isolated test application, submit a harmless JSON object containing an unexpected __proto__ or constructor key; confirm the server rejects the key and no inherited property appears in subsequently constructed objects."],
         "C-ALLOC-001": ["With a disposable instrumented build, test small valid counts and an oversized synthetic count. The application must reject allocation-size overflow before allocating or copying data."],

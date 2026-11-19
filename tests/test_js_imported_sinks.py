@@ -33,7 +33,8 @@ def test_esm_direct_wrapper_receives_remote_query_across_files(tmp_path: Path) -
     assert len(findings) == 1
     finding = findings[0]
     assert finding.location.file == "routes.js"
-    assert finding.source is not None and finding.source.file == "routes.js"
+    assert finding.source is not None
+    assert finding.source.file == "routes.js"
     assert finding.confidence == Confidence.MEDIUM
     assert any(loc.file == "service.js" for loc in finding.related_locations)
     assert any(step.location.file == "service.js" and step.kind == "SINK" for step in finding.flow)
@@ -129,7 +130,8 @@ def test_one_hop_imported_filesystem_sink_uses_remote_source(tmp_path: Path) -> 
         finding for finding in report.findings
         if finding.rule_id == "JS-PATH-001" and finding.source is not None
     ]
-    assert found and found[0].location.file == "routes.js"
+    assert found
+    assert found[0].location.file == "routes.js"
     assert any(loc.file == "service.js" for loc in found[0].related_locations)
 
 
@@ -144,4 +146,5 @@ def test_one_hop_imported_fetch_sink_uses_remote_source(tmp_path: Path) -> None:
         finding for finding in report.findings
         if finding.rule_id == "JS-SSRF-001" and finding.source is not None
     ]
-    assert found and found[0].location.file == "routes.js"
+    assert found
+    assert found[0].location.file == "routes.js"

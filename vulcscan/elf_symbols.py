@@ -18,10 +18,15 @@ def _unpack(fmt: str, data: bytes, offset: int):
         return None
 
 
+def _valid_identification(data: bytes) -> bool:
+    return (
+        len(data) >= 52 and data[:4] == b"\x7fELF"
+        and data[4] in (1, 2) and data[5] in (1, 2)
+    )
+
+
 def _layout(data: bytes):
-    if len(data) < 52 or data[:4] != b"\x7fELF":
-        return None
-    if data[4] not in (1, 2) or data[5] not in (1, 2):
+    if not _valid_identification(data):
         return None
     wide = data[4] == 2
     endian = "<" if data[5] == 1 else ">"

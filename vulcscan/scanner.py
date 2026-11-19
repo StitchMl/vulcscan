@@ -19,6 +19,7 @@ from .guidance import enrich_finding
 from .javascript import analyze_javascript
 from .js_interproc import imported_sink_map
 from .js_timing import analyze_javascript_timing
+from .java_zip_slip import analyze_java_zip_slip
 from .lexical import lexical_findings
 from .remote import has_remote_source
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
@@ -376,6 +377,8 @@ def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1
                 found.extend(analyze_javascript_timing(source.relative, source.text, source.language))
             elif source.language in CATALOGS:
                 found.extend(analyze_structured(source.relative, source.text, source.language))
+            if source.language == "Java":
+                found.extend(analyze_java_zip_slip(source.relative, source.text))
             return found, []
         except Exception as exc:
             return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]

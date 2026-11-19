@@ -10,6 +10,7 @@ import re
 import shlex
 from typing import Any
 
+from .js_routes import resolve_handler
 from .models import Finding
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
@@ -73,12 +74,15 @@ def _javascript_routes(relative: str, source: str) -> list[dict[str, Any]]:
     endpoints: list[dict[str, Any]] = []
     for match in _EXPRESS_ROUTE.finditer(source):
         method, _, path = match.groups()
+        # Only a direct handler identifier is eligible for static linkage.
+        tail = source[match.end():]
+        handler = re.match(r"\s*,\s*([A-Za-z_$][\w$]*)\s*[,)]", tail)
         endpoints.append({
             "method": ["ANY" if method.lower() == "all" else method.upper()],
             "path": path,
             "file": relative,
             "line": source.count("\n", 0, match.start()) + 1,
-            "handler": None,
+            "handler": handler.group(1) if handler else None,
             "authentication": "unknown",
         })
     return endpoints
@@ -125,14 +129,31 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             routes.extend(_python_routes(source.relative, source.text))
         elif source.language in {"JavaScript", "TypeScript"}:
             routes.extend(_javascript_routes(source.relative, source.text))
+    modules = {
+        source.relative: source for source in files
+        if source.language in {"JavaScript", "TypeScript"}
+    }
     for route in routes:
+        handler_file = route["file"]
+        handler_name = route["handler"]
+        if handler_file in modules and handler_name:
+            resolved = resolve_handler(
+                handler_file, modules[handler_file].text, handler_name, modules
+            )
+            if resolved is None:
+                handler_name = None
+            else:
+                handler_file, handler_name = resolved
+                if handler_file != route["file"]:
+                    route["handler_file"] = handler_file
         matches = [
             finding for finding in findings
-            if finding.location.file == route["file"]
-            and (route["handler"] is not None and (
-                finding.location.function == route["handler"]
-                or (finding.location.function or "").endswith("." + route["handler"])
-            ))
+            if handler_name is not None
+            and finding.location.file == handler_file
+            and (
+                finding.location.function == handler_name
+                or (finding.location.function or "").endswith("." + handler_name)
+            )
         ]
         route["finding_rules"] = sorted({finding.rule_id for finding in matches})
         probe = _verification_curl(route, matches)

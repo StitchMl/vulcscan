@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "C-FORMAT-001",
+            "Uncontrolled Format String",
+            "CWE-134",
+            "MEMORY_SAFETY",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "Potentially untrusted C/C++ data is used as a printf-family format string instead of a literal format such as %s.",
+        ),
+        RuleDefinition(
             "PY-ARG-001",
             "Argument Injection into External Program",
             "CWE-88",
@@ -781,6 +790,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "C-FORMAT-001": (
+        Advice(
+            "Use a literal format string.",
+            "Pass the input as a value, for example printf(\"%s\", value) or fprintf(stderr, \"%s\", value). Review buffer termination and encoding; never pass externally controlled text as the format argument.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
     "PY-ARG-001": (
         Advice(
             "Validate or disambiguate external command arguments.",
@@ -913,6 +930,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],
         "PY-ARG-001": ["Use a disposable workspace and send a benign string beginning with a hyphen through the reported field. Confirm it is handled as data rather than an option; do not run the test against production repositories or accounts."],
         "PHP-TYPE-JUGGLING-001": ["On a disposable test instance compare synthetic token strings that PHP may coerce, such as `0e123` and `0e456`. Authentication must reject unequal tokens; verify strict comparison or hash_equals with strings."],
         "AUTHZ-SCOPE-001": ["Create one disposable resource as account A, then request the same identifier as account B. Any resource content or metadata in B's response proves missing object-level authorization."],

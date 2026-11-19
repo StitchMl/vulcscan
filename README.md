@@ -231,3 +231,13 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### ELF dynamic hardening without execution
 
 For well-formed ELF32/ELF64 dynamic binaries, VulcScan now reads bounded program headers and dynamic string tables with Python's standard `struct` module. It distinguishes absent and partial RELRO (GNU_RELRO without BIND_NOW) from full RELRO, and flags clearly unsafe RPATH/RUNPATH entries such as empty, current-directory, relative paths, or temporary folders. A common `$ORIGIN/lib` or absolute system path is not automatically labeled unsafe. Malformed, truncated and static binaries are not guessed. Findings appear under `BINARY-HARDENING-001`; no binary is executed or loaded. This is a conservative hardening audit, not a complete ELF loader or checksec replacement.
+
+### Offline OSV snapshot (opt-in)
+
+Use `--cve-db FILE` to consume a local, preprepared OSV JSON snapshot with the network disabled:
+
+    python -m vulcscan ./service --offline --cve-db ./osv-snapshot.json
+
+The UTF-8 JSON must be an object with `format: "vulcscan-osv-v1"` and an `entries` array. Each entry supplies `ecosystem` (OSV ecosystem, e.g. `PyPI`), `name`, exact `version`, and an `advisories` array containing full OSV advisory JSON objects with `id` and `affected` package version/range data. For example, a PyPI package named `examplepackage` at version `1.0.0` may have an advisory for the range introduced at `0` and fixed at `2.0.0`. The client requires both an exact ecosystem/name/version entry and evidence that the advisory actually affects the installed version.
+
+Snapshots are limited to 16 MiB; symbolic-link snapshots are rejected. No database is fetched or written automatically. `--cve-db` cannot be combined with `--update-cve` or `--no-cve`. Without the flag, offline scans continue to skip CVE results. The live `--update-cve` mode retains its old in-memory behavior. This is offline DB consumption, not a cache generator.

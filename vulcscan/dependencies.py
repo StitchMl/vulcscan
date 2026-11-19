@@ -23,44 +23,56 @@ from .models import Dependency, ScanError
 LOCKFILE = "lockfile"
 MANIFEST_PIN = "manifest-pin"
 
+_CARGO_LOCK = "cargo.lock"
+_COMPOSER_LOCK = "composer.lock"
+_GEMFILE_LOCK = "gemfile.lock"
+_NPM_SHRINKWRAP_JSON = "npm-shrinkwrap.json"
+_PACKAGE_LOCK_JSON = "package-lock.json"
+_PACKAGES_LOCK_JSON = "packages.lock.json"
+_PIPFILE_LOCK = "pipfile.lock"
+_PNPM_LOCK_YAML = "pnpm-lock.yaml"
+_POETRY_LOCK = "poetry.lock"
+_YARN_LOCK = "yarn.lock"
+_NODE_MODULES = "node_modules/"
+
 _PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s*\[[^\]]*\])?\s*(.*)$")
 _EXACT_VERSION = re.compile(r"^v?\d+(?:\.[0-9A-Za-z]+)*(?:[-+.][0-9A-Za-z.+-]*)?$")
 _MANIFEST_NAMES = {
     "build.gradle",
     "build.gradle.kts",
-    "cargo.lock",
+    _CARGO_LOCK,
     "cargo.toml",
     "composer.json",
-    "composer.lock",
+    _COMPOSER_LOCK,
     "directory.packages.props",
     "gemfile",
-    "gemfile.lock",
+    _GEMFILE_LOCK,
     "go.mod",
     "go.sum",
-    "npm-shrinkwrap.json",
-    "package-lock.json",
+    _NPM_SHRINKWRAP_JSON,
+    _PACKAGE_LOCK_JSON,
     "package.json",
     "packages.config",
-    "packages.lock.json",
+    _PACKAGES_LOCK_JSON,
     "pipfile",
-    "pipfile.lock",
-    "pnpm-lock.yaml",
-    "poetry.lock",
+    _PIPFILE_LOCK,
+    _PNPM_LOCK_YAML,
+    _POETRY_LOCK,
     "pom.xml",
     "pyproject.toml",
-    "yarn.lock",
+    _YARN_LOCK,
 }
 _LOCKFILES = {
-    "cargo.lock",
-    "composer.lock",
-    "gemfile.lock",
-    "npm-shrinkwrap.json",
-    "package-lock.json",
-    "packages.lock.json",
-    "pipfile.lock",
-    "pnpm-lock.yaml",
-    "poetry.lock",
-    "yarn.lock",
+    _CARGO_LOCK,
+    _COMPOSER_LOCK,
+    _GEMFILE_LOCK,
+    _NPM_SHRINKWRAP_JSON,
+    _PACKAGE_LOCK_JSON,
+    _PACKAGES_LOCK_JSON,
+    _PIPFILE_LOCK,
+    _PNPM_LOCK_YAML,
+    _POETRY_LOCK,
+    _YARN_LOCK,
 }
 
 
@@ -112,7 +124,7 @@ def scan_dependencies(root: Path, manifest_paths: Iterable[Path] | None = None) 
         relative = _relative(path, root)
         try:
             candidates.extend(_parse_file(path, relative))
-        except (OSError, ValueError, UnicodeError, ET.ParseError, tomllib.TOMLDecodeError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+        except (OSError, ValueError, ET.ParseError, TypeError, AttributeError) as exc:
             errors.append(ScanError(relative, "dependency-parse", f"{type(exc).__name__}: {exc}"))
     return _prefer_resolved(candidates), errors
 
@@ -132,27 +144,27 @@ def _parse_file(path: Path, source: str) -> list[Dependency]:
         parser = {
             "build.gradle": _parse_gradle,
             "build.gradle.kts": _parse_gradle,
-            "cargo.lock": _parse_cargo_lock,
+            _CARGO_LOCK: _parse_cargo_lock,
             "cargo.toml": _parse_cargo_toml,
             "composer.json": _parse_composer_json,
-            "composer.lock": _parse_composer_lock,
+            _COMPOSER_LOCK: _parse_composer_lock,
             "directory.packages.props": _parse_central_packages,
             "gemfile": _parse_gemfile,
-            "gemfile.lock": _parse_gemfile_lock,
+            _GEMFILE_LOCK: _parse_gemfile_lock,
             "go.mod": _parse_go_mod,
             "go.sum": _parse_go_sum,
-            "npm-shrinkwrap.json": _parse_package_lock,
-            "package-lock.json": _parse_package_lock,
+            _NPM_SHRINKWRAP_JSON: _parse_package_lock,
+            _PACKAGE_LOCK_JSON: _parse_package_lock,
             "package.json": _parse_package_json,
             "packages.config": _parse_packages_config,
-            "packages.lock.json": _parse_packages_lock,
+            _PACKAGES_LOCK_JSON: _parse_packages_lock,
             "pipfile": _parse_pipfile,
-            "pipfile.lock": _parse_pipfile_lock,
-            "pnpm-lock.yaml": _parse_pnpm_lock,
-            "poetry.lock": _parse_poetry_lock,
+            _PIPFILE_LOCK: _parse_pipfile_lock,
+            _PNPM_LOCK_YAML: _parse_pnpm_lock,
+            _POETRY_LOCK: _parse_poetry_lock,
             "pom.xml": _parse_pom,
             "pyproject.toml": _parse_pyproject,
-            "yarn.lock": _parse_yarn_lock,
+            _YARN_LOCK: _parse_yarn_lock,
         }[name]
     return parser(text, source)
 
@@ -408,7 +420,7 @@ def _parse_package_lock(text: str, source: str) -> list[Dependency]:
     packages = _mapping(document.get("packages"))
     if packages:
         for package_path, raw in packages.items():
-            if not package_path or "node_modules/" not in package_path.replace("\\", "/"):
+            if not package_path or _NODE_MODULES not in package_path.replace("\\", "/"):
                 continue  # the root project or a workspace folder
             item = _mapping(raw)
             if item.get("link"):
@@ -1019,16 +1031,16 @@ def _toml_constraint(value: Any) -> str | None:
 
 
 def _npm_name_from_path(path: str) -> str:
-    tail = path.replace("\\", "/").rsplit("node_modules/", 1)[-1]
+    tail = path.replace("\\", "/").rsplit(_NODE_MODULES, 1)[-1]
     parts = tail.split("/")
     return "/".join(parts[:2]) if tail.startswith("@") else parts[0]
 
 
 def _is_top_level_node_module(path: str) -> bool:
     normalized = path.replace("\\", "/").strip("/")
-    if not normalized.startswith("node_modules/"):
+    if not normalized.startswith(_NODE_MODULES):
         return False
-    tail = normalized[len("node_modules/") :]
+    tail = normalized[len(_NODE_MODULES) :]
     return len(tail.split("/")) == (2 if tail.startswith("@") else 1)
 
 

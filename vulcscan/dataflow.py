@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 from .models import Confidence, FlowStep
 
@@ -104,13 +105,13 @@ def sanitize(value: Value, categories: Iterable[str]) -> Value:
         # Safe for every sink (a number, an allowlisted literal): drop the taint
         # so the source no longer appears in later flows.
         return Value(dynamic=value.dynamic or value.tainted, sanitized=value.sanitized | categories)
-    return replace(value, sanitized=value.sanitized | categories)
+    return cast(Value, replace(value, sanitized=value.sanitized | categories))
 
 
 def with_step(value: Value, step: FlowStep) -> Value:
     if not value.tainted:
         return value
-    return replace(value, flow=unique_steps((*value.flow, step)))
+    return cast(Value, replace(value, flow=unique_steps((*value.flow, step))))
 
 
 def merge(*values: Value) -> Value:
@@ -170,13 +171,13 @@ def concatenate(parts: list[Value]) -> Value:
     literal: object = _NOT_CONSTANT
     if all(part.constant and isinstance(part.literal, str) for part in parts):
         literal = "".join(str(part.literal) for part in parts)
-    return replace(
+    return cast(Value, replace(
         joined,
         literal=literal,
         prefix=prefix or None,
         composed=joined.dynamic or joined.tainted or joined.composed,
         origin=None,
-    )
+    ))
 
 
 def unique_steps(steps: Iterable[FlowStep]) -> tuple[FlowStep, ...]:

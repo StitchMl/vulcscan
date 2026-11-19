@@ -198,8 +198,29 @@ class OSVClient:
                         os.unlink(temporary)
                     except OSError:
                         pass
-        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             self.errors.append(f"cannot write OSV cache: {exc}")
+
+    def _read_snapshot_entries(self, path: Path) -> list[Any] | None:
+        try:
+            if path.is_symlink():
+                raise ValueError("symbolic links are not accepted for local OSV snapshots")
+            with path.open("rb") as handle:
+                body = handle.read(_MAX_RESPONSE_BYTES + 1)
+            if len(body) > _MAX_RESPONSE_BYTES:
+                raise ValueError("local OSV snapshot exceeds size limit")
+            document = json.loads(body.decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            self.errors.append(f"cannot load local OSV snapshot: {exc}")
+            return None
+        if not isinstance(document, dict) or document.get("format") != "vulcscan-osv-v1":
+            self.errors.append("local OSV snapshot has an unsupported format")
+            return None
+        entries = document.get("entries")
+        if not isinstance(entries, list) or len(entries) > 100000:
+            self.errors.append("local OSV snapshot has invalid entries")
+            return None
+        return entries
 
     def _query_local(self, selected: dict[str, Dependency]) -> list[Vulnerability]:
         """Read a user-supplied exact-version snapshot without any network call.
@@ -213,53 +234,13 @@ class OSVClient:
         path = self.local_db or self.cache_path
         if path is None:
             return []
-        try:
-            if path.is_symlink():
-                raise ValueError("symbolic links are not accepted for local OSV snapshots")
-            with path.open("rb") as handle:
-                body = handle.read(_MAX_RESPONSE_BYTES + 1)
-            if len(body) > _MAX_RESPONSE_BYTES:
-                raise ValueError("local OSV snapshot exceeds size limit")
-            document = json.loads(body.decode("utf-8"))
-        except (OSError, ValueError, UnicodeError) as exc:
-            self.errors.append(f"cannot load local OSV snapshot: {exc}")
+        entries = self._read_snapshot_entries(path)
+        if entries is None:
             return []
-        if not isinstance(document, dict) or document.get("format") != "vulcscan-osv-v1":
-            self.errors.append("local OSV snapshot has an unsupported format")
-            return []
-        entries = document.get("entries")
-        if not isinstance(entries, list) or len(entries) > 100000:
-            self.errors.append("local OSV snapshot has invalid entries")
-            return []
-        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            eco = entry.get("ecosystem")
-            name = entry.get("name")
-            version = entry.get("version")
-            advisories = entry.get("advisories")
-            if not all(isinstance(item, str) and item for item in (eco, name, version)):
-                continue
-            if not isinstance(advisories, list) or len(advisories) > 1000:
-                continue
-            ecosystem = osv_ecosystem(eco) or eco
-            key = (ecosystem, canonical_name(name, eco), version)
-            grouped.setdefault(key, []).extend(item for item in advisories if isinstance(item, dict))
+        grouped = _group_snapshot_entries(entries)
         found: list[Vulnerability] = []
         for dependency in selected.values():
-            eco = osv_ecosystem(dependency.ecosystem)
-            if eco is None:
-                continue
-            key = (eco, canonical_name(dependency.name, dependency.ecosystem), dependency.version or "")
-            for advisory in grouped.get(key, []):
-                identifier = advisory.get("id")
-                if not isinstance(identifier, str) or not _ADVISORY_ID.fullmatch(identifier):
-                    continue
-                affected = matching_affected(advisory, dependency)
-                if not _advisory_affects(affected, dependency):
-                    continue
-                found.append(to_vulnerability(dependency, advisory))
+            found.extend(_snapshot_dependency_matches(dependency, grouped))
         return _deduplicate(found)
 
     def _queryable(self, dependencies: Iterable[Dependency]) -> dict[str, Dependency]:
@@ -344,7 +325,7 @@ class OSVClient:
             except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
                 retryable = True
                 message = f"OSV network error for {url}: {exc}"
-            except (UnicodeError, ValueError, OSError) as exc:
+            except (ValueError, OSError) as exc:
                 retryable = False
                 message = f"OSV invalid response for {url}: {exc}"
             if attempt >= self.retries or not retryable:
@@ -386,6 +367,53 @@ def to_vulnerability(dependency: Dependency, advisory: dict[str, Any]) -> Vulner
     )
 
 
+def _snapshot_dependency_matches(
+    dependency: Dependency, grouped: dict[tuple[str, str, str], list[dict[str, Any]]],
+) -> list[Vulnerability]:
+    eco = osv_ecosystem(dependency.ecosystem)
+    if eco is None:
+        return []
+    key = (eco, canonical_name(dependency.name, dependency.ecosystem), dependency.version or "")
+    found = []
+    for advisory in grouped.get(key, []):
+        identifier = advisory.get("id")
+        if not isinstance(identifier, str) or not _ADVISORY_ID.fullmatch(identifier):
+            continue
+        if _advisory_affects(matching_affected(advisory, dependency), dependency):
+            found.append(to_vulnerability(dependency, advisory))
+    return found
+
+
+def _range_matches_version(item: Any, ecosystem: str, version: str) -> bool:
+    if not isinstance(item, dict) or item.get("type") not in {"ECOSYSTEM", "SEMVER"}:
+        return False
+    return any(
+        _contains(ecosystem, version, first, end, kind) is True
+        for first, end, kind in _segments(item.get("events", []))
+    )
+
+
+def _group_snapshot_entries(
+    entries: list[Any],
+) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        eco = entry.get("ecosystem")
+        name = entry.get("name")
+        version = entry.get("version")
+        advisories = entry.get("advisories")
+        if not all(isinstance(item, str) and item for item in (eco, name, version)):
+            continue
+        if not isinstance(advisories, list) or len(advisories) > 1000:
+            continue
+        ecosystem = osv_ecosystem(eco) or eco
+        key = (ecosystem, canonical_name(name, eco), version)
+        grouped.setdefault(key, []).extend(item for item in advisories if isinstance(item, dict))
+    return grouped
+
+
 def _advisory_affects(affected: list[dict[str, Any]], dependency: Dependency) -> bool:
     """Require an OSV version/range that definitely contains this version."""
     version = dependency.version
@@ -397,14 +425,10 @@ def _advisory_affects(affected: list[dict[str, Any]], dependency: Dependency) ->
         if isinstance(versions, list) and version in versions:
             return True
         ranges = entry.get("ranges", [])
-        if not isinstance(ranges, list):
-            continue
-        for item in ranges:
-            if not isinstance(item, dict) or item.get("type") not in {"ECOSYSTEM", "SEMVER"}:
-                continue
-            for first, end, kind in _segments(item.get("events", [])):
-                if _contains(eco, version, first, end, kind) is True:
-                    return True
+        if isinstance(ranges, list) and any(
+            _range_matches_version(item, eco, version) for item in ranges
+        ):
+            return True
     return False
 
 

@@ -35,7 +35,7 @@ _POETRY_LOCK = "poetry.lock"
 _YARN_LOCK = "yarn.lock"
 _NODE_MODULES = "node_modules/"
 
-_PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s*\[[^\]]*\])?\s*(.*)$")
+_PYTHON_REQUIREMENT = re.compile(r"^\s*+([A-Za-z0-9][A-Za-z0-9._-]*+)(?:\s*+\[[^\]]*+\])?+\s*+(.*)$")
 _EXACT_VERSION = re.compile(r"^v?\d+(?:\.[0-9A-Za-z]+)*(?:[-+.][0-9A-Za-z.+-]*)?$")
 _MANIFEST_NAMES = {
     "build.gradle",
@@ -220,11 +220,11 @@ def _exact_version(value: str | None) -> str | None:
 def _parse_requirements(text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
     for line_number, raw in _logical_lines(text):
-        value = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+        value = re.split(r"\s#", raw, maxsplit=1)[0].strip()
         if not value or value.startswith(("-", ".", "/", "#")) or "://" in value or " @ " in value:
             continue
         value = value.split(";", 1)[0].strip()
-        value = re.sub(r"\s+--hash(?:=|\s).*$", "", value).strip()
+        value = re.sub(r"\s--hash[=\s].*$", "", value).strip()
         match = _PYTHON_REQUIREMENT.match(value)
         if not match:
             continue
@@ -318,7 +318,7 @@ def _poetry_exact(constraint: str | None) -> str | None:
     """Poetry treats a bare version and ``==x`` as exact requirements."""
     if not constraint:
         return None
-    match = re.fullmatch(r"\s*(?:==)?\s*(\d[0-9A-Za-z.+!-]*)\s*", constraint)
+    match = re.fullmatch(r"(?:==\s*)?(\d[0-9A-Za-z.+!-]*)", constraint.strip())
     return match.group(1) if match and "*" not in constraint else None
 
 
@@ -755,7 +755,7 @@ def _parse_go_sum(text: str, source: str) -> list[Dependency]:
 
 def _parse_gemfile(text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
-    pattern = re.compile(r"(?m)^\s*gem\s*\(?\s*[\"']([^\"']+)[\"'](?:\s*,\s*[\"']([^\"']+)[\"'])?")
+    pattern = re.compile(r"(?m)^\s*gem\s*(?:\(\s*)?[\"']([^\"']+)[\"'](?:\s*,\s*[\"']([^\"']+)[\"'])?")
     for match in pattern.finditer(text):
         name, constraint = match.groups()
         exact = re.fullmatch(r"(?:=\s*)?(\d[0-9A-Za-z.]*)", (constraint or "").strip())
@@ -788,12 +788,12 @@ def _parse_gemfile_lock(text: str, source: str) -> list[Dependency]:
         if line.strip() == "specs:":
             in_specs = section in {"GEM", "GIT", "PATH"}
             continue
-        if in_specs and re.match(r"^    \S", line):
-            match = re.match(r"^    ([^\s(]+) \(([^)]+)\)", line)
+        if in_specs and re.match(r"^ {4}\S", line):
+            match = re.match(r"^ {4}([^\s(]+) \(([^)]+)\)", line)
             if match:
                 specs.append((match.group(1), match.group(2), number, section or ""))
         elif section == "DEPENDENCIES":
-            match = re.match(r"^  ([^\s(!]+)", line)
+            match = re.match(r"^ {2}([^\s(!]+)", line)
             if match:
                 direct_names.add(match.group(1))
     for name, raw_version, number, origin in specs:

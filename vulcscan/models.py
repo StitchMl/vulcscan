@@ -275,6 +275,7 @@ class ScanConfig:
     attack_surface: bool = False
     remote_only: bool = False
     exclude_tests: bool = False
+    cve_db: Path | None = None  # explicit offline OSV snapshot, never auto-downloaded
 
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:

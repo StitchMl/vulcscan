@@ -71,12 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="keep network disabled (the default); dependency CVEs are not reported",
+        help="keep network disabled (the default); dependency CVEs require --cve-db",
     )
     parser.add_argument(
         "--update-cve",
         action="store_true",
         help="query OSV for this scan; results are kept only in memory",
+    )
+    parser.add_argument(
+        "--cve-db",
+        type=Path,
+        metavar="FILE",
+        help="read an explicit local OSV snapshot JSON file; network remains disabled",
     )
     parser.add_argument("--output", type=Path, help="write the report to this file")
     parser.add_argument(
@@ -231,6 +237,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.offline and args.update_cve:
         _error("--offline and --update-cve cannot be used together")
         return 2
+    if args.cve_db and args.update_cve:
+        _error("--cve-db and --update-cve cannot be used together")
+        return 2
+    if args.cve_db and args.no_cve:
+        _error("--cve-db and --no-cve cannot be used together")
+        return 2
 
     report_format = _report_format(args.format, args.output)
     output = args.output.expanduser().resolve() if args.output else None
@@ -272,6 +284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         attack_surface=args.attack_surface,
         remote_only=args.remote_only,
         exclude_tests=args.exclude_tests,
+        cve_db=args.cve_db.expanduser() if args.cve_db else None,
     )
     try:
         result = scan(config)

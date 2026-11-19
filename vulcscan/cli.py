@@ -100,6 +100,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="exclude a glob pattern; repeat the option for multiple patterns",
     )
     parser.add_argument(
+        "--attack-surface",
+        action="store_true",
+        help="include a conservative static endpoint inventory in report metadata",
+    )
+    parser.add_argument(
+        "--remote-only",
+        action="store_true",
+        help="show only findings with identifiable network or HTTP input sources",
+    )
+    parser.add_argument(
         "--files",
         action="append",
         metavar="PATH",
@@ -254,6 +264,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         patch_preview=args.patch_preview,
         generate_diff=diff_path,
         only_files=only_files,
+        attack_surface=args.attack_surface,
+        remote_only=args.remote_only,
     )
     try:
         result = scan(config)

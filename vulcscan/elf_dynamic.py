@@ -1,3 +1,31 @@
+"""Bounds-checked ELF dynamic-header audit; never loads or executes target code."""
+from __future__ import annotations
+
+import posixpath
+import struct
+
+
+def _unpack(fmt: str, data: bytes, offset: int):
+    if offset < 0 or offset + struct.calcsize(fmt) > len(data):
+        return None
+    try:
+        return struct.unpack_from(fmt, data, offset)
+    except (ValueError, struct.error):
+        return None
+
+
+def _unsafe_library_search_entry(entry: str) -> bool:
+    """Assess ELF loader paths without accessing the filesystem."""
+    if not entry:
+        return True
+    if entry.startswith(("$ORIGIN/", "$"+"{ORIGIN}/")):
+        return False
+    if not entry.startswith("/"):
+        return True
+    parts = tuple(part for part in posixpath.normpath(entry).split("/") if part)
+    if not parts:
+        return True
+    return parts[0] == "tmp" or parts[:2] in {("var", "tmp"), ("dev", "shm")}
 
 
 def _program_header_table(data: bytes, big: bool, e: str) -> tuple[int, int, int] | None:

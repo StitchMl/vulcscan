@@ -285,6 +285,32 @@ def _types_line(findings: list[Finding], limit: int = 6) -> str:
     return text + (f" | +{remaining} other types" if remaining else "")
 
 
+def _render_attack_surface(routes: list[dict[str, Any]], width: int, color: bool) -> list[str]:
+    lines = [_paint("ATTACK SURFACE", "cyan", color), "-" * width]
+    if not routes:
+        return [*lines, "No statically identified endpoints.", ""]
+    for route in routes:
+        lines.extend(_wrapped(
+            f"{','.join(route['method'])} {route['path']}",
+            width, first="  ", rest="    ",
+        ))
+        location = f"{route['file']}:{route['line']}"
+        if route.get("handler_file"):
+            location += f" -> {route['handler_file']}"
+        if route.get("handler"):
+            location += f" ({route['handler']})"
+        lines.extend(_wrapped(
+            f"{location} | auth: {route['authentication']}", width,
+        ))
+        if route.get("finding_rules"):
+            lines.extend(_wrapped("Rules: " + ", ".join(route["finding_rules"]), width))
+        if route.get("verify_curl"):
+            lines.extend(_wrapped(
+                "VERIFY (review before use): " + route["verify_curl"], width,
+            ))
+    return [*lines, ""]
+
+
 def render_text(
     result: ScanResult,
     minimum_severity: Severity | None = None,
@@ -311,6 +337,8 @@ def render_text(
     ))
     lines.extend(_wrapped(_types_line(findings) if findings else "none", display_width, first="Top types:     ", rest="               "))
     lines.append("")
+    if "attack_surface" in metadata:
+        lines.extend(_render_attack_surface(metadata["attack_surface"], display_width, color))
     if findings:
         lines.extend(_finding_index(findings, display_width, color))
         lines.extend((

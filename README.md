@@ -185,3 +185,5 @@ Python `--generate-diff` validates proposed changes independently, so one invali
 ### Express handler links
 
 With `--attack-surface`, unambiguous direct Express route handlers imported through relative ESM or CommonJS imports can be linked to their file and associated findings. This is endpoint correlation, not cross-module taint analysis. Dynamic imports, external modules, middleware chains, and ambiguous paths remain unresolved.
+
+When `--attack-surface` is enabled in text mode, endpoints are printed before the finding priority index, including available handler links, rules, and loopback verification commands. Defaults are unchanged.

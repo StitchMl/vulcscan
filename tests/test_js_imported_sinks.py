@@ -105,3 +105,43 @@ def test_ordinary_local_script_findings_remain_intact(tmp_path: Path) -> None:
     findings = _cmd_findings(tmp_path)
     assert findings
     assert findings[0].location.file == "routes.js"
+
+
+def test_shadowed_imported_symbol_does_not_create_cross_file_taint(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { unsafe } from './service.js';\n"
+        "function handler(unsafe, req) { unsafe(req.query.cmd); }\n")
+    _write(tmp_path, "service.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+    assert not _cmd_findings(tmp_path, sourced=True)
+
+
+def test_one_hop_imported_filesystem_sink_uses_remote_source(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { openFile } from './service.js';\n"
+        "function handler(req) { openFile(req.query.name); }\n")
+    _write(tmp_path, "service.js",
+        "const fs = require('fs');\n"
+        "export function openFile(file) { fs.readFileSync(file); }\n")
+    report = scan_path(tmp_path, cve=False)
+    found = [
+        finding for finding in report.findings
+        if finding.rule_id == "JS-PATH-001" and finding.source is not None
+    ]
+    assert found and found[0].location.file == "routes.js"
+    assert any(loc.file == "service.js" for loc in found[0].related_locations)
+
+
+def test_one_hop_imported_fetch_sink_uses_remote_source(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { openUrl } from './service.js';\n"
+        "function handler(req) { openUrl(req.query.target); }\n")
+    _write(tmp_path, "service.js",
+        "export function openUrl(url) { fetch(url); }\n")
+    report = scan_path(tmp_path, cve=False)
+    found = [
+        finding for finding in report.findings
+        if finding.rule_id == "JS-SSRF-001" and finding.source is not None
+    ]
+    assert found and found[0].location.file == "routes.js"

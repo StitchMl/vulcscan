@@ -463,6 +463,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A ZIP entry name is joined to an output directory and opened for writing without a visible containment check.",
         ),
         RuleDefinition(
+            "JAVA-SSTI-001",
+            "Java Template Source Injection",
+            "CWE-1336",
+            "TEMPLATE",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "HTTP request content is compiled as FreeMarker or Thymeleaf template source.",
+        ),
+        RuleDefinition(
             "JAVA-ZIPSLIP-001",
             "Archive Entry Path Traversal in Java",
             "CWE-22",
@@ -961,6 +970,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "MEDIUM",
         ),
     ),
+    "JAVA-SSTI-001": (
+        Advice(
+            "Compile only server-owned template source.",
+            "Use fixed templates and render untrusted request values as escaped context data. Never compile HTTP parameters with FreeMarker or string-backed Thymeleaf.",
+            Confidence.HIGH,
+            "LOW",
+        ),
+    ),
     "JAVA-ZIPSLIP-001": (
         Advice(
             "Ensure extracted archive paths remain under the destination directory.",
@@ -1126,6 +1143,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "JS-TIMING-001": ["On an isolated test service, compare disposable tokens differing near the first and last character and review that the implementation uses a constant-time comparison for equal-length secret buffers. Do not probe live authentication endpoints."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
         "GO-ZIPSLIP-001": ["In a disposable test directory, process a harmless ZIP with a ../outside.txt entry and verify the extractor rejects it without writing outside the output root."],
+        "JAVA-SSTI-001": ["On an isolated test service, provide a harmless template arithmetic marker and confirm it is treated as literal data rather than executable template source."],
         "JAVA-ZIPSLIP-001": ["In a disposable directory, use a harmless ZIP with a file entry named ../outside.txt. The extractor must reject it and must not create files outside the intended root."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],

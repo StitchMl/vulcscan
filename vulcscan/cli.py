@@ -93,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum finding severity: CRITICAL, HIGH, MEDIUM, LOW, or INFO",
     )
     parser.add_argument(
+        "--exclude-tests",
+        action="store_true",
+        help="skip common test and fixture directories and test source files (opt-in)",
+    )
+    parser.add_argument(
         "--exclude",
         action="append",
         default=[],
@@ -266,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         only_files=only_files,
         attack_surface=args.attack_surface,
         remote_only=args.remote_only,
+        exclude_tests=args.exclude_tests,
     )
     try:
         result = scan(config)

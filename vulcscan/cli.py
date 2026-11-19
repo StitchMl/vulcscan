@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="read an explicit local OSV snapshot JSON file; network remains disabled",
     )
+    parser.add_argument(
+        "--cve-cache",
+        type=Path,
+        metavar="FILE",
+        help="read an existing OSV cache offline; with --update-cve, create or refresh it after a complete query",
+    )
     parser.add_argument("--output", type=Path, help="write the report to this file")
     parser.add_argument(
         "--format",
@@ -250,6 +256,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cve_db and args.update_cve:
         _error("--cve-db and --update-cve cannot be used together")
         return 2
+    if args.cve_db and args.cve_cache:
+        _error("--cve-db and --cve-cache cannot be combined")
+        return 2
+    if args.cve_cache and args.no_cve:
+        _error("--cve-cache and --no-cve cannot be combined")
+        return 2
     if args.cve_db and args.no_cve:
         _error("--cve-db and --no-cve cannot be used together")
         return 2
@@ -296,6 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         exclude_tests=args.exclude_tests,
         workers=args.workers,
         cve_db=args.cve_db.expanduser() if args.cve_db else None,
+        cve_cache=args.cve_cache.expanduser() if args.cve_cache else None,
     )
     try:
         result = scan(config)

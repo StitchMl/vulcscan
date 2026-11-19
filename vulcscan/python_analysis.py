@@ -983,22 +983,22 @@ class _Walker:
         return [], []
 
     def _guard_compare(self, test: ast.Compare, env: dict[str, Value]) -> _Guards:
-        operator = test.ops[0]
-        left, right = test.left, test.comparators[0]
         for check in (self._guard_none, self._guard_literal, self._guard_membership, self._guard_commonpath):
-            result = check(operator, left, right, env)
+            result = check(test, env)
             if result is not None:
                 return result
         return [], []
 
-    def _guard_none(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+    def _guard_none(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
         if not (isinstance(operator, (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None):
             return None
         inner_true, inner_false = self._guard(left, env)
         # "x is None" is true exactly when x is falsy for match objects.
         return (inner_false, inner_true) if isinstance(operator, ast.Is) else (inner_true, inner_false)
 
-    def _guard_literal(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+    def _guard_literal(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
         if not isinstance(operator, (ast.Eq, ast.NotEq)):
             return None
         subject = None
@@ -1013,7 +1013,8 @@ class _Walker:
         sanitized += self._host_guard(subject, env)
         return _by_polarity(sanitized, isinstance(operator, ast.Eq))
 
-    def _guard_membership(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
+    def _guard_membership(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
         if not isinstance(operator, (ast.In, ast.NotIn)):
             return None
         positive = isinstance(operator, ast.In)
@@ -1027,8 +1028,9 @@ class _Walker:
                 return _by_polarity([(name, frozenset({FILESYSTEM})) for name in names], positive)
         return None
 
-    def _guard_commonpath(self, operator: ast.cmpop, left: ast.expr, right: ast.expr, env: dict[str, Value]) -> _Guards | None:
-        if not (isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left, right)):
+    def _guard_commonpath(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left = test.ops[0], test.left
+        if not (isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left)):
             return None
         candidate = _commonpath_candidate(left)
         if candidate is None or NORMALIZED not in self.expression(candidate, env).sanitized:
@@ -1833,7 +1835,7 @@ def _has_multiline_flag(call: ast.Call) -> bool:
     return False
 
 
-def _is_commonpath_check(left: ast.expr, right: ast.expr) -> bool:
+def _is_commonpath_check(left: ast.expr) -> bool:
     return isinstance(left, ast.Call) and _dotted(left.func) in {"os.path.commonpath", "commonpath"}
 
 
@@ -1889,53 +1891,67 @@ def _module_name(relative: str) -> tuple[str, str]:
 def _collect_symbols(module: Module) -> None:
     for node in ast.walk(module.tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    module.imports[alias.asname] = alias.name
-                else:
-                    first = alias.name.split(".")[0]
-                    module.imports.setdefault(first, first)
+            _record_import(module, node)
         elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
-            if node.level:
-                package = module.package.split(".") if module.package else []
-                keep = len(package) - (node.level - 1)
-                if keep < 0:
-                    continue
-                base = ".".join([*package[:keep], *([base] if base else [])])
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                module.imports[alias.asname or alias.name] = f"{base}.{alias.name}".strip(".")
-
-    def add_function(node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str, class_name: str | None) -> None:
-        decorators = {_dotted(item.func if isinstance(item, ast.Call) else item) for item in node.decorator_list}
-        static = "staticmethod" in decorators
-        positional = [*node.args.posonlyargs, *node.args.args]
-        module.functions[qualname] = FunctionInfo(
-            qualname,
-            node,
-            class_name,
-            receives_instance=class_name is not None and not static,
-            params=tuple(item.arg for item in positional),
-            kwonly=tuple(item.arg for item in node.args.kwonlyargs),
-        )
-        for child in node.body:
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                add_function(child, f"{qualname}.{child.name}", None)
-
+            _record_import_from(module, node)
     for node in module.tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            add_function(node, node.name, None)
+            _add_function(module, node, node.name, None)
         elif isinstance(node, ast.ClassDef):
             module.classes.add(node.name)
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    add_function(child, f"{node.name}.{child.name}", node.name)
+                    _add_function(module, child, f"{node.name}.{child.name}", node.name)
 
 
-def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> list[tuple[ast.arg, bool]]:
-    """Return (parameter, sanitized) pairs for HTTP handler inputs."""
+def _record_import(module: Module, node: ast.Import) -> None:
+    for alias in node.names:
+        if alias.asname:
+            module.imports[alias.asname] = alias.name
+        else:
+            first = alias.name.split(".")[0]
+            module.imports.setdefault(first, first)
+
+
+def _record_import_from(module: Module, node: ast.ImportFrom) -> None:
+    base = node.module or ""
+    if node.level:
+        package = module.package.split(".") if module.package else []
+        keep = len(package) - (node.level - 1)
+        if keep < 0:
+            return
+        base = ".".join([*package[:keep], *([base] if base else [])])
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        module.imports[alias.asname or alias.name] = f"{base}.{alias.name}".strip(".")
+
+
+def _add_function(module: Module, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str, class_name: str | None) -> None:
+    decorators = {_dotted(item.func if isinstance(item, ast.Call) else item) for item in node.decorator_list}
+    static = "staticmethod" in decorators
+    positional = [*node.args.posonlyargs, *node.args.args]
+    module.functions[qualname] = FunctionInfo(
+        qualname,
+        node,
+        class_name,
+        receives_instance=class_name is not None and not static,
+        params=tuple(item.arg for item in positional),
+        kwonly=tuple(item.arg for item in node.args.kwonlyargs),
+    )
+    for child in node.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _add_function(module, child, f"{qualname}.{child.name}", None)
+
+
+def _first_string_argument(call: ast.Call | None) -> str | None:
+    if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    return None
+
+
+def _route_paths(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> tuple[bool, dict[str, bool], bool]:
+    """``(is_route, path parameter -> converter restricts it, flask_style)`` from the decorators."""
     route = False
     path_names: dict[str, bool] = {}
     flask_style = False
@@ -1945,16 +1961,18 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
         if name.rsplit(".", 1)[-1] not in _ROUTE_DECORATORS:
             continue
         route = True
-        if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
-            path = call.args[0].value
-            for converter, variable in re.findall(r"<(?:(\w+)(?:\([^)]*\))?:)?([A-Za-z_]\w*)>", path):
-                flask_style = True
-                path_names[variable] = converter in {"int", "float", "uuid"}
-            for variable, converter in re.findall(r"\{([A-Za-z_]\w*)(?::(\w+))?\}", path):
-                path_names.setdefault(variable, converter in {"int", "float", "uuid"})
-    if not route:
-        return []
-    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        path = _first_string_argument(call)
+        if path is None:
+            continue
+        for converter, variable in re.findall(r"<(?:(\w+)(?:\([^)]*\))?:)?([A-Za-z_]\w*)>", path):
+            flask_style = True
+            path_names[variable] = converter in {"int", "float", "uuid"}
+        for variable, converter in re.findall(r"\{([A-Za-z_]\w*)(?::(\w+))?\}", path):
+            path_names.setdefault(variable, converter in {"int", "float", "uuid"})
+    return route, path_names, flask_style
+
+
+def _parameter_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.expr]:
     defaults: dict[str, ast.expr] = {}
     positional = [*node.args.posonlyargs, *node.args.args]
     for argument, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults, strict=False):
@@ -1962,24 +1980,45 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
     for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=False):
         if default is not None:
             defaults[argument.arg] = default
+    return defaults
+
+
+def _route_input(
+    argument: ast.arg,
+    module: Module,
+    default: ast.expr | None,
+    path_names: dict[str, bool],
+    flask_style: bool,
+) -> tuple[ast.arg, bool] | None:
+    if argument.arg in _NON_INPUT_PARAMETERS:
+        return None
+    default_name = _canonical(module, default.func).rsplit(".", 1)[-1] if isinstance(default, ast.Call) else ""
+    if default_name in _INJECTED:
+        return None
+    annotation = _annotation_name(argument.annotation, module)
+    if annotation.rsplit(".", 1)[-1] in _NON_INPUT_ANNOTATIONS:
+        return None
+    if flask_style and argument.arg not in path_names:
+        return None
+    sanitized = path_names.get(argument.arg, False) or annotation in _SAFE_ANNOTATIONS or annotation.rsplit(".", 1)[-1] in _SAFE_ANNOTATIONS
+    if isinstance(argument.annotation, ast.Subscript) and _dotted(argument.annotation.value).endswith("Literal"):
+        sanitized = True
+    if default_name in _FASTAPI_INPUTS or not flask_style or argument.arg in path_names:
+        return argument, sanitized
+    return None
+
+
+def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> list[tuple[ast.arg, bool]]:
+    """Return (parameter, sanitized) pairs for HTTP handler inputs."""
+    route, path_names, flask_style = _route_paths(node, module)
+    if not route:
+        return []
+    defaults = _parameter_defaults(node)
     result: list[tuple[ast.arg, bool]] = []
-    for argument in arguments:
-        if argument.arg in _NON_INPUT_PARAMETERS:
-            continue
-        default = defaults.get(argument.arg)
-        default_name = _canonical(module, default.func).rsplit(".", 1)[-1] if isinstance(default, ast.Call) else ""
-        if default_name in _INJECTED:
-            continue
-        annotation = _annotation_name(argument.annotation, module)
-        if annotation.rsplit(".", 1)[-1] in _NON_INPUT_ANNOTATIONS:
-            continue
-        if flask_style and argument.arg not in path_names:
-            continue
-        sanitized = path_names.get(argument.arg, False) or annotation in _SAFE_ANNOTATIONS or annotation.rsplit(".", 1)[-1] in _SAFE_ANNOTATIONS
-        if isinstance(argument.annotation, ast.Subscript) and _dotted(argument.annotation.value).endswith("Literal"):
-            sanitized = True
-        if default_name in _FASTAPI_INPUTS or not flask_style or argument.arg in path_names:
-            result.append((argument, sanitized))
+    for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+        entry = _route_input(argument, module, defaults.get(argument.arg), path_names, flask_style)
+        if entry is not None:
+            result.append(entry)
     return result
 
 
@@ -2043,22 +2082,48 @@ _RANDOM_CALLS = {
 
 def _pattern_findings(module: Module) -> list[Finding]:
     """AST pattern rules that need no data flow."""
-    findings: list[Finding] = []
-    imports_flask = any(target.split(".")[0] == "flask" for target in module.imports.values())
-    module_assignments = {
-        target.id: statement
-        for statement in module.tree.body
-        if isinstance(statement, ast.Assign)
-        for target in statement.targets
-        if isinstance(target, ast.Name)
-    }
-    settings_module = bool({"INSTALLED_APPS", "ROOT_URLCONF", "MIDDLEWARE"} & module_assignments.keys())
+    return _PatternScan(module).run()
 
-    def add(rule_id: str, node: ast.AST, function: str | None, sink: str, evidence: str | None = None, suggestion=None) -> None:
+
+def _is_secret_pair(key: ast.expr | None, value: ast.expr) -> bool:
+    return (
+        isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and is_credential_name(key.value)
+        and isinstance(value, ast.Constant)
+        and isinstance(value.value, str)
+        and looks_like_secret(value.value, key.value)
+    )
+
+
+class _PatternScan:
+    """Walk one module and collect the findings of the AST pattern rules."""
+
+    def __init__(self, module: Module) -> None:
+        self.module = module
+        self.findings: list[Finding] = []
+        self.imports_flask = any(target.split(".")[0] == "flask" for target in module.imports.values())
+        self.assignments = {
+            target.id: statement
+            for statement in module.tree.body
+            if isinstance(statement, ast.Assign)
+            for target in statement.targets
+            if isinstance(target, ast.Name)
+        }
+        self.settings_module = bool({"INSTALLED_APPS", "ROOT_URLCONF", "MIDDLEWARE"} & self.assignments.keys())
+
+    def run(self) -> list[Finding]:
+        module_hashes: dict[str, str] = {}
+        for statement in self.module.tree.body:
+            self.visit(statement, None, module_hashes)
+        _settings_patterns(self.assignments, self.add)
+        return self.findings
+
+    def add(self, rule_id: str, node: ast.AST, function: str | None, sink: str, evidence: str | None = None, suggestion=None) -> None:
         definition = rule(rule_id)
-        location = _location(module, node, function)
-        code = evidence or _code(module, node)
-        findings.append(
+        location = _location(self.module, node, function)
+        code = evidence or _code(self.module, node)
+        self.findings.append(
             Finding(
                 rule_id=rule_id,
                 name=definition.name,
@@ -2075,46 +2140,43 @@ def _pattern_findings(module: Module) -> list[Finding]:
             )
         )
 
-    def visit(node: ast.AST, function: str | None, hash_objects: dict[str, str]) -> None:
+    def visit(self, node: ast.AST, function: str | None, hash_objects: dict[str, str]) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            qualname = node.name if function is None else f"{function}.{node.name}"
-            if is_random_sensitive_name(node.name):
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Return) and child.value is not None:
-                        call = _random_call(module, child.value)
-                        if call is not None:
-                            add("WEAK-RANDOM-001", call, qualname, _canonical(module, call.func), suggestion=patches.random_suggestion(module.text, call, _canonical(module, call.func)))
-            function_hashes: dict[str, str] = {}
-            for child in node.body:
-                visit(child, qualname, function_hashes)
+            self._visit_function(node, function)
             return
         if isinstance(node, ast.ClassDef):
             for child in node.body:
-                visit(child, node.name if function is None else f"{function}.{node.name}", {})
+                self.visit(child, node.name if function is None else f"{function}.{node.name}", {})
             return
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            _assignment_patterns(module, node, function, add, hash_objects, settings_module)
+            _assignment_patterns(self.module, node, function, self.add, hash_objects, self.settings_module)
         if isinstance(node, ast.Call):
-            _call_patterns(module, node, function, add, hash_objects, imports_flask)
+            _call_patterns(self.module, node, function, self.add, hash_objects, self.imports_flask)
         if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values, strict=False):
-                if (
-                    isinstance(key, ast.Constant)
-                    and isinstance(key.value, str)
-                    and is_credential_name(key.value)
-                    and isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                    and looks_like_secret(value.value, key.value)
-                ):
-                    add("SECRET-001", value, function, key.value, _redacted(module, value))
+            self._visit_dict(node, function)
         for child in ast.iter_child_nodes(node):
-            visit(child, function, hash_objects)
+            self.visit(child, function, hash_objects)
 
-    module_hashes: dict[str, str] = {}
-    for statement in module.tree.body:
-        visit(statement, None, module_hashes)
-    _settings_patterns(module_assignments, add)
-    return findings
+    def _visit_dict(self, node: ast.Dict, function: str | None) -> None:
+        for key, value in zip(node.keys, node.values, strict=False):
+            if _is_secret_pair(key, value):
+                self.add("SECRET-001", value, function, key.value, _redacted(self.module, value))
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, function: str | None) -> None:
+        qualname = node.name if function is None else f"{function}.{node.name}"
+        if is_random_sensitive_name(node.name):
+            self._random_returns(node, qualname)
+        function_hashes: dict[str, str] = {}
+        for child in node.body:
+            self.visit(child, qualname, function_hashes)
+
+    def _random_returns(self, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Return) and child.value is not None:
+                call = _random_call(self.module, child.value)
+                if call is not None:
+                    sink = _canonical(self.module, call.func)
+                    self.add("WEAK-RANDOM-001", call, qualname, sink, suggestion=patches.random_suggestion(self.module.text, call, sink))
 
 
 def _assignment_patterns(module: Module, node: ast.Assign | ast.AnnAssign, function: str | None, add, hash_objects: dict[str, str], settings_module: bool) -> None:
@@ -2126,60 +2188,117 @@ def _assignment_patterns(module: Module, node: ast.Assign | ast.AnnAssign, funct
         target_name = _target_name(target)
         if not target_name:
             continue
-        if isinstance(value, ast.Constant) and isinstance(value.value, str) and is_credential_name(target_name) and looks_like_secret(value.value, target_name):
-            add("SECRET-001", value, function, target_name, _redacted(module, node))
-        call = _random_call(module, value)
-        if call is not None and is_random_sensitive_name(target_name):
-            add("WEAK-RANDOM-001", call, function, _canonical(module, call.func), suggestion=patches.random_suggestion(module.text, call, _canonical(module, call.func)))
+        _secret_random_assignment(module, node, value, target_name, function, add)
         if isinstance(value, ast.Call) and _canonical(module, value.func) in _HASH_FUNCTIONS and isinstance(target, ast.Name):
             hash_objects[target.id] = _canonical(module, value.func)
         if isinstance(value, ast.Constant) and value.value is True:
-            if target_name in {"DEBUG"} and function is None and settings_module and isinstance(target, ast.Name):
-                add("DEBUG-001", node, function, "Django DEBUG setting", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-            elif isinstance(target, ast.Attribute) and target.attr == "debug" and _dotted(target.value) in {"app", "application"}:
-                add("DEBUG-001", node, function, "Flask debug attribute", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-            elif isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "DEBUG" and _dotted(target.value).endswith("config"):
-                add("DEBUG-001", node, function, "Flask DEBUG config", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-        if isinstance(value, ast.Constant) and value.value is False and isinstance(target, ast.Attribute) and target.attr == "check_hostname":
-            add("TLS-VERIFY-001", node, function, "ssl check_hostname=False")
-        if isinstance(target, ast.Attribute) and target.attr == "verify_mode" and _canonical(module, value).endswith("CERT_NONE"):
-            add("TLS-VERIFY-001", node, function, "ssl.CERT_NONE")
+            _debug_assignment(module, node, target, target_name, function, add, settings_module)
+        _tls_assignment(module, node, target, value, function, add)
+
+
+def _secret_random_assignment(module: Module, node: ast.AST, value: ast.expr, target_name: str, function: str | None, add) -> None:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str) and is_credential_name(target_name) and looks_like_secret(value.value, target_name):
+        add("SECRET-001", value, function, target_name, _redacted(module, node))
+    call = _random_call(module, value)
+    if call is not None and is_random_sensitive_name(target_name):
+        sink = _canonical(module, call.func)
+        add("WEAK-RANDOM-001", call, function, sink, suggestion=patches.random_suggestion(module.text, call, sink))
+
+
+def _debug_label(target: ast.expr, target_name: str, function: str | None, settings_module: bool) -> str | None:
+    if target_name in {"DEBUG"} and function is None and settings_module and isinstance(target, ast.Name):
+        return "Django DEBUG setting"
+    if isinstance(target, ast.Attribute) and target.attr == "debug" and _dotted(target.value) in {"app", "application"}:
+        return "Flask debug attribute"
+    if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "DEBUG" and _dotted(target.value).endswith("config"):
+        return "Flask DEBUG config"
+    return None
+
+
+def _debug_assignment(module: Module, node: ast.AST, target: ast.expr, target_name: str, function: str | None, add, settings_module: bool) -> None:
+    label = _debug_label(target, target_name, function, settings_module)
+    if label is not None:
+        add("DEBUG-001", node, function, label, suggestion=patches.line_suggestion(module.text, node, "True", "False"))
+
+
+def _tls_assignment(module: Module, node: ast.AST, target: ast.expr, value: ast.expr, function: str | None, add) -> None:
+    if isinstance(value, ast.Constant) and value.value is False and isinstance(target, ast.Attribute) and target.attr == "check_hostname":
+        add("TLS-VERIFY-001", node, function, "ssl check_hostname=False")
+    if isinstance(target, ast.Attribute) and target.attr == "verify_mode" and _canonical(module, value).endswith("CERT_NONE"):
+        add("TLS-VERIFY-001", node, function, "ssl.CERT_NONE")
 
 
 def _call_patterns(module: Module, node: ast.Call, function: str | None, add, hash_objects: dict[str, str], imports_flask: bool) -> None:
     name = _canonical(module, node.func)
     keywords = {item.arg: item.value for item in node.keywords if item.arg}
     if name.startswith("jwt.") or ".jwt." in name:
-        if name.endswith(".decode"):
-            if _is_false(keywords.get("verify")):
-                add("JWT-VERIFY-001", node, function, name)
-            options = keywords.get("options")
-            if isinstance(options, ast.Dict) and any(
-                isinstance(key, ast.Constant) and key.value == "verify_signature" and _is_false(value)
-                for key, value in zip(options.keys, options.values, strict=False)
-            ):
-                add("JWT-VERIFY-001", node, function, name)
-            algorithms = keywords.get("algorithms")
-            if algorithms is not None and any(
-                isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.casefold() == "none"
-                for item in ast.walk(algorithms)
-            ):
-                add("JWT-VERIFY-001", node, function, name)
+        _jwt_patterns(node, name, keywords, function, add)
     else:
-        verify = keywords.get("verify")
-        if _is_false(verify):
-            add("TLS-VERIFY-001", node, function, f"{name or 'call'}(verify=False)", suggestion=patches.keyword_suggestion(module.text, node, "verify", "False", "True"))
-        cert_reqs = keywords.get("cert_reqs")
-        if cert_reqs is not None and (_canonical(module, cert_reqs).endswith("CERT_NONE") or (isinstance(cert_reqs, ast.Constant) and cert_reqs.value == "CERT_NONE")):
-            add("TLS-VERIFY-001", node, function, f"{name}(cert_reqs=CERT_NONE)")
+        _tls_keyword_patterns(module, node, name, keywords, function, add)
     if name in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
         add("TLS-VERIFY-001", node, function, name)
     if name == "tempfile.mktemp":
         add("TEMPFILE-001", node, function, name)
-    if name in {"os.chmod", "os.fchmod", "os.lchmod"} or (isinstance(node.func, ast.Attribute) and node.func.attr == "chmod" and not name.startswith("os.")):
-        mode = keywords.get("mode") or (node.args[1] if name.startswith("os.") and len(node.args) >= 2 else node.args[0] if not name.startswith("os.") and node.args else None)
-        if isinstance(mode, ast.Constant) and isinstance(mode.value, int) and not isinstance(mode.value, bool) and mode.value & 0o002:
-            add("FILE-PERM-001", node, function, f"{name or 'chmod'}({oct(mode.value)})")
+    _file_permission_patterns(node, name, keywords, function, add)
+    _crypto_patterns(module, node, name, keywords, function, add, hash_objects)
+    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run" and _is_true(keywords.get("debug")):
+        add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
+    _xml_patterns(module, node, name, keywords, function, add)
+    for keyword in node.keywords:
+        if keyword.arg and is_credential_name(keyword.arg) and _is_secret_literal(keyword.value, keyword.arg):
+            add("SECRET-001", keyword.value, function, keyword.arg, _redacted(module, keyword))
+    _cors_patterns(node, name, keywords, function, add)
+
+
+def _is_secret_literal(value: ast.expr, name: str) -> bool:
+    return isinstance(value, ast.Constant) and isinstance(value.value, str) and looks_like_secret(value.value, name)
+
+
+def _jwt_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if not name.endswith(".decode"):
+        return
+    if _is_false(keywords.get("verify")):
+        add("JWT-VERIFY-001", node, function, name)
+    options = keywords.get("options")
+    if isinstance(options, ast.Dict) and any(
+        isinstance(key, ast.Constant) and key.value == "verify_signature" and _is_false(value)
+        for key, value in zip(options.keys, options.values, strict=False)
+    ):
+        add("JWT-VERIFY-001", node, function, name)
+    algorithms = keywords.get("algorithms")
+    if algorithms is not None and any(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.casefold() == "none"
+        for item in ast.walk(algorithms)
+    ):
+        add("JWT-VERIFY-001", node, function, name)
+
+
+def _tls_keyword_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if _is_false(keywords.get("verify")):
+        add("TLS-VERIFY-001", node, function, f"{name or 'call'}(verify=False)", suggestion=patches.keyword_suggestion(module.text, node, "verify", "False", "True"))
+    cert_reqs = keywords.get("cert_reqs")
+    if cert_reqs is not None and (_canonical(module, cert_reqs).endswith("CERT_NONE") or (isinstance(cert_reqs, ast.Constant) and cert_reqs.value == "CERT_NONE")):
+        add("TLS-VERIFY-001", node, function, f"{name}(cert_reqs=CERT_NONE)")
+
+
+def _chmod_mode(node: ast.Call, name: str, keywords: dict[str, ast.expr]) -> ast.expr | None:
+    mode = keywords.get("mode")
+    if mode is not None:
+        return mode
+    if name.startswith("os."):
+        return node.args[1] if len(node.args) >= 2 else None
+    return node.args[0] if node.args else None
+
+
+def _file_permission_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if not (name in {"os.chmod", "os.fchmod", "os.lchmod"} or (isinstance(node.func, ast.Attribute) and node.func.attr == "chmod" and not name.startswith("os."))):
+        return
+    mode = _chmod_mode(node, name, keywords)
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, int) and not isinstance(mode.value, bool) and mode.value & 0o002:
+        add("FILE-PERM-001", node, function, f"{name or 'chmod'}({oct(mode.value)})")
+
+
+def _crypto_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add, hash_objects: dict[str, str]) -> None:
     if name.endswith(_WEAK_CIPHER_CALLS):
         add("WEAK-CIPHER-001", node, function, name)
     elif name.endswith("AES.new") and any(_canonical(module, item).endswith("MODE_ECB") for item in [*node.args, *keywords.values()]):
@@ -2188,47 +2307,47 @@ def _call_patterns(module: Module, node: ast.Call, function: str | None, add, ha
         add("WEAK-HASH-001", node, function, name)
     elif isinstance(node.func, ast.Attribute) and node.func.attr == "update" and _dotted(node.func.value) in hash_objects and any(mentions_password(_dotted(item)) for argument in node.args for item in ast.walk(argument)):
         add("WEAK-HASH-001", node, function, hash_objects[_dotted(node.func.value)])
-    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run" and _is_true(keywords.get("debug")):
-        add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
+
+
+def _xml_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
     if (name.endswith("lxml.etree.XMLParser") or name == "lxml.etree.XMLParser") and (_is_true(keywords.get("resolve_entities")) or (_is_true(keywords.get("load_dtd")) and not _is_false(keywords.get("resolve_entities")))):
         add("XXE-001", node, function, name)
     if isinstance(node.func, ast.Attribute) and node.func.attr == "setFeature" and len(node.args) == 2:
         feature = _canonical(module, node.args[0])
         if feature.endswith(("feature_external_ges", "feature_external_pes")) and _is_true(node.args[1]):
             add("XXE-001", node, function, feature)
-    for keyword in node.keywords:
-        if (
-            keyword.arg
-            and is_credential_name(keyword.arg)
-            and isinstance(keyword.value, ast.Constant)
-            and isinstance(keyword.value.value, str)
-            and looks_like_secret(keyword.value.value, keyword.arg)
-        ):
-            add("SECRET-001", keyword.value, function, keyword.arg, _redacted(module, keyword))
-    _cors_patterns(module, node, name, keywords, function, add)
 
 
-def _cors_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+def _flask_cors_open(keywords: dict[str, ast.expr]) -> bool:
+    if not _is_true(keywords.get("supports_credentials")):
+        return False
+    resources = keywords.get("resources")
+    resource_origins: list[ast.expr] = []
+    if isinstance(resources, ast.Dict):
+        for value in resources.values:
+            if isinstance(value, ast.Dict):
+                resource_origins.extend(v for k, v in zip(value.keys, value.values, strict=False) if isinstance(k, ast.Constant) and k.value == "origins")
+    candidates = [item for item in (keywords.get("origins"), *resource_origins) if item is not None]
+    return not candidates or any(_is_wildcard(item) for item in candidates)
+
+
+def _cors_middleware_open(node: ast.Call, short: str, keywords: dict[str, ast.expr]) -> bool:
+    middleware = node.args[0] if node.args and short == "add_middleware" else None
+    if not ((middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware"):
+        return False
+    if not _is_true(keywords.get("allow_credentials")):
+        return False
+    regex = keywords.get("allow_origin_regex")
+    return _is_wildcard(keywords.get("allow_origins")) or (isinstance(regex, ast.Constant) and regex.value in {".*", "^.*$", ".+"})
+
+
+def _cors_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
     short = name.rsplit(".", 1)[-1]
     if short in {"CORS", "cross_origin"} and (name.startswith("flask_cors") or short == "CORS"):
-        if not _is_true(keywords.get("supports_credentials")):
-            return
-        origins = keywords.get("origins")
-        resources = keywords.get("resources")
-        resource_origins: list[ast.expr] = []
-        if isinstance(resources, ast.Dict):
-            for value in resources.values:
-                if isinstance(value, ast.Dict):
-                    resource_origins.extend(v for k, v in zip(value.keys, value.values, strict=False) if isinstance(k, ast.Constant) and k.value == "origins")
-        candidates = [item for item in (origins, *resource_origins) if item is not None]
-        if not candidates or any(_is_wildcard(item) for item in candidates):
+        if _flask_cors_open(keywords):
             add("CORS-001", node, function, f"{short}(supports_credentials=True) with any origin")
         return
-    middleware = node.args[0] if node.args and short == "add_middleware" else None
-    if ((middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware") and _is_true(keywords.get("allow_credentials")) and (
-        _is_wildcard(keywords.get("allow_origins"))
-        or (isinstance(keywords.get("allow_origin_regex"), ast.Constant) and keywords["allow_origin_regex"].value in {".*", "^.*$", ".+"})
-    ):
+    if _cors_middleware_open(node, short, keywords):
         add("CORS-001", node, function, "CORSMiddleware(allow_origins=['*'], allow_credentials=True)")
 
 

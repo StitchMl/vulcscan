@@ -656,6 +656,60 @@ def _by_polarity(sanitized: list[tuple[str, frozenset[str]]], positive: bool) ->
     return (sanitized, []) if positive else ([], sanitized)
 
 
+def _special_call_value(
+    node: ast.Call,
+    name: str,
+    short: str,
+    receiver: Value,
+    arguments: list[Value],
+    keywords: dict[str, Value],
+) -> Value | None:
+    """Value of calls with dedicated semantics (sanitizers, path helpers, regex, urlparse)."""
+    if name in _SANITIZERS:
+        return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
+    if name in _NORMALIZERS:
+        return sanitize(merge(*arguments), {NORMALIZED})
+    if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX):
+        value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
+        if short in {"resolve", "absolute"}:
+            return sanitize(value, {NORMALIZED})
+        return replace_value(value, sanitized=value.sanitized - {NORMALIZED})
+    if name in {_REGEX_COMPILE, "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
+        return Value(literal=(_REGEX_COMPILE, arguments[0].literal))
+    if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
+        parsed = merge(*arguments)
+        first = _dotted(node.args[0])
+        return replace_value(parsed, derived_from=(*parsed.derived_from, *([first] if first else [])), literal=NOT_CONSTANT, prefix=None)
+    return None
+
+
+def _call_source(name: str, parts: list[str]) -> tuple[int | None, str]:
+    if name in _LOCAL_CALLS:
+        return LOCAL, f"Interactive or stdin input from {name}()."
+    if name in _ENV_CALLS:
+        return ENVIRONMENT, f"Environment variable read by {name}()."
+    if parts[-1] in {"parse_args", "parse_known_args"}:
+        return LOCAL, "Command-line arguments parsed by argparse."
+    if parts[-1] in _TORNADO_INPUT and parts[0] == "self":
+        return REMOTE, f"HTTP input from {name}()."
+    return None, ""
+
+
+def _name_source(name: str, parts: list[str]) -> tuple[int | None, str, str | None]:
+    if name == "sys.argv" or name.startswith("sys.argv."):
+        return LOCAL, "Command-line argument from sys.argv.", None
+    if name == "sys.stdin":
+        return LOCAL, "Standard input.", None
+    if name == "os.environ" or name == "os.environb":
+        return ENVIRONMENT, "Environment variable from os.environ.", None
+    for index, part in enumerate(parts[:-1]):
+        attribute = parts[index + 1]
+        if (part == "request" or name.startswith("flask.request")) and attribute in _REQUEST_ATTRIBUTES:
+            description = f"HTTP {_REQUEST_ATTRIBUTES[attribute]} from {'.'.join(parts[: index + 2])}."
+            return REMOTE, description, "upload" if attribute in {"files", "FILES"} else None
+    return None, "", None
+
+
 class _Walker:
     """Abstract interpretation of one statement list.
 
@@ -1016,80 +1070,108 @@ class _Walker:
             return constant(node.value)
         if isinstance(node, ast.Name):
             return env.get(node.id, UNKNOWN)
-        if isinstance(node, ast.Attribute):
-            key = _strict_dotted(node)
-            if key and key in env:
-                return env[key]
-            base = self.expression(node.value, env)
-            if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith(_PATHLIB_MODULE_PREFIX):
-                return sanitize(replace_value(base, origin=None), {FILESYSTEM})
-            if base.constant:
-                return Value(dynamic=False) if not base.tainted else base
-            return replace_value(base, literal=NOT_CONSTANT, prefix=None, composed=False)
-        if isinstance(node, ast.Subscript):
-            container = self.expression(node.value, env)
-            index = self.expression(node.slice, env)
-            return replace_value(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
-        if isinstance(node, ast.Call):
-            return self._call(node, env)
-        if isinstance(node, ast.JoinedStr):
-            return concatenate([self.expression(value, env) for value in node.values])
-        if isinstance(node, ast.FormattedValue):
-            return self.expression(node.value, env)
-        if isinstance(node, ast.BinOp):
-            left = self.expression(node.left, env)
-            right = self.expression(node.right, env)
-            if isinstance(node.op, ast.Add):
-                return concatenate([left, right])
-            if isinstance(node.op, ast.Mod) and (isinstance(left.literal, str) or left.prefix is not None):
-                return concatenate([left, right])
-            if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith(_PATHLIB_MODULE_PREFIX):
-                joined = merge(left, right)
-                return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
-            merged = merge(left, right)
-            if left.constant and right.constant:
-                return merged
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            values = [self.expression(item, env) for item in node.elts]
-            merged = merge(*values) if values else Value()
-            if values and all(item.constant for item in values):
-                literal = tuple(item.literal for item in values)
-                return replace_value(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, ast.Dict):
-            values = [self.expression(item, env) for item in [*node.keys, *node.values] if item is not None]
-            merged = merge(*values) if values else Value()
-            keys = [self.expression(item, env) for item in node.keys if item is not None]
-            if keys and all(item.constant for item in keys) and len(keys) == len(node.keys):
-                return replace_value(merged, literal=tuple(item.literal for item in keys), prefix=None)
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, ast.BoolOp):
-            return replace_value(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
-        if isinstance(node, ast.IfExp):
-            self.expression(node.test, env)
-            when_true, when_false = self._guard(node.test, env)
-            body = self.expression(node.body, self._apply_guard(dict(env), when_true))
-            orelse = self.expression(node.orelse, self._apply_guard(dict(env), when_false))
-            return merge(body, orelse)
-        if isinstance(node, ast.NamedExpr):
-            value = self.expression(node.value, env)
-            self.bind(node.target, value, env)
-            return value
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
-            return self._comprehension(node, env)
-        if isinstance(node, (ast.Compare, ast.UnaryOp)):
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.expr):
-                    self.expression(child, env)
-            return Value(dynamic=True, sanitized=ALL_SINKS)
         if isinstance(node, ast.Lambda):
             return UNKNOWN
-        if isinstance(node, (ast.Await, ast.Starred, ast.Yield, ast.YieldFrom)):
-            inner = getattr(node, "value", None)
-            return self.expression(inner, env) if inner is not None else UNKNOWN
+        for kinds, handler in self._EXPRESSION_HANDLERS:
+            if isinstance(node, kinds):
+                return handler(self, node, env)
         values = [self.expression(child, env) for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
         return merge(*values) if values else UNKNOWN
+
+    def _expr_attribute(self, node: ast.Attribute, env: dict[str, Value]) -> Value:
+        key = _strict_dotted(node)
+        if key and key in env:
+            return env[key]
+        base = self.expression(node.value, env)
+        if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith(_PATHLIB_MODULE_PREFIX):
+            return sanitize(replace_value(base, origin=None), {FILESYSTEM})
+        if base.constant:
+            return Value(dynamic=False) if not base.tainted else base
+        return replace_value(base, literal=NOT_CONSTANT, prefix=None, composed=False)
+
+    def _expr_subscript(self, node: ast.Subscript, env: dict[str, Value]) -> Value:
+        container = self.expression(node.value, env)
+        index = self.expression(node.slice, env)
+        return replace_value(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
+
+    def _expr_joined(self, node: ast.JoinedStr, env: dict[str, Value]) -> Value:
+        return concatenate([self.expression(value, env) for value in node.values])
+
+    def _expr_formatted(self, node: ast.FormattedValue, env: dict[str, Value]) -> Value:
+        return self.expression(node.value, env)
+
+    def _expr_binop(self, node: ast.BinOp, env: dict[str, Value]) -> Value:
+        left = self.expression(node.left, env)
+        right = self.expression(node.right, env)
+        if isinstance(node.op, ast.Add):
+            return concatenate([left, right])
+        if isinstance(node.op, ast.Mod) and (isinstance(left.literal, str) or left.prefix is not None):
+            return concatenate([left, right])
+        if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith(_PATHLIB_MODULE_PREFIX):
+            joined = merge(left, right)
+            return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
+        merged = merge(left, right)
+        if left.constant and right.constant:
+            return merged
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_collection(self, node: ast.Tuple | ast.List | ast.Set, env: dict[str, Value]) -> Value:
+        values = [self.expression(item, env) for item in node.elts]
+        merged = merge(*values) if values else Value()
+        if values and all(item.constant for item in values):
+            literal = tuple(item.literal for item in values)
+            return replace_value(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_dict(self, node: ast.Dict, env: dict[str, Value]) -> Value:
+        values = [self.expression(item, env) for item in [*node.keys, *node.values] if item is not None]
+        merged = merge(*values) if values else Value()
+        keys = [self.expression(item, env) for item in node.keys if item is not None]
+        if keys and all(item.constant for item in keys) and len(keys) == len(node.keys):
+            return replace_value(merged, literal=tuple(item.literal for item in keys), prefix=None)
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_boolop(self, node: ast.BoolOp, env: dict[str, Value]) -> Value:
+        return replace_value(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
+
+    def _expr_ifexp(self, node: ast.IfExp, env: dict[str, Value]) -> Value:
+        self.expression(node.test, env)
+        when_true, when_false = self._guard(node.test, env)
+        body = self.expression(node.body, self._apply_guard(dict(env), when_true))
+        orelse = self.expression(node.orelse, self._apply_guard(dict(env), when_false))
+        return merge(body, orelse)
+
+    def _expr_named(self, node: ast.NamedExpr, env: dict[str, Value]) -> Value:
+        value = self.expression(node.value, env)
+        self.bind(node.target, value, env)
+        return value
+
+    def _expr_opaque(self, node: ast.Compare | ast.UnaryOp, env: dict[str, Value]) -> Value:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                self.expression(child, env)
+        return Value(dynamic=True, sanitized=ALL_SINKS)
+
+    def _expr_wrapper(self, node: ast.Await | ast.Starred | ast.Yield | ast.YieldFrom, env: dict[str, Value]) -> Value:
+        inner = getattr(node, "value", None)
+        return self.expression(inner, env) if inner is not None else UNKNOWN
+
+    _EXPRESSION_HANDLERS = (
+        (ast.Attribute, _expr_attribute),
+        (ast.Subscript, _expr_subscript),
+        (ast.Call, lambda self, node, env: self._call(node, env)),
+        (ast.JoinedStr, _expr_joined),
+        (ast.FormattedValue, _expr_formatted),
+        (ast.BinOp, _expr_binop),
+        ((ast.Tuple, ast.List, ast.Set), _expr_collection),
+        (ast.Dict, _expr_dict),
+        (ast.BoolOp, _expr_boolop),
+        (ast.IfExp, _expr_ifexp),
+        (ast.NamedExpr, _expr_named),
+        ((ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp), lambda self, node, env: self._comprehension(node, env)),
+        ((ast.Compare, ast.UnaryOp), _expr_opaque),
+        ((ast.Await, ast.Starred, ast.Yield, ast.YieldFrom), _expr_wrapper),
+    )
 
     def _comprehension(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp, env: dict[str, Value]) -> Value:
         inner = dict(env)
@@ -1113,33 +1195,13 @@ class _Walker:
             return None
         name = _canonical_text(self.module, raw)
         parts = name.split(".")
-        trust = None
+        trust: int | None = None
         description = ""
         origin = None
         if isinstance(node, ast.Call):
-            if name in _LOCAL_CALLS:
-                trust, description = LOCAL, f"Interactive or stdin input from {name}()."
-            elif name in _ENV_CALLS:
-                trust, description = ENVIRONMENT, f"Environment variable read by {name}()."
-            elif parts[-1] in {"parse_args", "parse_known_args"}:
-                trust, description = LOCAL, "Command-line arguments parsed by argparse."
-            elif parts[-1] in _TORNADO_INPUT and parts[0] == "self":
-                trust, description = REMOTE, f"HTTP input from {name}()."
+            trust, description = _call_source(name, parts)
         if trust is None:
-            if name == "sys.argv" or name.startswith("sys.argv."):
-                trust, description = LOCAL, "Command-line argument from sys.argv."
-            elif name == "sys.stdin":
-                trust, description = LOCAL, "Standard input."
-            elif name == "os.environ" or name == "os.environb":
-                trust, description = ENVIRONMENT, "Environment variable from os.environ."
-            else:
-                for index, part in enumerate(parts[:-1]):
-                    attribute = parts[index + 1]
-                    if (part == "request" or name.startswith("flask.request")) and attribute in _REQUEST_ATTRIBUTES:
-                        trust = REMOTE
-                        description = f"HTTP {_REQUEST_ATTRIBUTES[attribute]} from {'.'.join(parts[: index + 2])}."
-                        origin = "upload" if attribute in {"files", "FILES"} else None
-                        break
+            trust, description, origin = _name_source(name, parts)
         if trust is None:
             return None
         # Only the outermost matching node becomes the SOURCE step; deeper
@@ -1166,22 +1228,9 @@ class _Walker:
             self._call_summary_sinks(node, resolved, actuals)
         self._check_sinks(node, name, receiver, arguments, keywords, env)
 
-        if name in _SANITIZERS:
-            return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
-        if name in _NORMALIZERS:
-            return sanitize(merge(*arguments), {NORMALIZED})
-        if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX):
-            value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
-            if short == "resolve" or short == "absolute":
-                value = sanitize(value, {NORMALIZED})
-            else:
-                value = replace_value(value, sanitized=value.sanitized - {NORMALIZED})
-            return value
-        if name in {_REGEX_COMPILE, "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
-            return Value(literal=(_REGEX_COMPILE, arguments[0].literal))
-        if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
-            parsed = merge(*arguments)
-            return replace_value(parsed, derived_from=(*parsed.derived_from, *([_dotted(node.args[0])] if _dotted(node.args[0]) else [])), literal=NOT_CONSTANT, prefix=None)
+        special = _special_call_value(node, name, short, receiver, arguments, keywords)
+        if special is not None:
+            return special
         if resolved is not None:
             return self._summary_return(resolved, actuals or {})
         if short == "format" and receiver.constant and isinstance(receiver.literal, str):
@@ -1249,43 +1298,46 @@ class _Walker:
             f"Value is passed to {info.qualname}().",
         )
         for template in summary.sinks:
-            relevant = [actuals[index] for index in sorted(template.value.params) if index in actuals]
-            if not relevant:
-                continue
-            actual = merge(*relevant)
-            category = rule(template.rule_id).category
-            if category in template.value.sanitized:
-                continue
-            propagated = replace_value(
-                actual,
-                flow=unique_steps((*actual.flow, call_step, *template.value.flow)),
-                sanitized=actual.sanitized | template.value.sanitized,
-            )
-            if self.summary is not None:
-                if propagated.params:
-                    self._add_template(template.rule_id, template.node, template.sink, propagated, template.certainty, template.module, template.function, template.sql_evidence)
-                continue
-            if self.findings is None:
-                continue
-            confidence = judge(
-                category,
-                propagated,
-                certainty=template.certainty,
-                unknown_origin=True,
-                sql_evidence=template.sql_evidence or bool(SQL_KEYWORDS.search(actual.text)),
-            )
-            if confidence is None or not (propagated.sources or propagated.composed):
-                continue
-            self._report(
-                template.rule_id,
-                template.node,
-                template.sink,
-                propagated,
-                confidence,
-                module=template.module,
-                function=template.function,
-                related=[self.location(node)],
-            )
+            self._propagate_template(node, template, actuals, call_step)
+
+    def _propagate_template(self, node: ast.Call, template: SinkTemplate, actuals: dict[int, Value], call_step: FlowStep) -> None:
+        relevant = [actuals[index] for index in sorted(template.value.params) if index in actuals]
+        if not relevant:
+            return
+        actual = merge(*relevant)
+        category = rule(template.rule_id).category
+        if category in template.value.sanitized:
+            return
+        propagated = replace_value(
+            actual,
+            flow=unique_steps((*actual.flow, call_step, *template.value.flow)),
+            sanitized=actual.sanitized | template.value.sanitized,
+        )
+        if self.summary is not None:
+            if propagated.params:
+                self._add_template(template.rule_id, template.node, template.sink, propagated, template.certainty, template.module, template.function, template.sql_evidence)
+            return
+        if self.findings is None:
+            return
+        confidence = judge(
+            category,
+            propagated,
+            certainty=template.certainty,
+            unknown_origin=True,
+            sql_evidence=template.sql_evidence or bool(SQL_KEYWORDS.search(actual.text)),
+        )
+        if confidence is None or not (propagated.sources or propagated.composed):
+            return
+        self._report(
+            template.rule_id,
+            template.node,
+            template.sink,
+            propagated,
+            confidence,
+            module=template.module,
+            function=template.function,
+            related=[self.location(node)],
+        )
 
     # Sinks ------------------------------------------------------------------------
 

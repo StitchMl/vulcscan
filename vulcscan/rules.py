@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PHP-TYPE-JUGGLING-001",
+            "Loose PHP Comparison of Authentication Values",
+            "CWE-697",
+            "AUTH",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A loose comparison of an authentication value with user-controlled input can permit PHP type coercion and unexpected equality.",
+        ),
+        RuleDefinition(
             "AUTHZ-SCOPE-001",
             "Unscoped Resource Access",
             "CWE-639",
@@ -763,6 +772,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "PHP-TYPE-JUGGLING-001": (
+        Advice(
+            "Use strict comparisons or a purpose-built credential verifier.",
+            "Replace loose ==/!= checks with ===/!== for ordinary typed values. For secret hashes or MACs use hash_equals with verified string types; for password storage use password_verify. Confirm expected input types and regression-test authentication flows.",
+            Confidence.HIGH,
+            "MEDIUM",
+        ),
+    ),
     "CLEARTEXT-PASSWORD-001": (
         Advice(
             "Store only salted password hashes.",
@@ -879,6 +896,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "PHP-TYPE-JUGGLING-001": ["On a disposable test instance compare synthetic token strings that PHP may coerce, such as `0e123` and `0e456`. Authentication must reject unequal tokens; verify strict comparison or hash_equals with strings."],
         "AUTHZ-SCOPE-001": ["Create one disposable resource as account A, then request the same identifier as account B. Any resource content or metadata in B's response proves missing object-level authorization."],
         "ORM-EMPTY-AUTH-001": ["Use a random nonexistent session token on the reported state-changing request. The service must reject it before inserting, updating or deleting a row; verify that no row with an empty owner or principal was created."],
     }

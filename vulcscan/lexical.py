@@ -9,7 +9,7 @@ and known-token checks run on them here.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 
 from .models import Confidence, Finding, Location
 from .names import (
@@ -28,7 +28,7 @@ _PRIVATE_KEY = re.compile(r"-----BEGIN ((?:RSA |DSA |EC |OPENSSH |ENCRYPTED |PGP
 _KEY_MATERIAL = re.compile(r"[A-Za-z0-9+/]{40,}")
 _KNOWN_TOKENS = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "GitHub token"),
-    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "GitHub fine-grained token"),
+    (re.compile(r"\bgithub_pat_\w{60,}\b"), "GitHub fine-grained token"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "Slack token"),
     (re.compile(r"\bsk_live_[A-Za-z0-9]{20,}\b"), "Stripe live secret key"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "Google API key"),
@@ -41,19 +41,22 @@ _KNOWN_TOKENS = (
     (re.compile(r"\bpypi-[A-Za-z0-9_-]{24,}\b"), "PyPI API token"),
 )
 _KEY_VALUE = re.compile(
-    r"""(?P<key>[A-Za-z_][\w.-]*)["']?\s*(?::=|=>|:|=)\s*(?:[rubfRUBF@$]*)(?P<quote>["'`])(?P<value>[^"'`\n]{8,})(?P=quote)"""
+    r"""(?P<key>[A-Za-z_][\w.-]*)["']?\s*(?::=|=>|:|=)\s*[rubfRUBF@$]*(?P<quote>["'`])(?P<value>[^"'`\n]{8,})(?P=quote)"""
 )
-_CONFIG_VALUE = re.compile(r"""^\s*(?:export\s+|ENV\s+)?(?P<key>[A-Za-z_][\w.-]*)\s*[:=]?\s*(?:=|:|\s)\s*(?P<value>[^\s#;'"]{8,})\s*$""")
+_CONFIG_SEPARATOR = r"(?:\s*[:=]\s*(?:[:=]\s*)?|\s+)"
+_CONFIG_VALUE = re.compile(
+    r"""^\s*(?:(?:export|ENV)\s+)?(?P<key>[A-Za-z_][\w.-]*)""" + _CONFIG_SEPARATOR + r"""(?P<value>[^\s#;'"]{8,})\s*$"""
+)
 _CONFIG_LANGUAGES = {"Environment", "YAML", "Configuration", "TOML", "Dockerfile", "HCL", "Terraform"}
 _EXAMPLE_FILE = re.compile(r"(?i)(?:example|sample|template|\.dist$|\.tpl$|\.tmpl$)")
 _RUNTIME_DATA_PATH = re.compile(r"(?i)(?:^|/)(?:data|runtime|storage|volumes?)(?:/|$)")
 
 _TLS_PATTERNS = (
-    re.compile(r"\brejectUnauthorized\s*['\"]?\s*:\s*false\b"),
-    re.compile(r"\bNODE_TLS_REJECT_UNAUTHORIZED\b\s*(?:=|:)\s*['\"]?0\b"),
+    re.compile(r"""\brejectUnauthorized(?:\s*['"])?\s*:\s*false\b"""),
+    re.compile(r"""\bNODE_TLS_REJECT_UNAUTHORIZED\b\s*[=:]\s*['"]?0\b"""),
     re.compile(r"\bInsecureSkipVerify\s*:\s*true\b"),
-    re.compile(r"ServerCertificateCustomValidationCallback\s*=\s*(?:[^;]*=>\s*true|HttpClientHandler\s*\.\s*DangerousAcceptAnyServerCertificateValidator)"),
-    re.compile(r"ServerCertificateValidationCallback\s*\+?=\s*[^;]*=>\s*true"),
+    re.compile(r"ServerCertificateCustomValidationCallback\s*=(?:[^;]*=>\s*true|\s*HttpClientHandler\s*\.\s*DangerousAcceptAnyServerCertificateValidator)"),
+    re.compile(r"ServerCertificateValidationCallback\s*\+?=[^;]*=>\s*true"),
     re.compile(r"CURLOPT_SSL_VERIFYPEER\s*,\s*(?:false|0)\b|CURLOPT_SSL_VERIFYHOST\s*,\s*0\b"),
     re.compile(r"""['"]verify['"]\s*=>\s*false\b"""),
     re.compile(r"\b(?:NoopHostnameVerifier|ALLOW_ALL_HOSTNAME_VERIFIER|AllowAllHostnameVerifier)\b"),
@@ -66,8 +69,9 @@ _TLS_PATTERNS = (
 )
 _TLS_LANGUAGES = {"JavaScript", "TypeScript", "Go", "C#", "PHP", "Java", "Ruby", "Shell", "PowerShell", "YAML", "Configuration", "Dockerfile", "Kotlin"}
 
+_JAVA_CIPHER_CALL = r"""Cipher\s*\.\s*getInstance\s*\(\s*\""""
 _WEAK_CIPHER = (
-    re.compile(r"""Cipher\s*\.\s*getInstance\s*\(\s*"(?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)(?:/[^"]*)?"|Cipher\s*\.\s*getInstance\s*\(\s*"AES(?:/ECB/[^"]*)?"\s*\)"""),
+    re.compile(_JAVA_CIPHER_CALL + r"""(?:(?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)(?:/[^"]*)?"|AES(?:/ECB/[^"]*)?"\s*\))"""),
     re.compile(r"\b(?:DES|TripleDES|RC2)\s*\.\s*Create\s*\(|new\s+(?:DES|TripleDES|RC2)CryptoServiceProvider\b|\bCipherMode\s*\.\s*ECB\b"),
     re.compile(r"""createCipher(?:iv)?\s*\(\s*['"`](?:des|des-ede3?(?:-cbc)?|des-cbc|rc2|rc4|bf|blowfish|aes-\d+-ecb)\b""", re.IGNORECASE),
     re.compile(r"\b(?:des\s*\.\s*NewCipher|des\s*\.\s*NewTripleDESCipher|rc4\s*\.\s*NewCipher)\s*\("),
@@ -84,7 +88,16 @@ _WEAK_HASH_DIRECT = (
     re.compile(r"Digest::(?:MD5|SHA1|SHA256|SHA512)\s*\.\s*(?:hexdigest|digest|base64digest)\s*\(([^)]*)\)"),
 )
 _JAVA_DIGEST = re.compile(r"""\b(\w+)\s*=\s*MessageDigest\s*\.\s*getInstance\s*\(\s*"(?:MD5|SHA-?1|SHA-?256|SHA-?512)"\s*\)""")
-_WEAK_RANDOM = re.compile(r"\bMath\s*\.\s*random\s*\(|\bnew\s+Random\s*\(|(?<![\w>$:])(?:rand|mt_rand|uniqid|lcg_value)\s*\(|\bRandom\s*\.\s*new\b|\brand\s*\.\s*(?:Intn|Int63|Int31|Int|Read)\s*\(")
+_WEAK_RANDOM = re.compile(
+    r"\bMath\s*\.\s*random\s*\(|\bnew\s+Random\s*\("
+    r"|(?<![\w>$:])(?:rand|mt_rand|uniqid|lcg_value)\s*\("
+    r"|\bRandom\s*\.\s*new\b|\brand\s*\.\s*(?:Int(?:n|63|31)?|Read)\s*\("
+)
+_MYSQL_PASSWORD = re.compile(r"""(?i)\b(?:mysql|mysqldump)\b[^\n]*\s-p(?:assword)?=?\s*['"]?([^\s'"]{4,})""")
+_URL_INCLUDE = re.compile(r"(?i)^\s*allow_url_include\s*=\s*(?:on|1|true)\s*$")
+_SQL_MD5 = re.compile(r"(?i)\bMD5\s*\(")
+_SVG_ACTIVE_HREF = r"""(?:xlink:)?href\s*=\s*['"]\s*javascript:"""
+_SVG_ACTIVE = re.compile(r"(?i)<\s*script\b|\bon[a-z]+\s*=|" + _SVG_ACTIVE_HREF + r"|<\s*foreignObject\b")
 _ASSIGNED_NAME = re.compile(r"(?:\$|@{1,2})?([A-Za-z_]\w*)\s*(?::\s*[\w<>\[\]]+\s*)?(?::=|=)(?!=)")
 
 _DEBUG = (
@@ -110,22 +123,25 @@ _JAVA_XML_HARDENING = re.compile(
     r"disallow-doctype-decl|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_STYLESHEET|IS_SUPPORTING_EXTERNAL_ENTITIES|SUPPORT_DTD|external-general-entities\"\s*,\s*false|setExpandEntityReferences\s*\(\s*false"
 )
 
+_CORS_ALLOWED_PATTERNS = r"""\ballowedOriginPatterns\s*\(\s*"\*"\s*\)"""
+_CORS_ALLOW_FUNC = r"""\bAllowOriginFunc\s*:\s*func\s*\([^)]*\)\s*bool\s*\{\s*return\s+true"""
 _CORS_REFLECT = (
-    re.compile(r"\bcors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:true|\(?[\w\s,]*\)?\s*=>\s*true)[^}]*\}", re.DOTALL),
+    re.compile(r"\bcors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:true|\(?[\w\s,]*(?:\)\s*)?=>\s*true)[^}]*\}", re.DOTALL),
     re.compile(r"""Access-Control-Allow-Origin['"]?\s*,\s*(?:req|request)\s*\.\s*(?:headers\s*\.\s*origin|header\s*\(\s*['"]origin)""", re.IGNORECASE),
     re.compile(r"""header\s*\(\s*['"]Access-Control-Allow-Origin:\s*['"]\s*\.\s*\$_SERVER\s*\[\s*['"]HTTP_ORIGIN""", re.IGNORECASE),
-    re.compile(r"\bSetIsOriginAllowed\s*\(\s*\(?\s*\w*\s*\)?\s*=>\s*true\s*\)"),
-    re.compile(r"""\ballowedOriginPatterns\s*\(\s*"\*"\s*\)|\bAllowOriginFunc\s*:\s*func\s*\([^)]*\)\s*bool\s*\{\s*return\s+true"""),
+    re.compile(r"\bSetIsOriginAllowed\s*\(\s*\(?\s*(?:\w+\s*)?(?:\)\s*)?=>\s*true\s*\)"),
+    re.compile(_CORS_ALLOWED_PATTERNS + "|" + _CORS_ALLOW_FUNC),
 )
-_CORS_CREDENTIALS = re.compile(r"""\bcredentials\s*:\s*true\b|Access-Control-Allow-Credentials['"]?\s*[,:]\s*['"]?true|\bAllowCredentials\s*(?:\(\s*\)|:\s*true)|\ballowCredentials\s*\(\s*true\s*\)""", re.IGNORECASE)
+_CORS_CREDENTIALS = re.compile(
+    r"""\bcredentials\s*:\s*true\b|Access-Control-Allow-Credentials['"]?\s*[,:]\s*['"]?true"""
+    r"""|\bAllowCredentials\s*(?:\(\s*\)|:\s*true)|\ballowCredentials\s*\(\s*true\s*\)""",
+    re.IGNORECASE,
+)
 
 _PRIVILEGED = re.compile(r"""\bprivileged["']?\s*:\s*true\b""")
 
 
-def lexical_findings(file_name: str, relative_path: str, language: str, text: str) -> list[Finding]:
-    findings: list[Finding] = []
-    raw_lines = split_lines(text)
-
+def _make_adder(findings: list[Finding], language: str, relative_path: str) -> Callable[..., None]:
     def add(rule_id: str, line: int, column: int, sink: str, evidence: str, confidence: Confidence | None = None) -> None:
         definition = RULES[rule_id]
         evidence = evidence.strip()[:300]
@@ -146,21 +162,23 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
             )
         )
 
+    return add
+
+
+def lexical_findings(file_name: str, relative_path: str, language: str, text: str) -> list[Finding]:
+    findings: list[Finding] = []
+    raw_lines = split_lines(text)
+    add = _make_adder(findings, language, relative_path)
+
     _private_keys(raw_lines, add)
     if language == "SVG":
         for number, line in enumerate(raw_lines, 1):
-            match = re.search(r"(?i)<\s*script\b|\bon[a-z]+\s*=|(?:href|xlink:href)\s*=\s*['\"]\s*javascript:|<\s*foreignObject\b", line)
+            match = _SVG_ACTIVE.search(line)
             if match:
                 add("SVG-ACTIVE-001", number, match.start() + 1, "active SVG content", line)
     example = bool(_EXAMPLE_FILE.search(file_name))
     runtime_data = language == "JSON" and bool(_RUNTIME_DATA_PATH.search(relative_path.replace("\\", "/")))
-    for number, line in enumerate(raw_lines, 1):
-        if len(line) > MAX_LINE_LENGTH:
-            continue
-        for pattern, label in _KNOWN_TOKENS:
-            match = pattern.search(line)
-            if match and not example:
-                add("SECRET-001", number, match.start() + 1, label, _redact(line, match.group(0)), Confidence.HIGH)
+    _known_tokens(raw_lines, example, add)
     _cleartext_password_storage(text, add)
     _unauthenticated_encryption(text, add)
     _dynamic_svg_output(language, text, add)
@@ -172,64 +190,29 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
         _c_buffer_overflows(text, add)
         _c_memcpy_lengths(text, add)
         _c_allocation_overflow(text, add)
-    if language == "Python":
-        return findings
+    if language != "Python":
+        _scan_code(language, text, example, runtime_data, add)
+    return findings
 
+
+def _known_tokens(raw_lines: list[str], example: bool, add: Callable[..., None]) -> None:
+    for number, line in enumerate(raw_lines, 1):
+        if len(line) > MAX_LINE_LENGTH:
+            continue
+        for pattern, label in _KNOWN_TOKENS:
+            match = pattern.search(line)
+            if match and not example:
+                add("SECRET-001", number, match.start() + 1, label, _redact(line, match.group(0)), Confidence.HIGH)
+
+
+def _scan_code(language: str, text: str, example: bool, runtime_data: bool, add: Callable[..., None]) -> None:
     code_lines = split_lines(blank_comments(text, comment_style(language)))
     for number, line in enumerate(code_lines, 1):
         if len(line) > MAX_LINE_LENGTH or not line.strip():
             continue
         if not example and not runtime_data:
             _secret(line, number, language, add)
-        if language == "Shell":
-            password = re.search(r"(?i)\b(?:mysql|mysqldump)\b[^\n]*\s-p(?:assword)?(?:=)?\s*['\"]?([^\s'\"]{4,})", line)
-            if password:
-                add("SECRET-001", number, password.start(1) + 1, "database CLI password", _redact(line, password.group(1)), Confidence.HIGH)
-        if language == "Configuration":
-            remote_include = re.search(r"(?i)^\s*allow_url_include\s*=\s*(?:on|1|true)\s*$", line)
-            if remote_include:
-                add("PHP-URL-INCLUDE-001", number, remote_include.start() + 1, "allow_url_include", line)
-        if language in _TLS_LANGUAGES:
-            for pattern in _TLS_PATTERNS:
-                match = pattern.search(line)
-                if match:
-                    add("TLS-VERIFY-001", number, match.start() + 1, "TLS verification option", line)
-                    break
-        for pattern in _WEAK_CIPHER:
-            match = pattern.search(line)
-            if match:
-                add("WEAK-CIPHER-001", number, match.start() + 1, match.group(0)[:60], line)
-                break
-        for pattern in _WEAK_HASH_DIRECT:
-            match = pattern.search(line)
-            if match and mentions_password(match.group(1)):
-                add("WEAK-HASH-001", number, match.start() + 1, match.group(0).split("(", 1)[0], line)
-                break
-        if language == "SQL" and re.search(r"(?i)\bMD5\s*\(", line) and re.search(r"(?i)password|passwd|pwd", text):
-            match = re.search(r"(?i)\bMD5\s*\(", line)
-            assert match is not None
-            add("WEAK-HASH-001", number, match.start() + 1, "SQL MD5 password hash", line)
-        random_match = _WEAK_RANDOM.search(line)
-        if random_match and language not in _CONFIG_LANGUAGES:
-            assigned = _ASSIGNED_NAME.search(line[: random_match.start()])
-            go_crypto = language == "Go" and '"crypto/rand"' in text and '"math/rand"' not in text
-            if assigned and is_random_sensitive_name(assigned.group(1)) and not go_crypto:
-                add("WEAK-RANDOM-001", number, random_match.start() + 1, "non-cryptographic PRNG", line)
-        if not example:
-            for pattern in _DEBUG:
-                match = pattern.search(line)
-                if match:
-                    add("DEBUG-001", number, match.start() + 1, "debug configuration", line)
-                    break
-        for pattern in _XXE_EXPLICIT:
-            match = pattern.search(line)
-            if match:
-                add("XXE-001", number, match.start() + 1, "XML parser configuration", line)
-                break
-        if language in {"YAML", "JSON"}:
-            match = _PRIVILEGED.search(line)
-            if match:
-                add("K8S-PRIV-001", number, match.start() + 1, "privileged: true", line)
+        _scan_line(line, number, language, text, example, add)
     _java_digest(code_lines, add)
     _java_xml_factories(language, text, code_lines, add)
     _cors(text if language not in _CONFIG_LANGUAGES else "", code_lines, add)
@@ -243,7 +226,75 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
         _php_request_security(text, add)
     if language == "SQL":
         _sql_cleartext_password(text, add)
-    return findings
+
+
+def _first_match(patterns: Iterable[re.Pattern[str]], line: str) -> re.Match[str] | None:
+    for pattern in patterns:
+        match = pattern.search(line)
+        if match:
+            return match
+    return None
+
+
+def _scan_line(line: str, number: int, language: str, text: str, example: bool, add: Callable[..., None]) -> None:
+    if language == "Shell":
+        password = _MYSQL_PASSWORD.search(line)
+        if password:
+            add("SECRET-001", number, password.start(1) + 1, "database CLI password", _redact(line, password.group(1)), Confidence.HIGH)
+    if language == "Configuration":
+        remote_include = _URL_INCLUDE.search(line)
+        if remote_include:
+            add("PHP-URL-INCLUDE-001", number, remote_include.start() + 1, "allow_url_include", line)
+    if language in _TLS_LANGUAGES:
+        match = _first_match(_TLS_PATTERNS, line)
+        if match:
+            add("TLS-VERIFY-001", number, match.start() + 1, "TLS verification option", line)
+    _scan_crypto_line(line, number, language, text, add)
+    _scan_config_line(line, number, language, example, add)
+
+
+def _scan_crypto_line(line: str, number: int, language: str, text: str, add: Callable[..., None]) -> None:
+    match = _first_match(_WEAK_CIPHER, line)
+    if match:
+        add("WEAK-CIPHER-001", number, match.start() + 1, match.group(0)[:60], line)
+    for pattern in _WEAK_HASH_DIRECT:
+        match = pattern.search(line)
+        if match and mentions_password(match.group(1)):
+            add("WEAK-HASH-001", number, match.start() + 1, match.group(0).split("(", 1)[0], line)
+            break
+    if language == "SQL":
+        _sql_md5(line, number, text, add)
+    _weak_random(line, number, language, text, add)
+
+
+def _scan_config_line(line: str, number: int, language: str, example: bool, add: Callable[..., None]) -> None:
+    if not example:
+        match = _first_match(_DEBUG, line)
+        if match:
+            add("DEBUG-001", number, match.start() + 1, "debug configuration", line)
+    match = _first_match(_XXE_EXPLICIT, line)
+    if match:
+        add("XXE-001", number, match.start() + 1, "XML parser configuration", line)
+    if language in {"YAML", "JSON"}:
+        match = _PRIVILEGED.search(line)
+        if match:
+            add("K8S-PRIV-001", number, match.start() + 1, "privileged: true", line)
+
+
+def _sql_md5(line: str, number: int, text: str, add: Callable[..., None]) -> None:
+    match = _SQL_MD5.search(line)
+    if match and re.search(r"(?i)password|passwd|pwd", text):
+        add("WEAK-HASH-001", number, match.start() + 1, "SQL MD5 password hash", line)
+
+
+def _weak_random(line: str, number: int, language: str, text: str, add: Callable[..., None]) -> None:
+    random_match = _WEAK_RANDOM.search(line)
+    if not random_match or language in _CONFIG_LANGUAGES:
+        return
+    assigned = _ASSIGNED_NAME.search(line[: random_match.start()])
+    go_crypto = language == "Go" and '"crypto/rand"' in text and '"math/rand"' not in text
+    if assigned and is_random_sensitive_name(assigned.group(1)) and not go_crypto:
+        add("WEAK-RANDOM-001", number, random_match.start() + 1, "non-cryptographic PRNG", line)
 
 
 def _cleartext_password_storage(text: str, add: Callable[..., None]) -> None:
@@ -339,103 +390,116 @@ def _unscoped_resource_routes(language: str, text: str, add: Callable[..., None]
         add("AUTHZ-SCOPE-001", line, 1, f"route {route.group('path')}", evidence, Confidence.MEDIUM)
 
 
+_GORM_QUERY = re.compile(
+    r"(?m)^[ \t]*(?P<result>[A-Za-z_]\w*)[ \t]*(?::=|=)[ \t]*"
+    r"(?P<query>[A-Za-z_]\w*[^;\n]{0,700}?\.\s*(?P<method>Find|First|Take|Last)"
+    r"\s*\(\s*&(?P<entity>[A-Za-z_]\w*)\s*\))"
+)
+_GORM_SENSITIVE_FIELD = (
+    r"(?:(?:User|Owner|Tenant|Account|Principal|Subject|Member|Identity)"
+    r"(?:ID|Id|Ref)?|Role)"
+)
+_GORM_TERMINATOR = r"[\s\S]{0,600}?\b(?:return|panic\s*\()"
+_HTTP_SOURCE = re.compile(
+    r"(?i)\.(?:Cookie|GetHeader|Header\.Get|Query|Param|PostForm|FormValue|PostFormValue|PathValue)\s*\("
+)
+_SENSITIVE_MODEL = re.compile(r"(?i)session|auth|token|principal|identity|account|member|user")
+
+
+def _go_scopes(code: str) -> Iterator[tuple[str, int]]:
+    offset = 0
+    for scope in re.split(r"(?m)(?=^[ \t]*func\s)", code):
+        scope_start = code.find(scope, offset)
+        offset = scope_start + len(scope)
+        if scope.lstrip().startswith("func "):
+            yield scope, scope_start
+
+
 def _unchecked_orm_identity(language: str, text: str, add: Callable[..., None]) -> None:
     """Find zero-value GORM identities that reach a privileged database operation."""
     if language != "Go" or not re.search(r"(?i)gorm\.io/gorm|\*gorm\.DB", text):
         return
     code = blank_comments(text, comment_style(language))
-    offset = 0
-    for scope in re.split(r"(?m)(?=^[ \t]*func\s)", code):
-        scope_start = code.find(scope, offset)
-        offset = scope_start + len(scope)
-        if not scope.lstrip().startswith("func "):
-            continue
-        for match in re.finditer(
-            r"(?m)^[ \t]*(?P<result>[A-Za-z_]\w*)[ \t]*(?::=|=)[ \t]*"
-            r"(?P<query>[A-Za-z_]\w*[^;\n]{0,700}?\.\s*(?P<method>Find|First|Take|Last)"
-            r"\s*\(\s*&(?P<entity>[A-Za-z_]\w*)\s*\))",
-            scope,
-        ):
-            result = match.group("result")
-            entity = match.group("entity")
-            method = match.group("method")
-            declaration = re.search(
-                rf"(?m)^[ \t]*var[ \t]+{re.escape(entity)}[ \t]+(?P<slice>\[\])?(?P<type>[A-Za-z_]\w*)",
-                scope[: match.start()],
-            )
-            if declaration and declaration.group("slice"):
-                continue
-            identity = " ".join((entity, declaration.group("type") if declaration else ""))
-            tail = scope[match.end() : match.end() + 2600]
-            sensitive_field = (
-                r"(?:(?:User|Owner|Tenant|Account|Principal|Subject|Member|Identity)"
-                r"(?:ID|Id|Ref)?|Role)"
-            )
-            field_use = rf"\b{re.escape(entity)}\s*\.\s*{sensitive_field}\b"
-            privileged_use = re.search(
-                rf"(?is)\.\s*(?:Create|Save|Updates?|Delete|Where)\s*\("
-                rf"[\s\S]{{0,900}}?\b{re.escape(entity)}\s*\.\s*"
-                rf"(?P<field>{sensitive_field})\b",
-                tail,
-            )
-            if privileged_use is None:
-                continue
-            before_use = tail[: privileged_use.start()]
-            terminator = r"[\s\S]{0,600}?\b(?:return|panic\s*\()"
-            error_exit = re.search(
-                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*Error\s*!=\s*nil"
-                rf"[^{{]*\{{{terminator}",
-                before_use,
-            )
-            rows_exit = re.search(
-                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*RowsAffected\s*"
-                rf"(?:==\s*0|<\s*1|<=\s*0|!=\s*1)[^{{]*\{{{terminator}",
-                before_use,
-            )
-            positive_rows = re.search(
-                rf"(?is)\bif\b[^{{;]{{0,240}}\b{re.escape(result)}\s*\.\s*RowsAffected\s*"
-                r"(?:>\s*0|>=\s*1|==\s*1)[^\{]*\{",
-                before_use,
-            )
-            entity_exit = re.search(
-                rf"(?is)\bif\b[^{{;]{{0,240}}(?:len\s*\(\s*{field_use}\s*\)\s*(?:==|<=)\s*0|"
-                rf"{field_use}\s*==\s*(?:\"\"|0|nil))[^{{]*\{{{terminator}",
-                before_use,
-            )
-            if entity_exit or (method == "Find" and (rows_exit or positive_rows)):
-                continue
-            if method in {"First", "Take", "Last"} and error_exit:
-                continue
-            absolute = scope_start + match.start("query")
-            line = code.count("\n", 0, absolute) + 1
-            query = " ".join(match.group("query").split())
-            direct_http_source = re.search(
-                r"(?i)\.(?:Cookie|GetHeader|Header\.Get|Query|Param|PostForm|FormValue|PostFormValue|PathValue)\s*\(",
-                scope[: match.end()],
-            )
-            sensitive_model = re.search(
-                r"(?i)session|auth|token|principal|identity|account|member|user",
-                identity,
-            )
-            if direct_http_source is None and sensitive_model is None:
-                continue
-            gap = (
-                f"{result}.Error does not prove a matched row"
-                if method == "Find" and error_exit
-                else "no terminating not-found guard precedes the use"
-            )
-            evidence = (
-                f"{result} := {query}; {gap}; then uses zero-value "
-                f"{entity}.{privileged_use.group('field')} in a database operation"
-            )
-            add(
-                "ORM-EMPTY-AUTH-001",
-                line,
-                1,
-                f"GORM {method}(&{entity}) authorization lookup",
-                evidence,
-                Confidence.HIGH if direct_http_source else Confidence.MEDIUM,
-            )
+    for scope, scope_start in _go_scopes(code):
+        for match in _GORM_QUERY.finditer(scope):
+            _orm_lookup(code, scope, scope_start, match, add)
+
+
+def _orm_guards(result: str, entity: str, before_use: str) -> tuple[bool, bool, bool, bool]:
+    """Return error, rows, positive-rows, and entity guards found before the use."""
+    field_use = rf"\b{re.escape(entity)}\s*\.\s*{_GORM_SENSITIVE_FIELD}\b"
+    result_name = re.escape(result)
+    error_exit = re.search(
+        rf"(?is)\bif\b[^{{;]{{0,240}}\b{result_name}\s*\.\s*Error\s*!=\s*nil"
+        rf"[^{{]*\{{{_GORM_TERMINATOR}",
+        before_use,
+    )
+    rows_exit = re.search(
+        rf"(?is)\bif\b[^{{;]{{0,240}}\b{result_name}\s*\.\s*RowsAffected\s*"
+        rf"(?:==\s*0|<\s*1|<=\s*0|!=\s*1)[^{{]*\{{{_GORM_TERMINATOR}",
+        before_use,
+    )
+    positive_rows = re.search(
+        rf"(?is)\bif\b[^{{;]{{0,240}}\b{result_name}\s*\.\s*RowsAffected\s*"
+        r"(?:>\s*0|>=\s*1|==\s*1)[^\{]*\{",
+        before_use,
+    )
+    entity_exit = re.search(
+        rf"(?is)\bif\b[^{{;]{{0,240}}(?:len\s*\(\s*{field_use}\s*\)\s*(?:==|<=)\s*0|"
+        rf"{field_use}\s*==\s*(?:\"\"|0|nil))[^{{]*\{{{_GORM_TERMINATOR}",
+        before_use,
+    )
+    return error_exit is not None, rows_exit is not None, positive_rows is not None, entity_exit is not None
+
+
+def _orm_lookup(code: str, scope: str, scope_start: int, match: re.Match[str], add: Callable[..., None]) -> None:
+    result = match.group("result")
+    entity = match.group("entity")
+    method = match.group("method")
+    declaration = re.search(
+        rf"(?m)^[ \t]*var[ \t]+{re.escape(entity)}[ \t]+(?P<slice>\[\])?(?P<type>[A-Za-z_]\w*)",
+        scope[: match.start()],
+    )
+    if declaration and declaration.group("slice"):
+        return
+    identity = " ".join((entity, declaration.group("type") if declaration else ""))
+    tail = scope[match.end() : match.end() + 2600]
+    privileged_use = re.search(
+        rf"(?is)\.\s*(?:Create|Save|Updates?|Delete|Where)\s*\("
+        rf"[\s\S]{{0,900}}?\b{re.escape(entity)}\s*\.\s*"
+        rf"(?P<field>{_GORM_SENSITIVE_FIELD})\b",
+        tail,
+    )
+    if privileged_use is None:
+        return
+    error_exit, rows_exit, positive_rows, entity_exit = _orm_guards(result, entity, tail[: privileged_use.start()])
+    if entity_exit or (method == "Find" and (rows_exit or positive_rows)):
+        return
+    if method in {"First", "Take", "Last"} and error_exit:
+        return
+    direct_http_source = _HTTP_SOURCE.search(scope[: match.end()])
+    if direct_http_source is None and _SENSITIVE_MODEL.search(identity) is None:
+        return
+    absolute = scope_start + match.start("query")
+    line = code.count("\n", 0, absolute) + 1
+    query = " ".join(match.group("query").split())
+    gap = (
+        f"{result}.Error does not prove a matched row"
+        if method == "Find" and error_exit
+        else "no terminating not-found guard precedes the use"
+    )
+    evidence = (
+        f"{result} := {query}; {gap}; then uses zero-value "
+        f"{entity}.{privileged_use.group('field')} in a database operation"
+    )
+    add(
+        "ORM-EMPTY-AUTH-001",
+        line,
+        1,
+        f"GORM {method}(&{entity}) authorization lookup",
+        evidence,
+        Confidence.HIGH if direct_http_source else Confidence.MEDIUM,
+    )
 
 
 _PHP_AUTH_VAR = re.compile(
@@ -584,7 +648,7 @@ def _c_buffer_overflows(text: str, add: Callable[..., None]) -> None:
                 fmt = match.group("format")
                 # A literal width (e.g. %31s) makes this pattern bounded.
                 # Only a bare %s conversion is flagged.
-                if not re.search(r"%(?!\d|\*)s", fmt):
+                if not re.search(r"%(?![\d*])s", fmt):
                     continue
             line = text.count("\n", 0, match.start()) + 1
             column = match.start() - text.rfind("\n", 0, match.start())
@@ -636,6 +700,37 @@ def _c_format_strings(text: str, add: Callable[..., None]) -> None:
         )
 
 
+_PHP_ASSIGNMENT = re.compile(r"(?m)\$(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;\n]{0,500});")
+
+
+def _php_tainted_names(code: str) -> set[str]:
+    tainted: set[str] = set()
+    for match in _PHP_ASSIGNMENT.finditer(code):
+        name = match.group("name")
+        if _PHP_UNTRUSTED.search(match.group("value")):
+            tainted.add(name)
+        else:
+            tainted.discard(name)
+    return tainted
+
+
+def _assigned_only_later(expression: str, name: str, tainted: set[str], prefix: str) -> bool:
+    """True when a tainted name has no request-derived assignment before the comparison."""
+    if name not in tainted or _PHP_UNTRUSTED.search(expression):
+        return False
+    return not re.search(
+        rf"\${re.escape(name)}\s*=\s*[^;\n]{{0,500}}\$_(?:GET|POST|REQUEST|COOKIE)\s*\[",
+        prefix,
+    )
+
+
+def _auth_compare(left_source: bool, right_source: bool, left_name: str, right_name: str) -> bool:
+    return bool(
+        (left_source and _PHP_AUTH_VAR.fullmatch(right_name))
+        or (right_source and _PHP_AUTH_VAR.fullmatch(left_name))
+    )
+
+
 def _php_type_juggling(text: str, add: Callable[..., None]) -> None:
     """Report only loose equality with a traceable superglobal and auth variable.
 
@@ -643,46 +738,23 @@ def _php_type_juggling(text: str, add: Callable[..., None]) -> None:
     strict equality and calls to password_verify/hash_equals.
     """
     code = blank_comments(text, "php")
-    tainted: set[str] = set()
-    for match in re.finditer(
-        r"(?m)\$(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;\n]{0,500});",
-        code,
-    ):
-        name = match.group("name")
-        if _PHP_UNTRUSTED.search(match.group("value")):
-            tainted.add(name)
-        else:
-            tainted.discard(name)
+    tainted = _php_tainted_names(code)
     for match in _PHP_LOOSE_AUTH.finditer(code):
         left, right = match.group("left"), match.group("right")
         left_name = left.strip().lstrip("$")
         right_name = right.strip().lstrip("$")
         left_source = bool(_PHP_UNTRUSTED.search(left)) or left_name in tainted
         right_source = bool(_PHP_UNTRUSTED.search(right)) or right_name in tainted
-        if not (
-            (left_source and _PHP_AUTH_VAR.fullmatch(right_name))
-            or (right_source and _PHP_AUTH_VAR.fullmatch(left_name))
-        ):
+        if not _auth_compare(left_source, right_source, left_name, right_name):
             continue
         # Exclude variables assigned to the request only AFTER the comparison.
         absolute = match.start()
         matched_prefix = code[:absolute]
-        if left_name in tainted and not _PHP_UNTRUSTED.search(left):
-            if not re.search(
-                rf"\${re.escape(left_name)}\s*=\s*[^;\n]{{0,500}}\$_(?:GET|POST|REQUEST|COOKIE)\s*\[",
-                matched_prefix,
-            ):
-                left_source = False
-        if right_name in tainted and not _PHP_UNTRUSTED.search(right):
-            if not re.search(
-                rf"\${re.escape(right_name)}\s*=\s*[^;\n]{{0,500}}\$_(?:GET|POST|REQUEST|COOKIE)\s*\[",
-                matched_prefix,
-            ):
-                right_source = False
-        if not (
-            (left_source and _PHP_AUTH_VAR.fullmatch(right_name))
-            or (right_source and _PHP_AUTH_VAR.fullmatch(left_name))
-        ):
+        if _assigned_only_later(left, left_name, tainted, matched_prefix):
+            left_source = False
+        if _assigned_only_later(right, right_name, tainted, matched_prefix):
+            right_source = False
+        if not _auth_compare(left_source, right_source, left_name, right_name):
             continue
         line = code.count("\n", 0, absolute) + 1
         column = absolute - code.rfind("\n", 0, absolute)
@@ -752,7 +824,7 @@ def _php_xss(text: str, add: Callable[..., None]) -> None:
     )
     tainted_names: set[str] = set()
     for assignment in re.finditer(
-        r"(?is)\$(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<rhs>[^;]{0,500}\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b[^;]*);",
+        r"(?is)\$(?P<name>[a-z_]\w*)\s*=\s*(?P<rhs>[^;]{0,500}\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b[^;]*);",
         text,
     ):
         rhs = assignment.group("rhs")
@@ -780,7 +852,7 @@ def _database_race(text: str, add: Callable[..., None]) -> None:
     if re.search(r"(?i)\b(?:begin(?:_transaction)?|start\s+transaction|for\s+update)\b", text):
         return
     updates = re.finditer(
-        r"(?is)\bUPDATE\b[^;]{0,1200}?\b(?P<field>[A-Za-z_]\w*)\b\s*=\s*\b(?P=field)\b\s*-\s*1\b[^;]*;",
+        r"(?is)\bUPDATE\b[^;]{0,1200}?\b(?P<field>[a-z_]\w*)\b\s*=\s*\b(?P=field)\b\s*-\s*1\b[^;]*;",
         text,
     )
     for update in updates:
@@ -799,6 +871,10 @@ def _database_race(text: str, add: Callable[..., None]) -> None:
         return
 
 
+_STATE_CHANGE_SQL = r"(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)[^;]{0,800}"
+_STATE_CHANGE = re.compile(r"(?is)move_uploaded_file\s*\(|" + _STATE_CHANGE_SQL)
+
+
 def _php_request_security(text: str, add: Callable[..., None]) -> None:
     upload = re.search(r"(?is)move_uploaded_file\s*\(", text)
     client_mime = re.search(r"(?is)\$_FILES\s*\[[^\]]+\]\s*\[\s*['\"]type['\"]\s*\]", text)
@@ -809,10 +885,7 @@ def _php_request_security(text: str, add: Callable[..., None]) -> None:
         evidence = text[upload.start() : text.find(";", upload.start()) + 1].replace("\n", " ")[:300]
         add("UPLOAD-MIME-001", line, column, "move_uploaded_file", evidence)
 
-    state_change = re.search(
-        r"(?is)move_uploaded_file\s*\(|(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)[^;]{0,800}",
-        text,
-    )
+    state_change = _STATE_CHANGE.search(text)
     post_handler = re.search(r"(?is)\$_SERVER\s*\[\s*['\"]REQUEST_METHOD['\"]\s*\].{0,80}POST|\$_POST\b", text)
     csrf_check = re.search(r"(?i)\b(?:csrf|xsrf|anti_forgery|request_token)\b|hash_equals\s*\(", text)
     if state_change and post_handler and not csrf_check:
@@ -832,7 +905,7 @@ def _php_request_security(text: str, add: Callable[..., None]) -> None:
 
 def _sql_cleartext_password(text: str, add: Callable[..., None]) -> None:
     pattern = re.compile(
-        r"(?is)\bINSERT\s+INTO\s+([A-Za-z_]\w*)\s*\((?P<columns>[^)]*\b(?:password|passwd|pwd)\b[^)]*)\)\s*VALUES\s*(?P<values>[^;]+);"
+        r"(?is)\bINSERT\s+INTO\s+([a-z_]\w*)\s*\((?P<columns>(?=[^)]*\b(?:password|passwd|pwd)\b)[^)]*)\)\s*VALUES\s*(?P<values>[^;]+);"
     )
     for match in pattern.finditer(text):
         values = match.group("values")
@@ -860,8 +933,7 @@ def _secret(line: str, number: int, language: str, add: Callable[..., None]) -> 
     for match in _KEY_VALUE.finditer(line):
         key = match.group("key").rsplit(".", 1)[-1]
         if is_credential_name(key) and looks_like_secret(match.group("value"), key):
-            confidence = Confidence.MEDIUM if generic_secret_is_repetitive(match.group("value"), key) else Confidence.HIGH
-            add("SECRET-001", number, match.start("key") + 1, key, _redact(line, match.group("value")), confidence)
+            _add_secret(line, number, match, key, match.group("value"), add)
             return
     if language in _CONFIG_LANGUAGES:
         match = _CONFIG_VALUE.match(line)
@@ -869,8 +941,12 @@ def _secret(line: str, number: int, language: str, add: Callable[..., None]) -> 
             key = match.group("key").rsplit(".", 1)[-1]
             value = match.group("value")
             if is_credential_name(key) and looks_like_secret(value, key) and not value.startswith(("$", "%", "{")):
-                confidence = Confidence.MEDIUM if generic_secret_is_repetitive(value, key) else Confidence.HIGH
-                add("SECRET-001", number, match.start("key") + 1, key, _redact(line, value), confidence)
+                _add_secret(line, number, match, key, value, add)
+
+
+def _add_secret(line: str, number: int, match: re.Match[str], key: str, value: str, add: Callable[..., None]) -> None:
+    confidence = Confidence.MEDIUM if generic_secret_is_repetitive(value, key) else Confidence.HIGH
+    add("SECRET-001", number, match.start("key") + 1, key, _redact(line, value), confidence)
 
 
 def _java_digest(lines: list[str], add: Callable[..., None]) -> None:

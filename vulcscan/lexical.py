@@ -33,6 +33,11 @@ _KNOWN_TOKENS = (
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "Google API key"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "AWS access key ID"),
     (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"), "GitLab token"),
+    (re.compile(r"\bsk-proj-[A-Za-z0-9_-]{20,}\b"), "OpenAI project key"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"), "Anthropic API key"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{25,}\b"), "Hugging Face access token"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{24,}\b"), "npm access token"),
+    (re.compile(r"\bpypi-[A-Za-z0-9_-]{24,}\b"), "PyPI API token"),
 )
 _KEY_VALUE = re.compile(
     r"""(?P<key>[A-Za-z_][\w.-]*)["']?\s*(?::=|=>|:|=)\s*(?:[rubfRUBF@$]*)(?P<quote>["'`])(?P<value>[^"'`\n]{8,})(?P=quote)"""
@@ -225,6 +230,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language == "Dockerfile":
         _dockerfile(code_lines, add)
     if language == "PHP":
+        _php_type_juggling(text, add)
         _php_xss(text, add)
         _database_race(text, add)
         _php_request_security(text, add)
@@ -423,6 +429,78 @@ def _unchecked_orm_identity(language: str, text: str, add: Callable[..., None]) 
                 evidence,
                 Confidence.HIGH if direct_http_source else Confidence.MEDIUM,
             )
+
+
+_PHP_AUTH_VAR = re.compile(
+    r"(?i)^\$?(?:[A-Za-z_]\w*(?:password|passwd|pwd|token|secret|hash|signature|auth|hmac)"
+    r"|(?:password|passwd|pwd|token|secret|hash|signature|auth|hmac)[A-Za-z_]\w*)$"
+)
+_PHP_UNTRUSTED = re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[", re.IGNORECASE)
+_PHP_OPERAND = r"(?:\$_(?:GET|POST|REQUEST|COOKIE)\s*\[\s*['\"][^'\"]+['\"]\s*\]|\$[A-Za-z_]\w*)"
+_PHP_LOOSE_AUTH = re.compile(
+    rf"(?P<left>{_PHP_OPERAND})\s*(?<![=!])(?P<operator>==|!=)(?!=)\s*(?P<right>{_PHP_OPERAND})",
+    re.IGNORECASE,
+)
+
+
+def _php_type_juggling(text: str, add: Callable[..., None]) -> None:
+    """Report only loose equality with a traceable superglobal and auth variable.
+
+    This intentionally avoids generic comparisons, numeric comparisons,
+    strict equality and calls to password_verify/hash_equals.
+    """
+    code = blank_comments(text, "php")
+    tainted: set[str] = set()
+    for match in re.finditer(
+        r"(?m)\$(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;\n]{0,500});",
+        code,
+    ):
+        name = match.group("name")
+        if _PHP_UNTRUSTED.search(match.group("value")):
+            tainted.add(name)
+        else:
+            tainted.discard(name)
+    for match in _PHP_LOOSE_AUTH.finditer(code):
+        left, right = match.group("left"), match.group("right")
+        left_name = left.strip().lstrip("$")
+        right_name = right.strip().lstrip("$")
+        left_source = bool(_PHP_UNTRUSTED.search(left)) or left_name in tainted
+        right_source = bool(_PHP_UNTRUSTED.search(right)) or right_name in tainted
+        if not (
+            (left_source and _PHP_AUTH_VAR.fullmatch(right_name))
+            or (right_source and _PHP_AUTH_VAR.fullmatch(left_name))
+        ):
+            continue
+        # Exclude variables assigned to the request only AFTER the comparison.
+        absolute = match.start()
+        matched_prefix = code[:absolute]
+        if left_name in tainted and not _PHP_UNTRUSTED.search(left):
+            if not re.search(
+                rf"\${re.escape(left_name)}\s*=\s*[^;\n]{{0,500}}\$_(?:GET|POST|REQUEST|COOKIE)\s*\[",
+                matched_prefix,
+            ):
+                left_source = False
+        if right_name in tainted and not _PHP_UNTRUSTED.search(right):
+            if not re.search(
+                rf"\${re.escape(right_name)}\s*=\s*[^;\n]{{0,500}}\$_(?:GET|POST|REQUEST|COOKIE)\s*\[",
+                matched_prefix,
+            ):
+                right_source = False
+        if not (
+            (left_source and _PHP_AUTH_VAR.fullmatch(right_name))
+            or (right_source and _PHP_AUTH_VAR.fullmatch(left_name))
+        ):
+            continue
+        line = code.count("\n", 0, absolute) + 1
+        column = absolute - code.rfind("\n", 0, absolute)
+        add(
+            "PHP-TYPE-JUGGLING-001",
+            line,
+            column,
+            "loose authentication comparison",
+            match.group(0),
+            Confidence.MEDIUM,
+        )
 
 
 def _php_xss(text: str, add: Callable[..., None]) -> None:

@@ -19,7 +19,7 @@ from .names import (
     mentions_password,
 )
 from .rules import RULES, remediations_for
-from .source import blank_comments, comment_style, split_lines
+from .source import blank_comments, code_mask, comment_style, split_lines
 
 MAX_LINE_LENGTH = 4000  # longer lines are minified or generated; regexes skip them
 
@@ -166,6 +166,8 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     _dynamic_expression_evaluation(language, text, add)
     _unscoped_resource_routes(language, text, add)
     _unchecked_orm_identity(language, text, add)
+    if language in {"C", "C++"}:
+        _c_format_strings(text, add)
     if language == "Python":
         return findings
 
@@ -442,6 +444,51 @@ _PHP_LOOSE_AUTH = re.compile(
     rf"(?P<left>{_PHP_OPERAND})\s*(?<![=!])(?P<operator>==|!=)(?!=)\s*(?P<right>{_PHP_OPERAND})",
     re.IGNORECASE,
 )
+
+
+_C_FORMAT_CALL = re.compile(
+    r"\b(?P<call>printf|fprintf|syslog)\s*\(\s*"
+    r"(?:(?:stderr|stdout|LOG_[A-Z0-9_]+)\s*,\s*)?"
+    r"(?P<format>argv\s*\[\s*\d+\s*\]|[A-Za-z_]\w*)\s*\)"
+)
+
+
+def _c_format_strings(text: str, add: Callable[..., None]) -> None:
+    """Check literal-free format arguments with a nearby external input origin.
+
+    This is narrower than flagging every nonliteral format string. It avoids
+    treating user values in printf("%s", value) as a format-string sink.
+    """
+    mask = code_mask(text, comment_style("C"))
+    for match in _C_FORMAT_CALL.finditer(mask):
+        argument = match.group("format")
+        before = mask[max(0, match.start() - 1200):match.start()]
+        if not re.fullmatch(r"argv\s*\[\s*\d+\s*\]", argument):
+            variable = re.escape(argument)
+            inputs = (
+                re.search(rf"\b{variable}\s*=\s*argv\s*\[\s*\d+\s*\]", before),
+                re.search(rf"\bfgets\s*\(\s*{variable}\s*,", before),
+                re.search(rf"\b(?:recv|read)\s*\(\s*[^,()\n]+\s*,\s*{variable}\s*,", before),
+            )
+            if not any(inputs):
+                continue
+            # Suppress an identified overwrite with a known quoted literal.
+            current = re.search(
+                rf"\b{variable}\s*=\s*(?:\x22[^\x22\n]*\x22|'[^'\n]*')\s*;",
+                text[max(0, match.start() - 300):match.start()],
+            )
+            if current:
+                continue
+        line = text.count("\n", 0, match.start()) + 1
+        column = match.start() - text.rfind("\n", 0, match.start())
+        add(
+            "C-FORMAT-001",
+            line,
+            column,
+            match.group("call") + " format argument",
+            text[match.start():match.end()],
+            Confidence.MEDIUM,
+        )
 
 
 def _php_type_juggling(text: str, add: Callable[..., None]) -> None:

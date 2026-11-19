@@ -6,6 +6,7 @@ import re
 import struct
 from pathlib import Path
 
+from .elf_dynamic import elf_dynamic_issues
 from .models import Confidence, Finding, Location
 from .rules import RULES, remediations_for
 
@@ -94,7 +95,7 @@ def _hardening_issues(data: bytes) -> list[str]:
     if data.startswith(b"MZ"):
         return _pe_hardening(data)
     if data.startswith(b"\x7fELF"):
-        return _elf_hardening(data)
+        return [*_elf_hardening(data), *elf_dynamic_issues(data)]
     return []
 
 

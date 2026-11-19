@@ -265,3 +265,7 @@ For well-formed PE32 and PE32+ images, VulcScan now reads DLL import descriptors
 ### Node.js secret equality timing checks
 
 `JS-TIMING-001` (CWE-208) recognizes direct JavaScript/TypeScript comparisons (`==`, `!=`, `===`, `!==`) between a request field such as `req.body.token` or `req.headers.signature` and a secret-named identifier. Source-to-sink evidence makes it compatible with `--remote-only`. Prefer validated equal-length Buffers and `crypto.timingSafeEqual` where appropriate; passwords require a password-KDF verifier. This rule does not measure real timing differences or infer values through unresolved intermediates; it is conservative and review-only.
+
+### ELF dynamic symbol import table
+
+For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefined imports from `.dynsym` linked to `.dynstr` instead of treating every ASCII occurrence of dangerous API names as an imported function. It skips defined symbols, rejects truncated or invalid tables, and keeps the legacy byte heuristic as a fallback when the structural table is missing or unsupported. This is a bounded, execution-free import audit, not a complete ELF dynamic-loader emulator.

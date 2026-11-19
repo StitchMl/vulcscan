@@ -102,6 +102,55 @@ _SANITIZER_CALLS: list[tuple[re.Pattern[str], frozenset[str]]] = [
 _DB_RECEIVER = re.compile(r"(?i)(?:^|\.)(?:db|database|conn|connection|pool|client|knex|sequelize|mysql|pg|sql|prisma|trx|tx|tr|cursor)$")
 
 
+_JS_NAME = r"[\w$]+"
+_JS_LITERAL = r"""(?:'[^']*'|"[^"]*"|\d+)"""
+_JS_ARRAY_LITERAL = r"\[\s*" + _JS_LITERAL + r"(?:\s*,\s*" + _JS_LITERAL + r")*(?:\s*,)?\s*\]"
+_ALLOWLIST_LITERAL = re.compile(
+    r"(?:new\s+Set\s*\(\s*)?" + _JS_ARRAY_LITERAL + r"(?:\s*\)(?:\s+as\s+const)?|\s+as\s+const|\s*)"
+)
+_ARRAY_LITERAL = re.compile(_JS_ARRAY_LITERAL)
+_IMPORT_DEFAULT = r"(?:(" + _JS_NAME + r")(?:\s*,)?\s*)?"
+_IMPORT_NAMESPACE = r"(?:\*\s*as\s+(" + _JS_NAME + r")\s*)?"
+_IMPORT_NAMED = r"(?:\{([^}]*)\}\s*)?"
+_IMPORT_SOURCE = r"""from\s*['"](?:node:)?([\w@/.-]+)['"]"""
+_IMPORT_STATEMENT = re.compile(r"import\s+" + _IMPORT_DEFAULT + _IMPORT_NAMESPACE + _IMPORT_NAMED + _IMPORT_SOURCE)
+_FUNCTION_DECLARATION = re.compile(r"\bfunction\b(?:\s*\*)?\s*([\w$]*)\s*\(([^)]*)\)\s*(?::[^{]*)?$")
+_ARROW_PARENS = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?\(([^()]*)\)\s*(?::[^=]*)?=>\s*$")
+_ARROW_BARE = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?([\w$]+)\s*=>\s*$")
+_METHOD_MODIFIERS = r"(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
+_METHOD_HEADER = re.compile(r"\s*" + _METHOD_MODIFIERS + r"([\w$]+)\s*(?:<[^>]*>\s*)?\(([^)]*)\)\s*(?::[^{]*)?$")
+_CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
+_CATCH_BINDING = re.compile(r"\bcatch\s*\(\s*([\w$]+)")
+_FOR_BINDING = re.compile(
+    r"\bfor\s*\(\s*(?:const|let|var)\s+(" + _JS_NAME + r"|\{[^}]*\}|\[[^\]]*\])\s+(?:of|in)\s+(\S.*)\)\s*$",
+    re.DOTALL,
+)
+_IF_CONDITION = re.compile(r"\s*(?:else\s+)?if\s*\((.*)\)\s*$", re.DOTALL)
+_TYPED_HEADER_TAIL = re.compile(r"\)\s*:\s*[\w$<>\[\]|&.,][\w$<>\[\]|&., ]*$")
+_NEGATIVE_INDEX = re.compile(r"\)\s*(?:===?\s*-1|<\s*0)\s*$")
+_POSITIVE_INDEX = re.compile(r"\)\s*(?:!==?\s*-1|>=\s*0|>\s*-1)\s*$")
+_MEMBERSHIP = re.compile(r"\s*(\S.*?)\.\s*(?:includes|has|indexOf)\s*\(\s*([\w$.]+)\s*\)", re.DOTALL)
+_REGEX_TEST = re.compile(r"\s*/(.+)/([a-z]*)\s*\.\s*test\s*\(\s*([\w$.]+)\s*\)\s*$", re.DOTALL)
+_STARTS_WITH = re.compile(r"\s*([\w$.]+)\s*\.\s*startsWith\s*\(")
+_STRING_LITERAL = r"""(?:'[^']*'|"[^"]*")"""
+_EQUALITY_RIGHT = re.compile(r"\s*([\w$.]+)\s*===?\s*" + _STRING_LITERAL + r"\s*$")
+_EQUALITY_LEFT = re.compile(r"\s*" + _STRING_LITERAL + r"\s*===?\s*([\w$.]+)\s*$")
+_NUMERIC_VALIDATORS = (
+    r"(?:Number\s*\.\s*(?:isInteger|isSafeInteger)"
+    r"|validator\s*\.\s*(?:isInt|isNumeric|isUUID|isAlphanumeric))"
+)
+_NUMERIC_CHECK = re.compile(r"\s*" + _NUMERIC_VALIDATORS + r"\s*\(\s*([\w$.]+)\s*\)\s*$")
+_Condition = tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]
+
+
+def _function_header(header: str) -> re.Match[str] | None:
+    function_match = _FUNCTION_DECLARATION.search(header) or _ARROW_PARENS.search(header) or _ARROW_BARE.search(header)
+    method_match = _METHOD_HEADER.match(header)
+    if method_match and method_match.group(1) in _CONTROL_KEYWORDS:
+        method_match = None
+    return function_match or method_match
+
+
 @dataclass(slots=True)
 class _Scope:
     function: bool
@@ -118,6 +167,13 @@ class _Statement:
     end: int
     opens: bool = False
     closes: bool = False
+
+
+@dataclass(slots=True)
+class _ScanState:
+    stack: list[tuple[str, int]] = field(default_factory=list)  # ("obj", 0) or ("block", saved paren depth)
+    paren: int = 0
+    start: int = 0
 
 
 class _Analyzer:
@@ -144,7 +200,7 @@ class _Analyzer:
                 self.objects[match.group(1)] = module
         for match in re.finditer(rf"(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*{_REQUIRE}", text):
             self._named_imports(match.group(1), match.group(2), ":")
-        for match in re.finditer(r"""import\s+(?:([\w$]+)\s*,?\s*)?(?:\*\s*as\s+([\w$]+)\s*)?(?:\{([^}]*)\}\s*)?from\s*['"](?:node:)?([\w@/.-]+)['"]""", text):
+        for match in _IMPORT_STATEMENT.finditer(text):
             default, namespace, named, source = match.groups()
             module = _MODULES.get(source)
             if not module:
@@ -167,7 +223,7 @@ class _Analyzer:
             exported, local = exported.strip(), (local.strip() or exported.strip())
             if exported == "promises" and module == "fs":
                 self.objects[local] = "fs"
-            elif re.fullmatch(r"[\w$]+", local):
+            elif re.fullmatch(_JS_NAME, local):
                 self.functions[local] = (module, exported)
 
     # Statements -------------------------------------------------------------------
@@ -183,46 +239,52 @@ class _Analyzer:
 
     def _statements(self):
         mask = self.mask
-        stack: list[tuple[str, int]] = []  # ("obj", 0) or ("block", saved paren depth)
-        paren = 0
-        start = 0
-        length = len(mask)
-        index = 0
-        while index < length:
-            char = mask[index]
+        state = _ScanState()
+        for index, char in enumerate(mask):
             if char in "([":
-                paren += 1
+                state.paren += 1
             elif char in ")]":
-                paren = max(0, paren - 1)
+                state.paren = max(0, state.paren - 1)
             elif char == "{":
-                if self._opens_block(start, index):
-                    yield _Statement(start, index + 1, opens=True)
-                    stack.append(("block", paren))
-                    paren = 0
-                    start = index + 1
-                else:
-                    stack.append(("obj", 0))
-                    paren += 1
+                yield from self._open_brace(state, index)
             elif char == "}":
-                if stack and stack[-1][0] == "obj":
-                    stack.pop()
-                    paren = max(0, paren - 1)
-                elif stack:
-                    if mask[start:index].strip():
-                        yield _Statement(start, index)
-                    yield _Statement(index, index + 1, closes=True)
-                    paren = stack.pop()[1]
-                    start = index + 1
-            elif char == ";" and paren == 0:
-                if mask[start:index].strip():
-                    yield _Statement(start, index + 1)
-                start = index + 1
-            elif char == "\n" and paren == 0 and self._complete(start, index):
-                yield _Statement(start, index)
-                start = index + 1
-            index += 1
-        if mask[start:].strip():
-            yield _Statement(start, length)
+                yield from self._close_brace(state, index)
+            elif char in ";\n" and state.paren == 0:
+                yield from self._end_statement(state, index, char)
+        if mask[state.start:].strip():
+            yield _Statement(state.start, len(mask))
+
+    def _open_brace(self, state: _ScanState, index: int):
+        if self._opens_block(state.start, index):
+            yield _Statement(state.start, index + 1, opens=True)
+            state.stack.append(("block", state.paren))
+            state.paren = 0
+            state.start = index + 1
+        else:
+            state.stack.append(("obj", 0))
+            state.paren += 1
+
+    def _close_brace(self, state: _ScanState, index: int):
+        if not state.stack:
+            return
+        if state.stack[-1][0] == "obj":
+            state.stack.pop()
+            state.paren = max(0, state.paren - 1)
+            return
+        if self.mask[state.start:index].strip():
+            yield _Statement(state.start, index)
+        yield _Statement(index, index + 1, closes=True)
+        state.paren = state.stack.pop()[1]
+        state.start = index + 1
+
+    def _end_statement(self, state: _ScanState, index: int, char: str):
+        if char == ";":
+            if self.mask[state.start:index].strip():
+                yield _Statement(state.start, index + 1)
+            state.start = index + 1
+        elif self._complete(state.start, index):
+            yield _Statement(state.start, index)
+            state.start = index + 1
 
     def _opens_block(self, start: int, brace: int) -> bool:
         header = self.mask[start:brace].rstrip()
@@ -235,7 +297,7 @@ class _Analyzer:
         if re.search(r"\b(?:class|interface|enum|namespace)\b[^=(]*$", header):
             return True
         # function f(a): Type {  /  method(a): Promise<T> {
-        return bool(re.search(r"\)\s*:\s*[\w$<>\[\]|&., ]+$", header))
+        return bool(_TYPED_HEADER_TAIL.search(header))
 
     def _complete(self, start: int, newline: int) -> bool:
         current = self.mask[start:newline].strip()
@@ -267,45 +329,41 @@ class _Analyzer:
 
     def _block_scope(self, start: int, end: int) -> _Scope:
         header = self.mask[start:end]
-        function_match = (
-            re.search(r"\bfunction\b\s*\*?\s*([\w$]*)\s*\(([^)]*)\)\s*(?::[^{]*)?$", header)
-            or re.search(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?\(([^()]*)\)\s*(?::[^=]*)?=>\s*$", header)
-            or re.search(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?([\w$]+)\s*=>\s*$", header)
-        )
-        method_match = re.match(
-            r"\s*(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*([\w$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?::[^{]*)?$",
-            header,
-        )
-        if method_match and method_match.group(1) in {"if", "for", "while", "switch", "catch", "with"}:
-            method_match = None
-        if function_match or method_match:
-            match = function_match or method_match
-            assert match is not None
+        match = _function_header(header)
+        if match is not None:
             name = match.group(1) or None
             scope = _Scope(function=True, name=name or self._enclosing_name())
             for parameter in _parameter_names(match.group(2)):
                 scope.values[parameter] = UNKNOWN
             return scope
         scope = _Scope(function=False, name=self._enclosing_name())
-        catch = re.search(r"\bcatch\s*\(\s*([\w$]+)", header)
+        catch = _CATCH_BINDING.search(header)
         if catch:
             scope.values[catch.group(1)] = UNKNOWN
-        loop = re.search(r"\bfor\s*\(\s*(?:const|let|var)\s+([\w$]+|\{[^}]*\}|\[[^\]]*\])\s+(?:of|in)\s+(.+)\)\s*$", header, re.DOTALL)
-        if loop:
-            offset = start + loop.start(2)
-            iterable = self._value(offset, offset + len(loop.group(2)))
-            for name in _pattern_names(loop.group(1)):
-                scope.values[name] = iterable
-        condition = re.match(r"\s*(?:else\s+)?if\s*\((.*)\)\s*$", header, re.DOTALL)
-        if condition:
-            offset = start + condition.start(1)
-            when_true, when_false = self._condition(offset, offset + len(condition.group(1)))
-            for name, categories in when_true:
-                current = self._lookup(name)
-                if current is not None:
-                    scope.values[name] = sanitize(current, categories)
-            scope.guard = when_false
+        self._bind_loop(scope, start, header)
+        self._bind_condition(scope, start, header)
         return scope
+
+    def _bind_loop(self, scope: _Scope, start: int, header: str) -> None:
+        loop = _FOR_BINDING.search(header)
+        if not loop:
+            return
+        offset = start + loop.start(2)
+        iterable = self._value(offset, offset + len(loop.group(2)))
+        for name in _pattern_names(loop.group(1)):
+            scope.values[name] = iterable
+
+    def _bind_condition(self, scope: _Scope, start: int, header: str) -> None:
+        condition = _IF_CONDITION.match(header)
+        if not condition:
+            return
+        offset = start + condition.start(1)
+        when_true, when_false = self._condition(offset, offset + len(condition.group(1)))
+        for name, categories in when_true:
+            current = self._lookup(name)
+            if current is not None:
+                scope.values[name] = sanitize(current, categories)
+        scope.guard = when_false
 
     def _close_block(self) -> None:
         if len(self.scopes) == 1:
@@ -344,7 +402,7 @@ class _Analyzer:
 
     # Conditions -------------------------------------------------------------------
 
-    def _condition(self, start: int, end: int) -> tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]:
+    def _condition(self, start: int, end: int) -> _Condition:
         """Sanitizations implied when the condition is true and when it is false."""
         code = self.mask[start:end]
         stripped = code.strip()
@@ -362,38 +420,64 @@ class _Analyzer:
             when_true, when_false = self._condition(offset + 1, end)
             return when_false, when_true
         text = self.text[start:end]
-        negative_index = re.search(r"\)\s*(?:===?\s*-1|<\s*0)\s*$", stripped)
-        positive_index = re.search(r"\)\s*(?:!==?\s*-1|>=\s*0|>\s*-1)\s*$", stripped)
-        membership = re.match(r"\s*(.+?)\s*\.\s*(?:includes|has|indexOf)\s*\(\s*([\w$.]+)\s*\)", text, re.DOTALL)
-        if membership and self._is_allowlist(membership.group(1).strip()):
-            items = [(membership.group(2), ALL_SINKS)]
-            if ".indexOf" in text and negative_index:
-                return [], items
-            if ".indexOf" in text and not positive_index:
-                return [], []
-            return items, []
-        regex = re.match(r"\s*/(.+)/([a-z]*)\s*\.\s*test\s*\(\s*([\w$.]+)\s*\)\s*$", text, re.DOTALL)
-        if regex and "m" not in regex.group(2):
-            categories = safe_for(regex.group(1), fullmatch=True) if regex.group(1).startswith("^") and regex.group(1).endswith("$") else frozenset()
-            if categories:
-                return [(regex.group(3), categories)], []
-        startswith = re.match(r"\s*([\w$.]+)\s*\.\s*startsWith\s*\(", text)
-        if startswith:
-            current = self._lookup(startswith.group(1))
-            if current is not None and NORMALIZED in current.sanitized:
-                return [(startswith.group(1), frozenset({FILESYSTEM}))], []
-        equality = re.match(r"""\s*([\w$.]+)\s*===?\s*(?:'[^']*'|"[^"]*")\s*$""", text) or re.match(
-            r"""\s*(?:'[^']*'|"[^"]*")\s*===?\s*([\w$.]+)\s*$""", text
-        )
-        if equality:
-            return [(equality.group(1), ALL_SINKS)], []
-        numeric = re.match(r"\s*(?:Number\s*\.\s*(?:isInteger|isSafeInteger)|validator\s*\.\s*(?:isInt|isNumeric|isUUID|isAlphanumeric))\s*\(\s*([\w$.]+)\s*\)\s*$", text)
-        if numeric:
-            return [(numeric.group(1), ALL_SINKS)], []
+        result = self._membership_condition(text, stripped)
+        if result is not None:
+            return result
+        for check in (
+            self._regex_condition,
+            self._starts_with_condition,
+            self._equality_condition,
+            self._numeric_condition,
+        ):
+            result = check(text)
+            if result is not None:
+                return result
         return [], []
 
+    def _membership_condition(self, text: str, stripped: str) -> _Condition | None:
+        membership = _MEMBERSHIP.match(text)
+        if not (membership and self._is_allowlist(membership.group(1).strip())):
+            return None
+        items = [(membership.group(2), ALL_SINKS)]
+        if ".indexOf" in text and _NEGATIVE_INDEX.search(stripped):
+            return [], items
+        if ".indexOf" in text and not _POSITIVE_INDEX.search(stripped):
+            return [], []
+        return items, []
+
+    def _regex_condition(self, text: str) -> _Condition | None:
+        regex = _REGEX_TEST.match(text)
+        if not regex or "m" in regex.group(2):
+            return None
+        pattern = regex.group(1)
+        categories = safe_for(pattern, fullmatch=True) if pattern.startswith("^") and pattern.endswith("$") else frozenset()
+        if not categories:
+            return None
+        return [(regex.group(3), categories)], []
+
+    def _starts_with_condition(self, text: str) -> _Condition | None:
+        starts_with = _STARTS_WITH.match(text)
+        if not starts_with:
+            return None
+        current = self._lookup(starts_with.group(1))
+        if current is not None and NORMALIZED in current.sanitized:
+            return [(starts_with.group(1), frozenset({FILESYSTEM}))], []
+        return None
+
+    def _equality_condition(self, text: str) -> _Condition | None:
+        equality = _EQUALITY_RIGHT.match(text) or _EQUALITY_LEFT.match(text)
+        if equality:
+            return [(equality.group(1), ALL_SINKS)], []
+        return None
+
+    def _numeric_condition(self, text: str) -> _Condition | None:
+        numeric = _NUMERIC_CHECK.match(text)
+        if numeric:
+            return [(numeric.group(1), ALL_SINKS)], []
+        return None
+
     def _is_allowlist(self, expression: str) -> bool:
-        if re.fullmatch(r"\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]", expression):
+        if _ARRAY_LITERAL.fullmatch(expression):
             return True
         return any(expression in scope.allowlists for scope in self.scopes)
 
@@ -407,7 +491,7 @@ class _Analyzer:
                 target = self.text[target_start:target_end].strip()
                 value = self._declared_value(value_start, value_end, new_scope)
                 self._bind_target(target, value, kind=declaration.group(1), statement=(start, end))
-                if self._literal_allowlist(value_start, value_end) and re.fullmatch(r"[\w$]+", target):
+                if self._literal_allowlist(value_start, value_end) and re.fullmatch(_JS_NAME, target):
                     self.scopes[-1].allowlists.add(target)
             return
         assignment = re.match(r"\s*([\w$]+(?:\s*\.\s*[\w$]+)*)\s*(\+?=)(?!=)", code)
@@ -480,12 +564,7 @@ class _Analyzer:
 
     def _literal_allowlist(self, start: int, end: int) -> bool:
         expression = self.text[start:end].strip().rstrip(";")
-        return bool(
-            re.fullmatch(
-                r"(?:new\s+Set\s*\(\s*)?\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]\s*\)?(?:\s+as\s+const)?",
-                expression,
-            )
-        )
+        return bool(_ALLOWLIST_LITERAL.fullmatch(expression))
 
     # Values -----------------------------------------------------------------------
 
@@ -848,7 +927,7 @@ def _pattern_names(pattern: str) -> list[str]:
     """Names bound by a destructuring pattern such as ``{ a, b: c, ...rest }``."""
     pattern = pattern.strip()
     if not pattern.startswith(("{", "[")):
-        name = re.match(r"[\w$]+", pattern)
+        name = re.match(_JS_NAME, pattern)
         return [name.group(0)] if name else []
     inner = pattern[1:-1]
     names = []

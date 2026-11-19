@@ -187,3 +187,7 @@ Python `--generate-diff` validates proposed changes independently, so one invali
 With `--attack-surface`, unambiguous direct Express route handlers imported through relative ESM or CommonJS imports can be linked to their file and associated findings. This is endpoint correlation, not cross-module taint analysis. Dynamic imports, external modules, middleware chains, and ambiguous paths remain unresolved.
 
 When `--attack-surface` is enabled in text mode, endpoints are printed before the finding priority index, including available handler links, rules, and loopback verification commands. Defaults are unchanged.
+
+### Optional test-source noise filter
+
+Use `--exclude-tests` to skip common test and fixture directories (`test`, `tests`, `__tests__`, `spec`, `specs`, `fixtures`, `__fixtures__`) and recognizable test file names (`test_*.py`, `*_test.go`, `*.test.js/ts`, `*.spec.js/ts` and JSX/TSX variants, plus `conftest.py`). This option is **off by default** so that existing coverage and dependency discovery remain unchanged. An opt-in filtered scan can miss vulnerabilities in executable fixtures or test helpers; use a complete scan when completeness matters. Production migrations and seed files are not excluded merely for having those names.

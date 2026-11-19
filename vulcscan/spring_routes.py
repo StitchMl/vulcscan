@@ -44,7 +44,22 @@ def spring_routes(path: str, source: str) -> list[dict[str, Any]]:
         # Classes with nonliteral RequestMapping cannot be mapped reliably.
         dynamic_prefix = "@RequestMapping" in annotations and _CLASS_PREFIX.search(annotations) is None
         prefix = _CLASS_PREFIX.search(annotations)
-        classes.append((candidate.end(), prefix.group("path") if prefix else "", dynamic_prefix))
+        opening = mask.find("{", candidate.end(), min(len(mask), candidate.end() + 300))
+        if opening < 0:
+            continue
+        depth = 0
+        closing = None
+        for offset in range(opening, len(mask)):
+            if mask[offset] == "{":
+                depth += 1
+            elif mask[offset] == "}":
+                depth -= 1
+                if depth == 0:
+                    closing = offset
+                    break
+        if closing is None:
+            continue
+        classes.append((opening, closing, prefix.group("path") if prefix else "", dynamic_prefix))
     if not classes:
         return []
 
@@ -52,15 +67,15 @@ def spring_routes(path: str, source: str) -> list[dict[str, Any]]:
     for route in _MAPPING.finditer(visible):
         if mask[route.start()] != "@":
             continue
-        candidates = [item for item in classes if item[0] <= route.start()]
+        candidates = [item for item in classes if item[0] < route.start() < item[1]]
         if not candidates:
             continue
-        class_end, prefix, dynamic = candidates[-1]
+        _, class_end, prefix, dynamic = candidates[-1]
         if dynamic:
             continue
         # Class-level @RequestMapping appears before class declarations,
         # so there must be a method signature after the mapping annotation.
-        tail = visible[route.end():route.end() + 600]
+        tail = visible[route.end():min(route.end() + 600, class_end)]
         next_mapping = re.search(r"@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b", tail)
         if next_mapping:
             tail = tail[:next_mapping.start()]

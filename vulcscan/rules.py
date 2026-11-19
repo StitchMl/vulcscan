@@ -454,6 +454,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "An HTTP-controlled value is compared to an authentication secret using == or !=. Timing-dependent comparison can disclose information about the secret.",
         ),
         RuleDefinition(
+            "JAVA-ZIPSLIP-001",
+            "Archive Entry Path Traversal in Java",
+            "CWE-22",
+            "FILESYSTEM",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A ZIP entry name is combined with an output directory and written without a visible destination-containment check.",
+        ),
+        RuleDefinition(
             "PY-TAR-EXTRACT-001",
             "Unfiltered TAR Archive Extraction",
             "CWE-22",
@@ -935,6 +944,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "MEDIUM",
         ),
     ),
+    "JAVA-ZIPSLIP-001": (
+        Advice(
+            "Ensure extracted archive paths remain under the destination directory.",
+            "Resolve each ZIP entry against the extraction root, normalize the result, and reject destinations that do not start with the normalized root. Also handle symlinks and extraction race conditions according to the threat model.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "PY-TAR-EXTRACT-001": (
         Advice(
             "Enable safe TAR extraction filtering.",
@@ -1091,6 +1108,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "JS-NOSQL-001": ["In a disposable test database, submit a harmless object with an unexpected MongoDB operator key such as $ne where a scalar is expected. The service must reject unsupported operators before querying."],
         "JS-TIMING-001": ["On an isolated test service, compare disposable tokens differing near the first and last character and review that the implementation uses a constant-time comparison for equal-length secret buffers. Do not probe live authentication endpoints."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
+        "JAVA-ZIPSLIP-001": ["In a disposable directory, use a harmless ZIP with a file entry named ../outside.txt. The extractor must reject it and must not create files outside the intended root."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],
         "PY-ARG-001": ["Use a disposable workspace and send a benign string beginning with a hyphen through the reported field. Confirm it is handled as data rather than an option; do not run the test against production repositories or accounts."],

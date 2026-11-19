@@ -1,0 +1,87 @@
+name: sonar-readonly-diagnostics
+on:
+  push:
+    branches: [feature/sonar-readonly-diagnostics]
+permissions:
+  contents: read
+jobs:
+  sonar-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Query SonarCloud read-only APIs
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+          
+          PROJECT = "StitchMl_vulcscan"
+          BASE = "https://sonarcloud.io/api/"
+          token = os.environ.get("SONAR_TOKEN", "")
+          headers = {"Accept": "application/json", "User-Agent": "vulcscan-sonar-readonly-diagnostics/1.0"}
+          if token:
+              headers["Authorization"] = "Basic " + base64.b64encode((token + ":").encode()).decode()
+          print("AUTHENTICATION:", "token available" if token else "public anonymous access")
+          
+          def retrieve(endpoint, params):
+              url = BASE + endpoint + "?" + urlencode(params)
+              request = Request(url, headers=headers, method="GET")
+              try:
+                  with urlopen(request, timeout=20) as response:
+                      body = response.read(2_000_000)
+                  return json.loads(body)
+              except HTTPError as exc:
+                  print("API ERROR", endpoint, "HTTP", exc.code)
+              except (URLError, TimeoutError, ValueError) as exc:
+                  print("API ERROR", endpoint, type(exc).__name__)
+              return None
+          
+          for endpoint, params in (
+              ("new_code_periods/list", {"project": PROJECT}),
+              ("qualitygates/project_status", {"projectKey": PROJECT, "branch": "main"}),
+              ("settings/values", {"component": PROJECT, "keys": "sonar.autoscan.enabled,sonar.python.version,sonar.tests,sonar.sources"}),
+              ("ce/activity", {"component": PROJECT, "ps": 8}),
+          ):
+              data = retrieve(endpoint, params)
+              print("SECTION", endpoint)
+              if data is None:
+                  print("UNAVAILABLE")
+              elif endpoint == "ce/activity":
+                  print(json.dumps({"tasks": [
+                      {"status": task.get("status"), "id": task.get("id"),
+                       "errorMessage": str(task.get("errorMessage", ""))[:500]}
+                      for task in data.get("tasks", [])
+                  ]}, ensure_ascii=False))
+              else:
+                  print(json.dumps(data, ensure_ascii=False)[:6000])
+          
+          for branch_params in ({"branch": "main"}, *({"pullRequest": str(n)} for n in (25, 26, 33, 34, 35, 36))):
+              section = list(branch_params.items())[0]
+              print("ISSUES", section[0], section[1])
+              first = retrieve("issues/search", {"componentKeys": PROJECT, **branch_params, "ps": 100, "p": 1})
+              if first is None:
+                  print("UNAVAILABLE")
+                  continue
+              total = first.get("paging", {}).get("total", first.get("total", 0))
+              print("TOTAL", total)
+              issues = first.get("issues", [])
+              for issue in issues[:100]:
+                  print(json.dumps({
+                      "key": issue.get("key"),
+                      "rule": issue.get("rule"),
+                      "component": issue.get("component", "").split(":")[-1],
+                      "line": (issue.get("textRange") or {}).get("startLine", issue.get("line")),
+                      "severity": issue.get("severity"),
+                      "status": issue.get("issueStatus") or issue.get("status"),
+                      "type": issue.get("type"),
+                      "message": str(issue.get("message", ""))[:230],
+                  }, ensure_ascii=False))
+              if total > len(issues):
+                  print("MORE_PAGES_NOT_SHOWN", total - len(issues))
+          PY

@@ -143,6 +143,52 @@ _NUMERIC_CHECK = re.compile(r"\s*" + _NUMERIC_VALIDATORS + r"\s*\(\s*([\w$.]+)\s
 _Condition = tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]
 
 
+_QUOTED_LITERAL = re.compile(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|`((?:\\.|[^`\\$])*)`""", re.DOTALL)
+_NUMBER_LITERAL = re.compile(r"-?\d+(?:\.\d+)?")
+_PLAIN_REFERENCE = re.compile(r"[\w$.\s]+")
+_SOURCE_PATTERNS = (
+    (_REMOTE_SOURCE, REMOTE, "HTTP request input"),
+    (_LOCAL_SOURCE, LOCAL, "Command-line argument"),
+    (_ENV_SOURCE, ENVIRONMENT, "Environment variable"),
+)
+_FS_METHODS = re.compile(
+    r"(?:readFile|writeFile|appendFile|unlink|rm|rmdir|mkdir|readdir|open|copyFile"
+    r"|createReadStream|createWriteStream|readlink|symlink|chmod)(?:Sync)?"
+)
+_VM_METHODS = {"runInNewContext", "runInThisContext", "runInContext", "compileFunction", "Script"}
+_HTTP_CLIENT_MODULES = {"axios", "fetch", "got", "needle", "superagent", "request", "undici"}
+_HTTP_CLIENT_METHODS = {"__call__", "get", "post", "put", "patch", "delete", "head", "request", "default"}
+_RESPONSE_OBJECTS = {"res", "response", "reply", "ctx"}
+_REQUEST_OBJECT = re.compile(r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))")
+_MONGO_METHODS = {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"}
+_MONGO_COLLECTION = re.compile(r"(?:users|accounts|orders|products)Collection", re.IGNORECASE)
+_RAW_SQL_METHODS = {"raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}
+_SQL_METHODS = {"query", "execute"} | _RAW_SQL_METHODS
+
+
+def _is_template_call(receiver: str, method: str) -> bool:
+    return (
+        (receiver in {"ejs", "pug"} and method in {"render", "compile"})
+        or (receiver in {"Handlebars", "handlebars"} and method == "compile")
+        or (receiver == "nunjucks" and method == "renderString")
+    )
+
+
+def _is_merge_call(receiver: str, method: str) -> bool:
+    return (receiver == "Object" and method == "assign") or (
+        receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
+    )
+
+
+def _is_mongo_call(receiver: str, method: str) -> bool:
+    return method in _MONGO_METHODS and (
+        receiver in {"collection", "Model", "User", "Account"}
+        or receiver.startswith(("db.collection", "mongoose.model"))
+        or _MONGO_COLLECTION.fullmatch(receiver) is not None
+    )
+
+
+
 def _function_header(header: str) -> re.Match[str] | None:
     function_match = _FUNCTION_DECLARATION.search(header) or _ARROW_PARENS.search(header) or _ARROW_BARE.search(header)
     method_match = _METHOD_HEADER.match(header)
@@ -572,13 +618,34 @@ class _Analyzer:
         text = self.text[start:end]
         mask = list(self.mask[start:end])
         stripped = text.strip().rstrip(";").strip()
-        literal = re.fullmatch(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|`((?:\\.|[^`\\$])*)`""", stripped, re.DOTALL)
+        literal = _QUOTED_LITERAL.fullmatch(stripped)
         if literal:
             return constant(next(group for group in literal.groups() if group is not None))
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
+        if _NUMBER_LITERAL.fullmatch(stripped):
             return constant(stripped)
+        values = self._sanitizer_values(start, end, mask)
+        values.extend(self._source_values(start, mask))
+        dynamic = self._identifier_values("".join(mask), values)
+        merged = merge(*values) if values else Value()
+        composed = _is_composed(stripped)
+        direct = len(values) == 1 and _PLAIN_REFERENCE.fullmatch(stripped) is not None
+        prefix = _string_prefix(stripped)
+        if prefix is None and direct:
+            prefix = values[0].prefix
+        result = replace_value(
+            merged,
+            dynamic=merged.dynamic or dynamic or merged.tainted,
+            composed=composed and (merged.dynamic or dynamic or merged.tainted),
+            prefix=prefix,
+            text=" ".join(_string_contents(stripped))[:400] or merged.text,
+        )
+        if not direct:
+            result = replace_value(result, literal=NOT_CONSTANT)
+        return result
+
+    def _sanitizer_values(self, start: int, end: int, mask: list[str]) -> list[Value]:
+        """Evaluate sanitizer-call arguments separately and hide the calls from ``mask``."""
         values: list[Value] = []
-        # Sanitizer calls: evaluate their arguments separately and hide them.
         joined = "".join(mask)
         for pattern, categories in _SANITIZER_CALLS:
             for match in pattern.finditer(joined):
@@ -591,11 +658,12 @@ class _Analyzer:
                 for position in range(match.start(), close - start + 1):
                     mask[position] = " "
             joined = "".join(mask)
-        for pattern, trust, description in (
-            (_REMOTE_SOURCE, REMOTE, "HTTP request input"),
-            (_LOCAL_SOURCE, LOCAL, "Command-line argument"),
-            (_ENV_SOURCE, ENVIRONMENT, "Environment variable"),
-        ):
+        return values
+
+    def _source_values(self, start: int, mask: list[str]) -> list[Value]:
+        values: list[Value] = []
+        joined = "".join(mask)
+        for pattern, trust, description in _SOURCE_PATTERNS:
             for match in pattern.finditer(joined):
                 absolute = start + match.start()
                 origin = re.sub(r"[\s(]+", "", match.group(0))
@@ -609,6 +677,10 @@ class _Analyzer:
                 for position in range(match.start(), match.end()):
                     mask[position] = " "
             joined = "".join(mask)
+        return values
+
+    def _identifier_values(self, joined: str, values: list[Value]) -> bool:
+        """Append the values of known identifiers; return True when one is unknown."""
         dynamic = False
         for match in _IDENTIFIER.finditer(joined):
             name = re.sub(r"\s+", "", match.group(1))
@@ -617,31 +689,21 @@ class _Analyzer:
             following = joined[match.end() : match.end() + 2].lstrip()
             if following.startswith(":") and not following.startswith("::") and self._is_object_key(joined, match.start()):
                 continue
-            current = self._lookup(name)
-            parts = name.split(".")
-            while current is None and len(parts) > 1:
-                parts = parts[:-1]
-                current = self._lookup(".".join(parts))
-            if current is not None:
-                exact = len(parts) == len(name.split("."))
-                values.append(current if exact else replace_value(current, literal=NOT_CONSTANT, prefix=None))
-            else:
+            current, exact = self._resolve_name(name)
+            if current is None:
                 dynamic = True
-        merged = merge(*values) if values else Value()
-        composed = _is_composed(stripped)
-        prefix = _string_prefix(stripped)
-        if prefix is None and len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped):
-            prefix = values[0].prefix
-        result = replace_value(
-            merged,
-            dynamic=merged.dynamic or dynamic or merged.tainted,
-            composed=composed and (merged.dynamic or dynamic or merged.tainted),
-            prefix=prefix,
-            text=" ".join(_string_contents(stripped))[:400] or merged.text,
-        )
-        if not (len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped)):
-            result = replace_value(result, literal=NOT_CONSTANT)
-        return result
+            else:
+                values.append(current if exact else replace_value(current, literal=NOT_CONSTANT, prefix=None))
+        return dynamic
+
+    def _resolve_name(self, name: str) -> tuple[Value | None, bool]:
+        """Look up a dotted name, falling back to its longest known prefix."""
+        current = self._lookup(name)
+        parts = name.split(".")
+        while current is None and len(parts) > 1:
+            parts = parts[:-1]
+            current = self._lookup(".".join(parts))
+        return current, len(parts) == len(name.split("."))
 
     @staticmethod
     def _is_object_key(mask: str, position: int) -> bool:
@@ -661,22 +723,22 @@ class _Analyzer:
         for match in re.finditer(rf"{_REQUIRE}\s*\.\s*([\w$]+)\s*\(", self.text[start:end]):
             module = _MODULES.get(match.group(1))
             if module:
-                self._dispatch(start + match.start(), start + match.end() - 1, module, match.group(2), "")
+                self._dispatch(start + match.start(), start + match.end() - 1, module, match.group(2))
 
     def _call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         if receiver:
             module = self.objects.get(receiver.split(".")[0])
             if module:
-                self._dispatch(call_start, open_index, module, method, receiver)
+                self._dispatch(call_start, open_index, module, method)
                 return
             self._generic_call(call_start, open_index, receiver, method)
             return
         if method in self.functions:
             module, exported = self.functions[method]
-            self._dispatch(call_start, open_index, module, exported, "")
+            self._dispatch(call_start, open_index, module, exported)
             return
         if method in self.objects:
-            self._dispatch(call_start, open_index, self.objects[method], "__call__", "")
+            self._dispatch(call_start, open_index, self.objects[method], "__call__")
             return
         if method in self.imported_sinks:
             summary = self.imported_sinks[method]
@@ -707,42 +769,61 @@ class _Analyzer:
         elif method == "fetch":
             self._emit_argument("JS-SSRF-001", "fetch", call_start, open_index, 0)
 
-    def _dispatch(self, call_start: int, open_index: int, module: str, method: str, receiver: str) -> None:
+    def _dispatch(self, call_start: int, open_index: int, module: str, method: str) -> None:
         if module == "child_process":
-            if method in {"exec", "execSync"}:
-                self._emit_argument("JS-CMD-001", f"child_process.{method}", call_start, open_index, 0, unknown_origin=True)
-            elif method in {"spawn", "spawnSync", "execFile", "execFileSync"}:
-                arguments = self._arguments(open_index)
-                options = " ".join(self.mask[a:b] for a, b in arguments[1:])
-                if re.search(r"\bshell\s*:\s*true\b", options):
-                    self._emit_argument("JS-CMD-001", f"child_process.{method}(shell: true)", call_start, open_index, 0, unknown_origin=True)
-                else:
-                    self._emit_argument("JS-CMD-001", f"child_process.{method} program path", call_start, open_index, 0)
-        elif module == "fs" and re.fullmatch(
-            r"(?:readFile|writeFile|appendFile|unlink|rm|rmdir|mkdir|readdir|open|copyFile|createReadStream|createWriteStream|readlink|symlink|chmod)(?:Sync)?",
-            method,
-        ):
+            self._child_process_call(call_start, open_index, method)
+        elif module == "fs" and _FS_METHODS.fullmatch(method):
             self._emit_argument("JS-PATH-001", f"fs.{method}", call_start, open_index, 0)
             if method.startswith("copyFile"):
                 self._emit_argument("JS-PATH-001", f"fs.{method}", call_start, open_index, 1)
-        elif module == "vm" and method in {"runInNewContext", "runInThisContext", "runInContext", "compileFunction", "Script"}:
+        elif module == "vm" and method in _VM_METHODS:
             self._emit_argument("JS-CODE-001", f"vm.{method}", call_start, open_index, 0, unknown_origin=True)
-        elif module in {"axios", "fetch", "got", "needle", "superagent", "request", "undici"} and method in {
-            "__call__", "get", "post", "put", "patch", "delete", "head", "request", "default",
-        }:
+        elif module in _HTTP_CLIENT_MODULES and method in _HTTP_CLIENT_METHODS:
             self._emit_argument("JS-SSRF-001", f"{module} request", call_start, open_index, 0)
         elif module == "http" and method in {"get", "request"}:
             self._emit_argument("JS-SSRF-001", f"http.{method}", call_start, open_index, 0)
         elif module == "node-serialize" and method == "unserialize":
             self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
 
+    def _child_process_call(self, call_start: int, open_index: int, method: str) -> None:
+        if method in {"exec", "execSync"}:
+            self._emit_argument("JS-CMD-001", f"child_process.{method}", call_start, open_index, 0, unknown_origin=True)
+        elif method in {"spawn", "spawnSync", "execFile", "execFileSync"}:
+            arguments = self._arguments(open_index)
+            options = " ".join(self.mask[a:b] for a, b in arguments[1:])
+            if re.search(r"\bshell\s*:\s*true\b", options):
+                self._emit_argument("JS-CMD-001", f"child_process.{method}(shell: true)", call_start, open_index, 0, unknown_origin=True)
+            else:
+                self._emit_argument("JS-CMD-001", f"child_process.{method} program path", call_start, open_index, 0)
+
     def _generic_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         last = receiver.split(".")[-1]
-        if method in {"send", "write", "end", "html"} and last in {"res", "response", "reply", "ctx"}:
-            if self._explicit_non_html_response(last, call_start):
-                return
-            self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
-        elif method in {"redirect", "location"} and last in {"res", "response", "reply", "ctx"}:
+        if self._response_call(call_start, open_index, last, method):
+            return
+        if _is_template_call(receiver, method):
+            self._emit_argument(
+                "JS-SSTI-001", f"{receiver}.{method} template source",
+                call_start, open_index, 0,
+            )
+        elif _is_merge_call(receiver, method):
+            arguments = self._arguments(open_index)
+            if len(arguments) >= 2:
+                self._emit_request_object("JS-PROTOTYPE-001", receiver, method, call_start, open_index, arguments[1])
+        elif _is_mongo_call(receiver, method):
+            arguments = self._arguments(open_index)
+            if arguments:
+                self._emit_request_object("JS-NOSQL-001", receiver, method, call_start, open_index, arguments[0])
+        elif method in _SQL_METHODS:
+            self._sql_call(call_start, open_index, receiver, method)
+        elif method == "unserialize" and last in {"serialize", "nodeSerialize", "node_serialize"}:
+            self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
+
+    def _response_call(self, call_start: int, open_index: int, last: str, method: str) -> bool:
+        """Handle response-object sinks; return True when the call matched one."""
+        if method in {"send", "write", "end", "html"} and last in _RESPONSE_OBJECTS:
+            if not self._explicit_non_html_response(last, call_start):
+                self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
+        elif method in {"redirect", "location"} and last in _RESPONSE_OBJECTS:
             index = -1 if method == "redirect" else 0
             self._emit_argument("OPEN-REDIRECT-001", f"{last}.{method}", call_start, open_index, index)
         elif method in {"sendFile", "download"} and last in {"res", "response"}:
@@ -750,69 +831,34 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
-        elif (
-            (receiver in {"ejs", "pug"} and method in {"render", "compile"})
-            or (receiver in {"Handlebars", "handlebars"} and method == "compile")
-            or (receiver == "nunjucks" and method == "renderString")
-        ):
-            self._emit_argument(
-                "JS-SSTI-001", f"{receiver}.{method} template source",
-                call_start, open_index, 0,
-            )
-        elif (receiver == "Object" and method == "assign") or (
-            receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
-        ):
-            arguments = self._arguments(open_index)
-            if len(arguments) < 2:
-                return
-            original = self.text[arguments[1][0]:arguments[1][1]].strip()
-            if not re.fullmatch(
-                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
-                original,
-            ):
-                return
-            value = self._value(*arguments[1])
-            if value.trust != REMOTE or not value.sources:
-                return
-            self._emit_value(
-                "JS-PROTOTYPE-001", receiver + "." + method,
-                call_start, open_index, value, Confidence.MEDIUM,
-            )
-        elif method in {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"} and (
-            receiver in {"collection", "Model", "User", "Account"}
-            or receiver.startswith(("db.collection", "mongoose.model"))
-            or re.fullmatch(r"(?:users|accounts|orders|products)Collection", receiver, re.IGNORECASE)
-        ):
-            arguments = self._arguments(open_index)
-            if not arguments:
-                return
-            original = self.text[arguments[0][0]:arguments[0][1]].strip()
-            if not re.fullmatch(
-                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
-                original,
-            ):
-                return
-            value = self._value(*arguments[0])
-            if value.trust != REMOTE or not value.sources:
-                return
-            self._emit_value(
-                "JS-NOSQL-001", receiver + "." + method,
-                call_start, open_index, value, Confidence.MEDIUM,
-            )
-        elif method in {"query", "execute", "raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}:
-            arguments = self._arguments(open_index)
-            if not arguments:
-                return
-            value = self._value(*arguments[0])
-            raw_sql_api = method in {"raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}
-            evidence = raw_sql_api or bool(SQL_KEYWORDS.search(value.text))
-            database = bool(_DB_RECEIVER.search(receiver))
-            if not evidence and not database:
-                return
-            certainty = Confidence.HIGH if evidence else Confidence.MEDIUM
-            self._emit_value("JS-SQL-001", "database query", call_start, open_index, value, certainty, unknown_origin=True, sql_evidence=evidence)
-        elif method == "unserialize" and last in {"serialize", "nodeSerialize", "node_serialize"}:
-            self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
+        else:
+            return False
+        return True
+
+    def _emit_request_object(
+        self, rule_id: str, receiver: str, method: str, call_start: int, open_index: int, span: tuple[int, int]
+    ) -> None:
+        """Report a request-controlled object passed whole to a merge or query call."""
+        original = self.text[span[0]:span[1]].strip()
+        if not _REQUEST_OBJECT.fullmatch(original):
+            return
+        value = self._value(*span)
+        if value.trust != REMOTE or not value.sources:
+            return
+        self._emit_value(rule_id, receiver + "." + method, call_start, open_index, value, Confidence.MEDIUM)
+
+    def _sql_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
+        arguments = self._arguments(open_index)
+        if not arguments:
+            return
+        value = self._value(*arguments[0])
+        raw_sql_api = method in _RAW_SQL_METHODS
+        evidence = raw_sql_api or bool(SQL_KEYWORDS.search(value.text))
+        database = bool(_DB_RECEIVER.search(receiver))
+        if not evidence and not database:
+            return
+        certainty = Confidence.HIGH if evidence else Confidence.MEDIUM
+        self._emit_value("JS-SQL-001", "database query", call_start, open_index, value, certainty, unknown_origin=True, sql_evidence=evidence)
 
     def _explicit_non_html_response(self, receiver: str, call_start: int) -> bool:
         context = self.text[max(0, call_start - 1600) : call_start]
@@ -982,16 +1028,19 @@ def _split_top_level(mask: str, start: int, end: int, operator: str) -> list[tup
 def _top_level_equals(text: str) -> int:
     depth = 0
     for index, char in enumerate(text):
-        if char in "([{<":
-            depth += 1 if char != "<" else 0
+        if char in "([{":
+            depth += 1
         elif char in ")]}":
             depth -= 1
-        elif char == "=" and depth == 0:
-            following = text[index + 1 : index + 2]
-            previous = text[index - 1 : index] if index else ""
-            if following not in {"=", ">"} and previous not in {"=", "!", "<", ">"}:
-                return index
+        elif char == "=" and depth == 0 and _is_plain_equals(text, index):
+            return index
     return -1
+
+
+def _is_plain_equals(text: str, index: int) -> bool:
+    following = text[index + 1 : index + 2]
+    previous = text[index - 1 : index] if index else ""
+    return following not in {"=", ">"} and previous not in {"=", "!", "<", ">"}
 
 
 def _top_level_char(text: str, wanted: str) -> int:

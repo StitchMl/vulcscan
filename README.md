@@ -281,3 +281,7 @@ For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefi
 ### PHP Twig template-source injection
 
 `PHP-SSTI-001` (CWE-1336) identifies direct HTTP GET/POST/REQUEST values, or simple variable aliases assigned from them, passed to `$twig->createTemplate(...)` for compilation as Twig template source. It deliberately does not flag rendering a fixed template with request fields supplied as context. Long call chains, custom engines and unknown transforms are not inferred. Findings are MEDIUM-confidence review-only guidance and do not execute PHP or apply patches.
+
+### C/C++ memcpy with externally controlled lengths
+
+The existing `C-BUFFER-001` rule also checks a narrow pattern: a fixed-size local `char`, `uint8_t` or `std::byte` array receives a `memcpy` whose length was parsed from `argv` using a known integer conversion. Recognizable earlier bounds checks and length overwrites cause the scanner to abstain. Findings are MEDIUM-confidence and review-only, not proof of exploitability; general pointer bounds and complex data flows remain out of scope.

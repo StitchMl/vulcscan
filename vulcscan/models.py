@@ -276,6 +276,7 @@ class ScanConfig:
     remote_only: bool = False
     exclude_tests: bool = False
     cve_db: Path | None = None  # explicit offline OSV snapshot, never auto-downloaded
+    cve_cache: Path | None = None  # opt-in snapshot read/write, never implicit
     workers: int = 1  # ordered per-file analysis; one worker preserves legacy path
 
 

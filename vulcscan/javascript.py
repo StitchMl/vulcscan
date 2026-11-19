@@ -680,7 +680,7 @@ class _Analyzer:
                 return
             original = self.text[arguments[0][0]:arguments[0][1]].strip()
             if not re.fullmatch(
-                r"(?:[A-Za-z_$][\\w$]*|(?:req|request)\\s*\\.\\s*(?:body|query))",
+                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
                 original,
             ):
                 return

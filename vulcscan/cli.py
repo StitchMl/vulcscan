@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="keep network disabled (the default); dependency CVEs are not reported",
+        help="keep network disabled (the default); dependency CVEs require --cve-db",
     )
     parser.add_argument(
         "--update-cve",

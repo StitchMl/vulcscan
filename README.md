@@ -181,3 +181,7 @@ document why the finding is a false positive.
 With `--attack-surface`, a Python GET endpoint associated with a traced literal query parameter may include a `verify_curl` field. The displayed command targets `127.0.0.1:8000` using the inert `VULCSCAN_CANARY` marker. It is never executed; no command is emitted for POST, dynamic routes or ambiguous inputs. Review handler behavior before running any GET request, because an application may incorrectly mutate state on GET.
 
 Python `--generate-diff` validates proposed changes independently, so one invalid patch no longer discards unrelated valid edits. Syntax validation and basic import checks do not prove functional or SLA safety.
+
+### Express handler links
+
+With `--attack-surface`, unambiguous direct Express route handlers imported through relative ESM or CommonJS imports can be linked to their file and associated findings. This is endpoint correlation, not cross-module taint analysis. Dynamic imports, external modules, middleware chains, and ambiguous paths remain unresolved.

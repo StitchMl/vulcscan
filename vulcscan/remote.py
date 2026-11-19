@@ -17,6 +17,6 @@ def has_remote_source(finding: Finding) -> bool:
     return any(
         step.kind.upper() == "SOURCE"
         and bool(_HTTP.search(step.description + " " + step.code) or
-                 re.search(r"\\$_(?:GET|POST|REQUEST|COOKIE|FILES)\\b", step.code))
+                 re.search(r"\$_(?:GET|POST|REQUEST|COOKIE|FILES)\b", step.code))
         for step in finding.flow
     )

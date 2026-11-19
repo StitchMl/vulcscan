@@ -113,44 +113,64 @@ class _TarWalker(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
-    def visit_Call(self, node: ast.Call) -> None:
+    def _unfiltered_archive(self, node: ast.Call) -> str | None:
+        """Name of the tracked archive this call extracts without a filter."""
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in {"extractall", "extract"}:
-            if isinstance(func.value, ast.Name) and func.value.id in self.archives:
-                filters = [keyword.value for keyword in node.keywords if keyword.arg == "filter"]
-                # Explicit filters (including custom callables) require manual
-                # review; do not assume they are unsafe without their bodies.
-                if not filters:
-                    archive = func.value.id
-                    if not re.search(
-                        rf"\b{re.escape(archive)}\s*\.\s*extraction_filter\s*=",
-                        self.text[:node.col_offset] if node.lineno == 1 else
-                        "\n".join(self.text.split("\n")[:node.lineno - 1]),
-                    ):
-                        origin, snippet = self.archives[archive]
-                        definition = rule("PY-TAR-EXTRACT-001")
-                        sink = self._location(node)
-                        evidence = (ast.get_source_segment(self.text, node) or ast.unparse(node))[:350]
-                        self.findings.append(Finding(
-                            rule_id=definition.rule_id,
-                            name=definition.name,
-                            cwe=definition.cwe,
-                            severity=definition.severity,
-                            confidence=Confidence.MEDIUM,
-                            category=definition.category,
-                            language="Python",
-                            location=sink,
-                            source=origin,
-                            sink="tarfile." + func.attr,
-                            evidence=evidence,
-                            reason=definition.explanation,
-                            flow=[
-                                FlowStep("SOURCE", origin, snippet, "HTTP upload used as TAR archive input."),
-                                FlowStep("SINK", sink, evidence, "Uploaded TAR is extracted without an explicit filter."),
-                            ],
-                            remediations=remediations_for(definition.rule_id, evidence),
-                        ))
+        if not (isinstance(func, ast.Attribute) and func.attr in {"extractall", "extract"}):
+            return None
+        if not (isinstance(func.value, ast.Name) and func.value.id in self.archives):
+            return None
+        # Explicit filters (including custom callables) require manual
+        # review; do not assume they are unsafe without their bodies.
+        if any(keyword.arg == "filter" for keyword in node.keywords):
+            return None
+        archive = func.value.id
+        preceding = (
+            self.text[:node.col_offset] if node.lineno == 1
+            else "\n".join(self.text.split("\n")[:node.lineno - 1])
+        )
+        if re.search(rf"\b{re.escape(archive)}\s*\.\s*extraction_filter\s*=", preceding):
+            return None
+        return archive
+
+    def _extraction_finding(self, node: ast.Call, archive: str) -> Finding:
+        origin, snippet = self.archives[archive]
+        definition = rule("PY-TAR-EXTRACT-001")
+        sink = self._location(node)
+        evidence = (ast.get_source_segment(self.text, node) or ast.unparse(node))[:350]
+        return Finding(
+            rule_id=definition.rule_id,
+            name=definition.name,
+            cwe=definition.cwe,
+            severity=definition.severity,
+            confidence=Confidence.MEDIUM,
+            category=definition.category,
+            language="Python",
+            location=sink,
+            source=origin,
+            sink="tarfile." + node.func.attr,
+            evidence=evidence,
+            reason=definition.explanation,
+            flow=[
+                FlowStep("SOURCE", origin, snippet, "HTTP upload used as TAR archive input."),
+                FlowStep("SINK", sink, evidence, "Uploaded TAR is extracted without an explicit filter."),
+            ],
+            remediations=remediations_for(definition.rule_id, evidence),
+        )
+
+    def visit_Call(self, node: ast.Call) -> None:
+        archive = self._unfiltered_archive(node)
+        if archive is not None:
+            self.findings.append(self._extraction_finding(node, archive))
         self.generic_visit(node)
+
+
+def _tarfile_imports(node: ast.stmt) -> dict[str, str]:
+    if isinstance(node, ast.Import):
+        return {alias.asname or alias.name: "tarfile" for alias in node.names if alias.name == "tarfile"}
+    if isinstance(node, ast.ImportFrom) and node.module == "tarfile":
+        return {alias.asname or alias.name: "tarfile." + alias.name for alias in node.names}
+    return {}
 
 
 def analyze_tar_extraction(relative: str, text: str) -> list[Finding]:
@@ -160,13 +180,7 @@ def analyze_tar_extraction(relative: str, text: str) -> list[Finding]:
         return []
     imports: dict[str, str] = {}
     for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "tarfile":
-                    imports[alias.asname or alias.name] = "tarfile"
-        elif isinstance(node, ast.ImportFrom) and node.module == "tarfile":
-            for alias in node.names:
-                imports[alias.asname or alias.name] = "tarfile." + alias.name
+        imports.update(_tarfile_imports(node))
     walker = _TarWalker(relative, text, imports)
     walker.visit(tree)
     return walker.findings

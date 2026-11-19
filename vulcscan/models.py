@@ -276,6 +276,7 @@ class ScanConfig:
     remote_only: bool = False
     exclude_tests: bool = False
     cve_db: Path | None = None  # explicit offline OSV snapshot, never auto-downloaded
+    workers: int = 1  # ordered per-file analysis; one worker preserves legacy path
 
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:

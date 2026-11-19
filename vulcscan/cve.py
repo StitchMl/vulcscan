@@ -386,6 +386,15 @@ def to_vulnerability(dependency: Dependency, advisory: dict[str, Any]) -> Vulner
     )
 
 
+def _range_matches_version(item: Any, ecosystem: str, version: str) -> bool:
+    if not isinstance(item, dict) or item.get("type") not in {"ECOSYSTEM", "SEMVER"}:
+        return False
+    return any(
+        _contains(ecosystem, version, first, end, kind) is True
+        for first, end, kind in _segments(item.get("events", []))
+    )
+
+
 def _advisory_affects(affected: list[dict[str, Any]], dependency: Dependency) -> bool:
     """Require an OSV version/range that definitely contains this version."""
     version = dependency.version
@@ -397,14 +406,10 @@ def _advisory_affects(affected: list[dict[str, Any]], dependency: Dependency) ->
         if isinstance(versions, list) and version in versions:
             return True
         ranges = entry.get("ranges", [])
-        if not isinstance(ranges, list):
-            continue
-        for item in ranges:
-            if not isinstance(item, dict) or item.get("type") not in {"ECOSYSTEM", "SEMVER"}:
-                continue
-            for first, end, kind in _segments(item.get("events", [])):
-                if _contains(eco, version, first, end, kind) is True:
-                    return True
+        if isinstance(ranges, list) and any(
+            _range_matches_version(item, eco, version) for item in ranges
+        ):
+            return True
     return False
 
 

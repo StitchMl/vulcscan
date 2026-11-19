@@ -87,6 +87,11 @@ class Value:
         return self.tainted and category not in self.sanitized
 
 
+def replace_value(value: Value, **changes: object) -> Value:
+    """Return a modified immutable Value with its precise type preserved."""
+    return cast(Value, replace(value, **changes))
+
+
 UNKNOWN = Value(dynamic=True)
 
 

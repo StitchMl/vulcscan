@@ -274,6 +274,7 @@ class ScanConfig:
     only_files: frozenset[str] | None = None  # repository-relative paths; None scans everything
     attack_surface: bool = False
     remote_only: bool = False
+    exclude_tests: bool = False
 
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:

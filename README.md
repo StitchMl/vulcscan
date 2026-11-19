@@ -195,3 +195,7 @@ Use `--exclude-tests` to skip common test and fixture directories (`test`, `test
 ### Conservative one-hop JavaScript/TypeScript sink propagation
 
 Directly imported, locally exported named functions whose **entire body** is one direct sink call (for example `function run(value) { cp.exec(value); }`) now allow a source at the call site to be traced to the sink across one ESM/CommonJS module boundary. Initial sink families are command execution (`exec`/`execSync`), file reads (`readFile`/`readFileSync`), `fetch`, and `eval`. The new finding retains caller source evidence, adds the callee sink location, and uses **MEDIUM** confidence. Literal/sanitized arguments, ambiguous module paths, external dependencies, shadowed identifiers, guarded or transformed wrappers and deeper call chains are not inferred. This is a deliberately bounded analysis, not complete JavaScript or TypeScript interprocedural analysis.
+
+### JavaScript and TypeScript inline suppressions
+
+A JavaScript or TypeScript finding may be suppressed with an exact-rule `// vulcscan:ignore JS-CMD-001` comment. A trailing comment affects only its own physical line; a standalone line comment affects only the next physical line. Comments inside strings, template literals, regular expressions, or `/* ... */` blocks are ignored; wildcard rules and global file suppressions are not supported. This feature is opt-in through the source comment and preserves the existing Python `# vulcscan:ignore RULE-ID` behavior. Suppress only verified false positives.

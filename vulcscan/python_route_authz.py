@@ -14,7 +14,7 @@ from .rules import remediations_for, rule
 
 _HTTP_METHODS = frozenset({"route", "get", "post", "put", "patch", "delete"})
 _PATH_PARAM = re.compile(r"\{([A-Za-z_]\w*)\}|<(?:(?:int|uuid|string|path):)?([A-Za-z_]\w*)>")
-_ID_NAME = re.compile(r"(?i)(?:^id$|(?:^|_)(?:id|pk|uuid)$|(?:Id|ID|Pk|UUID)$)")
+_ID_NAME = re.compile(r"(?i)(?:^id$|(?:^|_)(?:id|pk|uuid)$|(?:Id|Pk|UUID)$)")
 _SAFE_KEY = re.compile(r"(?i)(?:owner|tenant|principal|permission|authorize|acl|can_access|scope)")
 _QUERY_GET = frozenset({"get", "get_or_404", "get_or_none", "get_by_id"})
 
@@ -44,7 +44,7 @@ def _lookup(node: ast.AST, parameter: str) -> bool:
     if not isinstance(node.func, ast.Attribute) or node.func.attr not in _QUERY_GET:
         return False
     call = ast.unparse(node.func.value)
-    if not (call.endswith(".query") or call.endswith(".objects") or call.endswith(".session")):
+    if not call.endswith((".query", ".objects", ".session")):
         return False
     args = node.args
     if call.endswith(".session") and node.func.attr == "get":

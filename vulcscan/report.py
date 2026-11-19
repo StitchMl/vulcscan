@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
 import json
 import shutil
@@ -384,6 +385,39 @@ def _apply_edits(text: str, edits: list[tuple[int, int, str, str]]) -> str:
     return "".join(lines)
 
 
+_PATCH_MODULES = frozenset({
+    "ast", "hmac", "shlex", "html", "secrets", "os",
+    "pathlib", "subprocess", "yaml", "json", "re",
+})
+
+
+def _safe_python_patch(original: str, patched: str) -> bool:
+    """Reject invalid syntax and newly introduced unimported module references."""
+    try:
+        before = ast.parse(original)
+        after = ast.parse(patched)
+    except (SyntaxError, ValueError):
+        return False
+
+    def module_refs(tree: ast.AST) -> set[str]:
+        return {
+            node.value.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in _PATCH_MODULES
+        }
+
+    introduced = module_refs(after) - module_refs(before)
+    if not introduced:
+        return True
+    imported: set[str] = set()
+    for node in ast.walk(after):
+        if isinstance(node, ast.Import):
+            imported.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+    return introduced <= imported
+
+
 def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: Severity | None = None) -> str:
     """Build a unified diff of machine-applicable fixes without touching files.
 
@@ -412,6 +446,8 @@ def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: 
             continue
         patched = _apply_edits(original, edits)
         if patched == original:
+            continue
+        if path.suffix.casefold() in {".py", ".pyw"} and not _safe_python_patch(original, patched):
             continue
         chunks.extend(
             difflib.unified_diff(

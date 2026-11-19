@@ -10,6 +10,7 @@ import re
 import shlex
 from typing import Any
 
+from .django_routes import django_routes
 from .js_routes import resolve_handler
 from .models import Finding
 from .source import C_STYLE, blank_comments, code_mask
@@ -188,12 +189,16 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             routes.extend(_gin_routes(source.relative, source.text))
         elif source.language == "Java":
             routes.extend(spring_routes(source.relative, source.text))
+    available_python = {source.relative for source in files if source.language == "Python"}
+    for source in files:
+        if source.language == "Python":
+            routes.extend(django_routes(source.relative, source.text, available_python))
     modules = {
         source.relative: source for source in files
         if source.language in {"JavaScript", "TypeScript"}
     }
     for route in routes:
-        handler_file = route["file"]
+        handler_file = route.get("handler_file", route["file"])
         handler_name = route["handler"]
         if handler_file in modules and handler_name:
             resolved = resolve_handler(

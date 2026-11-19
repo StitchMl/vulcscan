@@ -18,8 +18,10 @@ def _unpack(fmt: str, data: bytes, offset: int):
         return None
 
 
-def elf_imported_symbols(data: bytes) -> set[str] | None:
-    if len(data) < 52 or data[:4] != b"\x7fELF" or data[4] not in (1, 2) or data[5] not in (1, 2):
+def _layout(data: bytes):
+    if len(data) < 52 or data[:4] != b"\x7fELF":
+        return None
+    if data[4] not in (1, 2) or data[5] not in (1, 2):
         return None
     wide = data[4] == 2
     endian = "<" if data[5] == 1 else ">"
@@ -30,60 +32,87 @@ def elf_imported_symbols(data: bytes) -> set[str] | None:
     sizes = _unpack(endian + "HH", data, 58 if wide else 46)
     if offset is None or sizes is None:
         return None
-    section_start = offset[0]
+    start = offset[0]
     stride, count = sizes
-    base_size = 64 if wide else 40
-    if section_start < header_len or stride < base_size or not 0 < count <= 4096:
+    if start < header_len or stride < (64 if wide else 40) or not 0 < count <= 4096:
         return None
-    if section_start > len(data) or count * stride > len(data) - section_start:
+    if start > len(data) or count * stride > len(data) - start:
         return None
+    return endian, wide, start, stride, count
 
+
+def _section_headers(data: bytes, endian: str, wide: bool, start: int, stride: int, count: int):
     fmt = endian + ("IIQQQQIIQQ" if wide else "IIIIIIIIII")
     sections = []
     for index in range(count):
-        row = _unpack(fmt, data, section_start + index * stride)
+        row = _unpack(fmt, data, start + index * stride)
         if row is None:
             return None
-        kind, offset_in_file, section_size, link, entry_size = (
-            row[1], row[4], row[5], row[6], row[9]
-        )
-        if section_size and (offset_in_file > len(data) or section_size > len(data) - offset_in_file):
-            # SHT_NOBITS sections take no file space.
-            if kind != 8:
-                return None
-        sections.append((kind, offset_in_file, section_size, link, entry_size))
+        kind, offset, size, link, step = row[1], row[4], row[5], row[6], row[9]
+        if kind != 8 and size and (offset > len(data) or size > len(data) - offset):
+            return None
+        sections.append((kind, offset, size, link, step))
+    return sections
 
-    result: set[str] = set()
-    symfmt = endian + ("IBBHQQ" if wide else "IIIBBH")
-    sym_size = struct.calcsize(symfmt)
-    for kind, symoffset, symsize, strindex, step in sections:
-        if kind != 11:  # SHT_DYNSYM
+
+def _symbol_name(data: bytes, fmt: str, at: int, wide: bool, strings: tuple[int, int]):
+    row = _unpack(fmt, data, at)
+    if row is None:
+        return False, None
+    name_index = row[0]
+    undefined = row[3] == 0 if wide else row[5] == 0
+    if not undefined or not name_index:
+        return True, None
+    offset, size = strings
+    if name_index >= size:
+        return False, None
+    first = offset + name_index
+    last = data.find(b"\x00", first, offset + size)
+    if last < 0 or last - first > 1024:
+        return False, None
+    try:
+        name = data[first:last].decode("ascii")
+    except UnicodeDecodeError:
+        return False, None
+    return bool(name), name.split("@", 1)[0] if name else None
+
+
+def _table_symbols(data: bytes, endian: str, wide: bool, sections: list, table: tuple):
+    _, offset, size, link, stride = table
+    fmt = endian + ("IBBHQQ" if wide else "IIIBBH")
+    item_size = struct.calcsize(fmt)
+    if link >= len(sections) or stride < item_size or size % stride:
+        return None
+    kind, strings_offset, strings_size, _, _ = sections[link]
+    if kind != 3 or not strings_size or size // stride > 100000:
+        return None
+    names = set()
+    for index in range(size // stride):
+        valid, name = _symbol_name(
+            data, fmt, offset + index * stride, wide, (strings_offset, strings_size)
+        )
+        if not valid:
+            return None
+        if name:
+            names.add(name)
+    return names
+
+
+def elf_imported_symbols(data: bytes) -> set[str] | None:
+    """Return undefined ELF imports if section tables are valid."""
+    layout = _layout(data)
+    if layout is None:
+        return None
+    endian, wide, start, stride, count = layout
+    sections = _section_headers(data, endian, wide, start, stride, count)
+    if sections is None:
+        return None
+    symbols: set[str] = set()
+    for section in sections:
+        if section[0] != 11:
             continue
-        if strindex >= len(sections) or step < sym_size or symsize % step:
+        names = _table_symbols(data, endian, wide, sections, section)
+        if names is None:
             return None
-        str_kind, stroffset, strsize, _, _ = sections[strindex]
-        if str_kind != 3 or strsize == 0 or symsize // step > 100000:
-            return None
-        for index in range(symsize // step):
-            row = _unpack(symfmt, data, symoffset + index * step)
-            if row is None:
-                return None
-            # ELF64: st_name, st_info, st_other, st_shndx, st_value, st_size
-            # ELF32: st_name, st_value, st_size, st_info, st_other, st_shndx
-            name_index = row[0]
-            undefined = row[3] == 0 if wide else row[5] == 0
-            if not undefined or not name_index:
-                continue
-            if name_index >= strsize:
-                return None
-            absolute = stroffset + name_index
-            end = data.find(b"\x00", absolute, stroffset + strsize)
-            if end < 0 or end - absolute > 1024:
-                return None
-            try:
-                name = data[absolute:end].decode("ascii")
-            except UnicodeDecodeError:
-                return None
-            if name:
-                result.add(name.split("@", 1)[0])
-    return result
+        symbols.update(names)
+    return symbols

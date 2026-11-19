@@ -137,3 +137,25 @@ python -m pytest
 ```
 
 The suite covers vulnerable and safe fixtures, malformed input, CRLF, paths with spaces, binary and oversized files, symlink handling, deterministic ordering, offline network denial, dependency formats, OSV range selection, exact diff safety and zero-AI/network-import audits. Guidance tests use unrelated synthetic services in Python, JavaScript, TypeScript, Java, C#, Go, Ruby and PHP and reject generic placeholders when flow symbols can be recovered.
+
+
+### Opt-in endpoint inventory and remote-input filtering
+
+Use `--attack-surface` to add an `attack_surface` array to JSON report **metadata**.
+It statically inventories literal Flask/FastAPI-style decorator paths and direct
+Express `app/router.METHOD('path', ...)` calls, with HTTP methods, file, line,
+handler (where identifiable), authentication indicator, and conservative Python
+finding-rule references. `authentication: "unknown"` does **not** imply no
+authentication: middleware, dependencies, and imported wrappers are not fully
+resolved. Dynamic routes are intentionally omitted; the inventory is not exhaustive.
+
+Use `--remote-only` to exclude findings unless their SOURCE flow explicitly
+mentions HTTP/network input. This is a conservative **triage filter**, not a
+proof of exploitability and not an exhaustive list of reachable vulnerabilities.
+Both options are off by default, preserving the existing standard JSON envelope:
+
+```bash
+python -m vulcscan ./service --offline --no-cve --attack-surface --format json
+python -m vulcscan ./service --offline --no-cve --remote-only
+```
+

@@ -85,7 +85,7 @@ def pe_imported_symbols(data: bytes) -> set[str] | None:
         descriptor = _read(data, "<IIIII", desc_pos)
         if descriptor is None:
             return None
-        original_thunk, timestamp, chain, dll_rva, first_thunk = descriptor
+        original_thunk, _, _, dll_rva, first_thunk = descriptor
         if descriptor == (0, 0, 0, 0, 0):
             terminated = True
             break

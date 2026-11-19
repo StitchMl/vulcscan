@@ -20,6 +20,7 @@ from .javascript import analyze_javascript
 from .js_interproc import imported_sink_map
 from .js_timing import analyze_javascript_timing
 from .java_zip_slip import analyze_java_zip_slip
+from .java_template_source import analyze_java_template_source
 from .go_zip_slip import analyze_go_zip_slip
 from .lexical import lexical_findings
 from .remote import has_remote_source
@@ -380,6 +381,7 @@ def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1
                 found.extend(analyze_structured(source.relative, source.text, source.language))
             if source.language == "Java":
                 found.extend(analyze_java_zip_slip(source.relative, source.text))
+                found.extend(analyze_java_template_source(source.relative, source.text))
             if source.language == "Go":
                 found.extend(analyze_go_zip_slip(source.relative, source.text))
             return found, []

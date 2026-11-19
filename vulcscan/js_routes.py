@@ -53,7 +53,7 @@ def _named_import(source: str, symbol: str) -> tuple[str, str] | None:
         for item in match.group(1).split(","):
             parts = re.fullmatch(r"\s*([\w$]+)(?:\s+as\s+([\w$]+))?\s*", item)
             if parts and (parts.group(2) or parts.group(1)) == symbol:
-                candidates.append((match.group(3), parts.group(1)))
+                candidates.append((match.group(2), parts.group(1)))
     for match in re.finditer(
         r"""\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)""",
         source,
@@ -61,7 +61,7 @@ def _named_import(source: str, symbol: str) -> tuple[str, str] | None:
         for item in match.group(1).split(","):
             parts = re.fullmatch(r"\s*([\w$]+)(?:\s*:\s*([\w$]+))?\s*", item)
             if parts and (parts.group(2) or parts.group(1)) == symbol:
-                candidates.append((match.group(3), parts.group(1)))
+                candidates.append((match.group(2), parts.group(1)))
     return candidates[0] if len(candidates) == 1 else None
 
 

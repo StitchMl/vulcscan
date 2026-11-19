@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .elf_dynamic import elf_dynamic_issues
 from .models import Confidence, Finding, Location
+from .pe_imports import pe_imported_symbols
 from .rules import RULES, remediations_for
 
 _EXTENSIONS = {
@@ -60,8 +61,14 @@ def analyze_binary(relative: str, data: bytes) -> list[Finding]:
             tags=("binary", kind.casefold()),
         ))
 
+    # Prefer parsed import names over arbitrary embedded strings in valid PE
+    # images. Keep legacy byte inspection for other/unsupported formats.
+    parsed_imports = pe_imported_symbols(data) if kind == "PE binary" else None
     for needle, label in _DANGEROUS:
-        if _symbol_present(data, needle):
+        if parsed_imports is not None:
+            if label in parsed_imports:
+                add("BINARY-DANGEROUS-001", label, f"Imported PE symbol: {label}", Confidence.MEDIUM)
+        elif _symbol_present(data, needle):
             add("BINARY-DANGEROUS-001", label, f"Imported or embedded symbol: {label}", Confidence.MEDIUM)
 
     secret = _SECRET.search(data)

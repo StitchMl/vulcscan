@@ -11,11 +11,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .attack_surface import map_attack_surface
 from .binary import analyze_binary, binary_kind, looks_like_binary
 from .dependencies import is_manifest_path, scan_dependencies
 from .guidance import enrich_finding
 from .javascript import analyze_javascript
 from .lexical import lexical_findings
+from .remote import has_remote_source
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
 from .python_analysis import PythonProject
 from .source import decode_source
@@ -294,6 +296,10 @@ def scan(config: ScanConfig) -> ScanResult:
     _dependencies(config, root, discovery.manifests, result)
     minimum = SEVERITY_RANK[config.min_severity]
     result.findings = [item for item in result.findings if SEVERITY_RANK[item.severity] <= minimum]
+    if config.remote_only:
+        result.findings = [item for item in result.findings if has_remote_source(item)]
+    if config.attack_surface:
+        result.metadata["attack_surface"] = map_attack_surface(files, result.findings)
     result.normalize()
     result.metadata["scan_duration"] = round(time.perf_counter() - started, 6)
     return result

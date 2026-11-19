@@ -72,7 +72,7 @@ def analyze_binary(relative: str, data: bytes) -> list[Finding]:
     for needle, label in _DANGEROUS:
         if parsed_imports is not None:
             if label in parsed_imports:
-                add("BINARY-DANGEROUS-001", label, f"Imported {kind} symbol: {label}", Confidence.MEDIUM)
+                add("BINARY-DANGEROUS-001", label, f"Imported {'PE' if kind == 'PE binary' else 'ELF binary'} symbol: {label}", Confidence.MEDIUM)
         elif _symbol_present(data, needle):
             add("BINARY-DANGEROUS-001", label, f"Imported or embedded symbol: {label}", Confidence.MEDIUM)
 

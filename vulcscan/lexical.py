@@ -169,6 +169,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language in {"C", "C++"}:
         _c_format_strings(text, add)
         _c_buffer_overflows(text, add)
+        _c_allocation_overflow(text, add)
     if language == "Python":
         return findings
 
@@ -445,6 +446,53 @@ _PHP_LOOSE_AUTH = re.compile(
     rf"(?P<left>{_PHP_OPERAND})\s*(?<![=!])(?P<operator>==|!=)(?!=)\s*(?P<right>{_PHP_OPERAND})",
     re.IGNORECASE,
 )
+
+
+_C_MALLOC_PRODUCT = re.compile(
+    r"\bmalloc\s*\(\s*(?:(?P<count>[A-Za-z_]\w*)\s*\*\s*sizeof\s*\([^()\n]+\)"
+    r"|sizeof\s*\([^()\n]+\)\s*\*\s*(?P<reverse>[A-Za-z_]\w*))\s*\)"
+)
+_C_ARGV_COUNT = re.compile(
+    r"\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?:atoi|atol|atoll|strtoul|strtoull)\s*"
+    r"\(\s*argv\s*\[\s*\d+\s*\]"
+)
+
+
+def _c_allocation_overflow(text: str, add: Callable[..., None]) -> None:
+    """Flag only an explicitly CLI-derived count in malloc(size multiplication).
+
+    Static lexical detection cannot prove an overflow. Skip when a recognizable
+    prior SIZE_MAX division guard for that count is present.
+    """
+    mask = code_mask(text, comment_style("C"))
+    for call in _C_MALLOC_PRODUCT.finditer(mask):
+        count = call.group("count") or call.group("reverse")
+        if not count:
+            continue
+        before = mask[max(0, call.start() - 1800):call.start()]
+        assignments = [
+            match for match in _C_ARGV_COUNT.finditer(before)
+            if match.group("name") == count
+        ]
+        if not assignments:
+            continue
+        last_source = assignments[-1].end()
+        subsequent = before[last_source:]
+        # An overwrite invalidates the simple one-hop provenance.
+        if re.search(rf"\b{re.escape(count)}\s*=(?!=)", subsequent):
+            continue
+        guard = re.search(
+            rf"\b{re.escape(count)}\s*>\s*SIZE_MAX\s*/\s*sizeof\s*\(",
+            before,
+        )
+        if guard:
+            continue
+        line = text.count("\n", 0, call.start()) + 1
+        column = call.start() - text.rfind("\n", 0, call.start())
+        add(
+            "C-ALLOC-001", line, column, "malloc allocation size multiplication",
+            text[call.start():call.end()], Confidence.MEDIUM,
+        )
 
 
 _C_GETS = re.compile(r"\bgets\s*\(\s*[A-Za-z_]\w*\s*\)")

@@ -391,6 +391,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A client-controlled object is merged into an existing object without verified dangerous-key filtering.",
         ),
         RuleDefinition(
+            "C-ALLOC-001",
+            "Unchecked Multiplication in C/C++ Allocation Size",
+            "CWE-190",
+            "MEMORY_SAFETY",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A count originating from command-line input is multiplied by an element size for allocation without an identified overflow guard.",
+        ),
+        RuleDefinition(
             "C-BUFFER-001",
             "Potential C/C++ Buffer Overflow",
             "CWE-120",
@@ -843,6 +852,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "MEDIUM",
         ),
     ),
+    "C-ALLOC-001": (
+        Advice(
+            "Check allocation-size multiplication before allocating.",
+            "Before malloc(count * sizeof(element)), validate count against SIZE_MAX / sizeof(element) and reject multiplication overflow. For calloc, check its return value and use a standard-compliant implementation; verify the actual input bounds.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "C-BUFFER-001": (
         Advice(
             "Bound the write by the destination buffer size.",
@@ -1016,6 +1033,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
         "JS-PROTOTYPE-001": ["In an isolated test application, submit a harmless JSON object containing an unexpected __proto__ or constructor key; confirm the server rejects the key and no inherited property appears in subsequently constructed objects."],
+        "C-ALLOC-001": ["With a disposable instrumented build, test small valid counts and an oversized synthetic count. The application must reject allocation-size overflow before allocating or copying data."],
         "C-BUFFER-001": ["Use a disposable debug build under ASan or UBSan and send boundary-length non-secret strings. Check that input is bounded to destination capacity and that any truncation preserves a valid terminator."],
         "JS-NOSQL-001": ["In a disposable test database, submit a harmless object with an unexpected MongoDB operator key such as $ne where a scalar is expected. The service must reject unsupported operators before querying."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],

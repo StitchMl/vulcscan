@@ -11,7 +11,7 @@ higher-order functions and dynamic property access are out of scope.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from .dataflow import (
     ALL_SINKS,
@@ -35,6 +35,7 @@ from .dataflow import (
     is_local_path,
     judge,
     merge,
+    replace_value,
     sanitize,
     source_value,
     unique_steps,
@@ -507,7 +508,7 @@ class _Analyzer:
                 if close < 0 or close >= end:
                     continue
                 inner = self._value(open_index + 1, close)
-                values.append(sanitize(replace(inner, composed=False), categories))
+                values.append(sanitize(replace_value(inner, composed=False), categories))
                 for position in range(match.start(), close - start + 1):
                     mask[position] = " "
             joined = "".join(mask)
@@ -544,7 +545,7 @@ class _Analyzer:
                 current = self._lookup(".".join(parts))
             if current is not None:
                 exact = len(parts) == len(name.split("."))
-                values.append(current if exact else replace(current, literal=NOT_CONSTANT, prefix=None))
+                values.append(current if exact else replace_value(current, literal=NOT_CONSTANT, prefix=None))
             else:
                 dynamic = True
         merged = merge(*values) if values else Value()
@@ -552,7 +553,7 @@ class _Analyzer:
         prefix = _string_prefix(stripped)
         if prefix is None and len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped):
             prefix = values[0].prefix
-        result = replace(
+        result = replace_value(
             merged,
             dynamic=merged.dynamic or dynamic or merged.tainted,
             composed=composed and (merged.dynamic or dynamic or merged.tainted),
@@ -560,7 +561,7 @@ class _Analyzer:
             text=" ".join(_string_contents(stripped))[:400] or merged.text,
         )
         if not (len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped)):
-            result = replace(result, literal=NOT_CONSTANT)
+            result = replace_value(result, literal=NOT_CONSTANT)
         return result
 
     @staticmethod

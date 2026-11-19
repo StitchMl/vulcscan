@@ -58,36 +58,44 @@ from .source import split_lines, utf8_column_to_char
 
 SUMMARY_ROUNDS = 4
 
+_REQUEST_QUERY_STRING = "query string"
+_REQUEST_FORM_BODY = "form body"
+_REQUEST_RAW_BODY = "request body"
+_REQUEST_URL = "request URL"
+_REGEX_COMPILE = "re.compile"
+_PATHLIB_MODULE_PREFIX = "pathlib."
+
+
 _REQUEST_ATTRIBUTES = {
-    "args": "query string",
-    "form": "form body",
+    "args": _REQUEST_QUERY_STRING,
+    "form": _REQUEST_FORM_BODY,
     "values": "query string or form body",
     "json": "JSON body",
-    "data": "request body",
+    "data": _REQUEST_RAW_BODY,
     "files": "uploaded file",
     "FILES": "uploaded file",
     "headers": "HTTP header",
     "cookies": "cookie",
     "COOKIES": "cookie",
-    "GET": "query string",
-    "POST": "form body",
-    "body": "request body",
-    "query_params": "query string",
+    "GET": _REQUEST_QUERY_STRING,
+    "POST": _REQUEST_FORM_BODY,
+    "body": _REQUEST_RAW_BODY,
+    "query_params": _REQUEST_QUERY_STRING,
     "path_params": "path parameter",
     "match_info": "path parameter",
-    "stream": "request body",
+    "stream": _REQUEST_RAW_BODY,
     "META": "request metadata",
     "environ": "WSGI environment",
-    "url": "request URL",
-    "full_path": "request URL",
+    "url": _REQUEST_URL,
+    "full_path": _REQUEST_URL,
     "path": "request path",
-    "query_string": "query string",
+    "query_string": _REQUEST_QUERY_STRING,
     "get_json": "JSON body",
-    "get_data": "request body",
-    "get_full_path": "request URL",
-    "rel_url": "request URL",
-    "post": "form body",
-    "form_data": "form body",
+    "get_data": _REQUEST_RAW_BODY,
+    "get_full_path": _REQUEST_URL,
+    "rel_url": _REQUEST_URL,
+    "post": _REQUEST_FORM_BODY,
+    "form_data": _REQUEST_FORM_BODY,
 }
 _TORNADO_INPUT = {"get_argument", "get_arguments", "get_query_argument", "get_body_argument"}
 _LOCAL_CALLS = {"input", "builtins.input", "sys.stdin.read", "sys.stdin.readline", "sys.stdin.readlines"}
@@ -836,7 +844,7 @@ class _Walker:
                 return pattern.literal, call.args[1], name == "re.fullmatch"
         if isinstance(call.func, ast.Attribute) and call.func.attr in {"fullmatch", "match"} and call.args:
             compiled = self.expression(call.func.value, env)
-            if isinstance(compiled.literal, tuple) and len(compiled.literal) == 2 and compiled.literal[0] == "re.compile":
+            if isinstance(compiled.literal, tuple) and len(compiled.literal) == 2 and compiled.literal[0] == _REGEX_COMPILE:
                 return compiled.literal[1], call.args[0], call.func.attr == "fullmatch"
         return None, None, False
 
@@ -906,7 +914,7 @@ class _Walker:
             if key and key in env:
                 return env[key]
             base = self.expression(node.value, env)
-            if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith("pathlib."):
+            if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith(_PATHLIB_MODULE_PREFIX):
                 return sanitize(replace_value(base, origin=None), {FILESYSTEM})
             if base.constant:
                 return Value(dynamic=False) if not base.tainted else base
@@ -928,7 +936,7 @@ class _Walker:
                 return concatenate([left, right])
             if isinstance(node.op, ast.Mod) and (isinstance(left.literal, str) or left.prefix is not None):
                 return concatenate([left, right])
-            if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith("pathlib."):
+            if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith(_PATHLIB_MODULE_PREFIX):
                 joined = merge(left, right)
                 return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
             merged = merge(left, right)
@@ -1055,15 +1063,15 @@ class _Walker:
             return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
         if name in _NORMALIZERS:
             return sanitize(merge(*arguments), {NORMALIZED})
-        if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith("pathlib."):
+        if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX):
             value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
             if short == "resolve" or short == "absolute":
                 value = sanitize(value, {NORMALIZED})
             else:
                 value = replace_value(value, sanitized=value.sanitized - {NORMALIZED})
             return value
-        if name in {"re.compile", "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
-            return Value(literal=("re.compile", arguments[0].literal))
+        if name in {_REGEX_COMPILE, "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
+            return Value(literal=(_REGEX_COMPILE, arguments[0].literal))
         if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
             parsed = merge(*arguments)
             return replace_value(parsed, derived_from=(*parsed.derived_from, *([_dotted(node.args[0])] if _dotted(node.args[0]) else [])), literal=NOT_CONSTANT, prefix=None)
@@ -1329,7 +1337,7 @@ class _Walker:
             return
         if isinstance(node.func, ast.Attribute):
             if short in _PATH_METHODS_ANY_RECEIVER or (
-                short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith("pathlib.")
+                short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX)
             ):
                 yield "PY-PATH-001", f"Path.{short}", receiver, Confidence.HIGH, {}
                 return

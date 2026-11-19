@@ -120,6 +120,15 @@ def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
                     aliases.add(symbol.group(1))
         targets: dict[str, ImportedSink] = {}
         for alias in aliases:
+            # An imported identifier shadowed by a local declaration or function
+            # parameter cannot safely be treated as the imported binding.
+            escaped = re.escape(alias)
+            if re.search(
+                rf"\\b(?:function|class)\\s+{escaped}\\b|"
+                rf"\\b(?:function|catch)\\s*(?:[A-Za-z_$][\\w$]*)?\\s*\\([^)]*\\b{escaped}\\b",
+                clean,
+            ):
+                continue
             imported = _named_import(clean, alias)
             if imported is None:
                 continue

@@ -61,17 +61,17 @@ jobs:
               else:
                   print(json.dumps(data, ensure_ascii=False)[:6000])
           
-          for branch_params in ({"branch": "main"}, *({"pullRequest": str(n)} for n in (37,))):
+          for branch_params in ({"branch": "main"},):
               section = list(branch_params.items())[0]
               print("ISSUES", section[0], section[1])
-              first = retrieve("issues/search", {"componentKeys": PROJECT, **branch_params, "ps": 100, "p": 1})
+              first = retrieve("issues/search", {"componentKeys": PROJECT, **branch_params, "ps": 500, "p": 1})
               if first is None:
                   print("UNAVAILABLE")
                   continue
               total = first.get("paging", {}).get("total", first.get("total", 0))
               print("TOTAL", total)
               issues = first.get("issues", [])
-              for issue in issues[:100]:
+              for issue in issues[:500]:
                   print(json.dumps({
                       "key": issue.get("key"),
                       "rule": issue.get("rule"),

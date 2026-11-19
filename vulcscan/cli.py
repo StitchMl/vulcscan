@@ -5,6 +5,7 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .models import ScanConfig, Severity
@@ -235,6 +236,68 @@ def _use_color(mode: str, output: Path | None, report_format: str) -> bool:
     return output is None and sys.stdout.isatty() and _enable_windows_virtual_terminal()
 
 
+def _option_error(args: argparse.Namespace) -> str | None:
+    if args.workers < 1 or args.workers > 8:
+        return "--workers must be an integer between 1 and 8"
+    if args.offline and args.update_cve:
+        return "--offline and --update-cve cannot be used together"
+    if args.cve_db and args.update_cve:
+        return "--cve-db and --update-cve cannot be used together"
+    if args.cve_db and args.cve_cache:
+        return "--cve-db and --cve-cache cannot be combined"
+    if args.cve_cache and args.no_cve:
+        return "--cve-cache and --no-cve cannot be combined"
+    if args.cve_db and args.no_cve:
+        return "--cve-db and --no-cve cannot be used together"
+    return None
+
+
+def _normalize_file_selection(supplied: str) -> str | None:
+    """Return a clean repository-relative path, or None when it is unsafe."""
+    normalized = supplied.replace(chr(92), "/")
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(part == ".." for part in parts)
+        or ":" in parts[0]
+        or not any(part not in ("", ".") for part in parts)
+    ):
+        return None
+    return "/".join(part for part in parts if part not in ("", "."))
+
+
+def _select_files(files: Sequence[str]) -> tuple[frozenset[str] | None, str | None]:
+    """Return (selection, rejected path); the selection is None when no files were given."""
+    if not files:
+        return None, None
+    selected: set[str] = set()
+    for supplied in files:
+        clean = _normalize_file_selection(supplied)
+        if clean is None:
+            return None, supplied
+        selected.add(clean)
+    return frozenset(selected), None
+
+
+def _write_outputs(
+    result: Any, root: Path, severity: Any, content: str, output: Path | None, diff_path: Path | None
+) -> None:
+    if output is None:
+        _write_stdout(content)
+    else:
+        write_report(output, content)
+        print(f"vulcscan: report written to {output}", file=sys.stderr)
+    if diff_path is not None:
+        diff = render_unified_diff(result, root, severity)
+        write_report(diff_path, diff)
+        if not diff:
+            print(
+                "vulcscan: no verified machine-applicable patch was available",
+                file=sys.stderr,
+            )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -247,23 +310,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not root.is_dir():
         _error(f"scan path is not a directory: {root}")
         return 2
-    if args.workers < 1 or args.workers > 8:
-        _error("--workers must be an integer between 1 and 8")
-        return 2
-    if args.offline and args.update_cve:
-        _error("--offline and --update-cve cannot be used together")
-        return 2
-    if args.cve_db and args.update_cve:
-        _error("--cve-db and --update-cve cannot be used together")
-        return 2
-    if args.cve_db and args.cve_cache:
-        _error("--cve-db and --cve-cache cannot be combined")
-        return 2
-    if args.cve_cache and args.no_cve:
-        _error("--cve-cache and --no-cve cannot be combined")
-        return 2
-    if args.cve_db and args.no_cve:
-        _error("--cve-db and --no-cve cannot be used together")
+    option_error = _option_error(args)
+    if option_error is not None:
+        _error(option_error)
         return 2
 
     report_format = _report_format(args.format, args.output)
@@ -273,23 +322,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error("--output and --generate-diff must name different files")
         return 2
 
-    only_files = None
-    if args.files:
-        selected: set[str] = set()
-        for supplied in args.files:
-            normalized = supplied.replace(chr(92), "/")
-            parts = normalized.split("/")
-            if (
-                not normalized
-                or normalized.startswith("/")
-                or any(part == ".." for part in parts)
-                or ":" in parts[0]
-                or not any(part not in ("", ".") for part in parts)
-            ):
-                _error(f"--files requires repository-relative file paths: {supplied}")
-                return 2
-            selected.add("/".join(part for part in parts if part not in ("", ".")))
-        only_files = frozenset(selected)
+    only_files, rejected = _select_files(args.files)
+    if rejected is not None:
+        _error(f"--files requires repository-relative file paths: {rejected}")
+        return 2
 
     config = ScanConfig(
         root=root,
@@ -330,19 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
-        if output is None:
-            _write_stdout(content)
-        else:
-            write_report(output, content)
-            print(f"vulcscan: report written to {output}", file=sys.stderr)
-        if diff_path is not None:
-            diff = render_unified_diff(result, root, args.severity)
-            write_report(diff_path, diff)
-            if not diff:
-                print(
-                    "vulcscan: no verified machine-applicable patch was available",
-                    file=sys.stderr,
-                )
+        _write_outputs(result, root, args.severity, content, output, diff_path)
     except OSError as exc:
         _error(f"cannot write output: {exc}")
         return 2

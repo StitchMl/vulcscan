@@ -418,6 +418,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "An entire HTTP-controlled object is passed directly to a MongoDB-style query method, allowing untrusted query operators or selectors.",
         ),
         RuleDefinition(
+            "JS-TIMING-001",
+            "Timing-Sensitive JavaScript Secret Comparison",
+            "CWE-208",
+            "AUTH",
+            Severity.MEDIUM,
+            Confidence.MEDIUM,
+            "A direct HTTP field is compared with a secret-named value using ordinary JavaScript equality, which may disclose secret information through timing differences.",
+        ),
+        RuleDefinition(
             "PY-TIMING-001",
             "Timing-Sensitive Secret Comparison",
             "CWE-208",
@@ -876,6 +885,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "MEDIUM",
         ),
     ),
+    "JS-TIMING-001": (
+        Advice(
+            "Use constant-time secret verification where appropriate.",
+            "For binary secret values, convert to validated equal-length Buffer values and compare with crypto.timingSafeEqual; reject length mismatches without introducing a variable-time prefix comparison. Passwords require an appropriate password-KDF verifier.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "PY-TIMING-001": (
         Advice(
             "Use constant-time verification for secret values.",
@@ -1036,6 +1053,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "C-ALLOC-001": ["With a disposable instrumented build, test small valid counts and an oversized synthetic count. The application must reject allocation-size overflow before allocating or copying data."],
         "C-BUFFER-001": ["Use a disposable debug build under ASan or UBSan and send boundary-length non-secret strings. Check that input is bounded to destination capacity and that any truncation preserves a valid terminator."],
         "JS-NOSQL-001": ["In a disposable test database, submit a harmless object with an unexpected MongoDB operator key such as $ne where a scalar is expected. The service must reject unsupported operators before querying."],
+        "JS-TIMING-001": ["On an isolated test service, compare disposable tokens differing near the first and last character and review that the implementation uses a constant-time comparison for equal-length secret buffers. Do not probe live authentication endpoints."],
         "PY-TIMING-001": ["Use two disposable tokens of equal length differing at the first and last positions and review whether the code uses hmac.compare_digest; avoid timing experiments on production authentication endpoints."],
         "PY-TAR-EXTRACT-001": ["In a disposable directory, prepare a TAR containing an ordinary file with a `../` entry name and no sensitive content; the extractor must reject traversal or keep all writes strictly within the destination. Do not test against production files."],
         "C-FORMAT-001": ["On an isolated debug build, supply benign input containing literal format markers such as `%s` and `%x`. The program must print them as ordinary text and must not interpret them as format directives; use sanitizers for memory safety checks."],

@@ -16,6 +16,7 @@ from .binary import analyze_binary, binary_kind, looks_like_binary
 from .dependencies import is_manifest_path, scan_dependencies
 from .guidance import enrich_finding
 from .javascript import analyze_javascript
+from .js_interproc import imported_sink_map
 from .lexical import lexical_findings
 from .remote import has_remote_source
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
@@ -331,6 +332,7 @@ def scan(config: ScanConfig) -> ScanResult:
 
 
 def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
+    imported_sinks = imported_sink_map(files)
     python_sources = [(item.relative, item.text) for item in files if item.language == "Python"]
     if python_sources:
         project = PythonProject(python_sources)
@@ -342,7 +344,10 @@ def _analyze_files(files: list[SourceFile], result: ScanResult) -> None:
         try:
             result.findings.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
             if source.language in {"JavaScript", "TypeScript"}:
-                result.findings.extend(analyze_javascript(source.relative, source.text, source.language))
+                result.findings.extend(analyze_javascript(
+                    source.relative, source.text, source.language,
+                    imported_sinks.get(source.relative),
+                ))
             elif source.language in CATALOGS:
                 result.findings.extend(analyze_structured(source.relative, source.text, source.language))
         except Exception as exc:

@@ -66,7 +66,7 @@ def test_modern_token_formats_are_redacted(tmp_path: Path) -> None:
         "npm_" + "A1b2C3d4E5f6G7h8I9j0K1l2",
         "pypi-" + "A1b2C3d4E5f6G7h8I9j0K1l2",
     )
-    findings = _scan(tmp_path, "credentials.txt", "\n".join(formats) + "\n")
+    findings = _scan(tmp_path, "credentials.js", "\n".join(formats) + "\n")
     secrets = [f for f in findings if f.rule_id == "SECRET-001"]
     assert len(secrets) == len(formats)
     for finding in secrets:
@@ -76,7 +76,7 @@ def test_modern_token_formats_are_redacted(tmp_path: Path) -> None:
 
 def test_example_file_does_not_emit_new_token_findings(tmp_path: Path) -> None:
     findings = _scan(
-        tmp_path, "credentials.example",
+        tmp_path, "credentials.example.js",
         "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2" + "\n",
     )
     assert not [f for f in findings if f.rule_id == "SECRET-001"]

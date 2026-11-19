@@ -7,8 +7,10 @@ import tokenize
 from typing import Any
 
 from .models import Finding
+from .source import JS_STYLE, blank_comments, split_lines
 
 _DIRECTIVE = re.compile(r"^#\s*vulcscan:ignore\s+([A-Z][A-Z0-9_-]+)\s*$", re.IGNORECASE)
+_JS_DIRECTIVE = re.compile(r"^//\s*vulcscan:ignore\s+([A-Z][A-Z0-9_-]+)\s*$", re.IGNORECASE)
 
 
 def suppression_index(files: list[Any]) -> dict[str, set[tuple[int, str]]]:
@@ -19,23 +21,41 @@ def suppression_index(files: list[Any]) -> dict[str, set[tuple[int, str]]]:
     """
     indexed: dict[str, set[tuple[int, str]]] = {}
     for source in files:
-        if source.language != "Python":
-            continue
-        lines = source.text.splitlines()
         active: set[tuple[int, str]] = set()
-        try:
-            tokens = tokenize.generate_tokens(io.StringIO(source.text).readline)
-            for token in tokens:
-                if token.type != tokenize.COMMENT:
+        if source.language == "Python":
+            lines = split_lines(source.text)
+            try:
+                tokens = tokenize.generate_tokens(io.StringIO(source.text).readline)
+                for token in tokens:
+                    if token.type != tokenize.COMMENT:
+                        continue
+                    match = _DIRECTIVE.fullmatch(token.string.strip())
+                    if not match:
+                        continue
+                    row, column = token.start
+                    prefix = lines[row - 1][:column]
+                    target = row + 1 if not prefix.strip() else row
+                    active.add((target, match.group(1).upper()))
+            except (tokenize.TokenError, IndentationError, SyntaxError):
+                continue
+        elif source.language in {"JavaScript", "TypeScript"}:
+            # blank_comments preserves offsets and retains string contents.
+            clean = blank_comments(source.text, JS_STYLE)
+            for row, (line, visible) in enumerate(
+                zip(split_lines(source.text), split_lines(clean), strict=True), 1
+            ):
+                comment = re.search(r"//.*$", line)
+                if comment is None:
                     continue
-                match = _DIRECTIVE.fullmatch(token.string.strip())
-                if not match:
+                if visible[comment.start():comment.start() + 2] != "  ":
                     continue
-                row, column = token.start
-                prefix = lines[row - 1][:column]
-                target = row + 1 if not prefix.strip() else row
+                match = _JS_DIRECTIVE.fullmatch(comment.group(0).strip())
+                if match is None:
+                    continue
+                prefix = visible[:comment.start()]
+                target = row if prefix.strip() else row + 1
                 active.add((target, match.group(1).upper()))
-        except (tokenize.TokenError, IndentationError, SyntaxError):
+        else:
             continue
         if active:
             indexed[source.relative] = active

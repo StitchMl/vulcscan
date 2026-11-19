@@ -45,8 +45,7 @@ def elf_imported_symbols(data: bytes) -> set[str] | None:
         if row is None:
             return None
         kind, offset_in_file, section_size, link, entry_size = (
-            (row[1], row[4], row[5], row[6], row[9])
-            if wide else (row[1], row[4], row[5], row[6], row[9])
+            row[1], row[4], row[5], row[6], row[9]
         )
         if section_size and (offset_in_file > len(data) or section_size > len(data) - offset_in_file):
             # SHT_NOBITS sections take no file space.

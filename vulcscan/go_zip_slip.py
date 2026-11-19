@@ -42,22 +42,67 @@ def _block_end(mask: str, brace: int) -> int | None:
     return None
 
 
+def _line_location(path: str, source: str, start: int, end: int) -> Location:
+    return Location(
+        path,
+        source.count("\n", 0, start) + 1,
+        start - source.rfind("\n", 0, start),
+        source.count("\n", 0, end) + 1,
+    )
+
+
+def _zip_finding(
+    path: str,
+    source: str,
+    loop: re.Match[str],
+    join: re.Match[str],
+    write: re.Match[str],
+) -> Finding:
+    definition = rule("GO-ZIPSLIP-001")
+    source_start = loop.end() + join.start("entry")
+    source_end = loop.end() + join.end("entry") + len(".Name")
+    sink_start = loop.end() + join.end() + write.start()
+    sink_end = loop.end() + join.end() + write.end()
+    src_loc = _line_location(path, source, source_start, source_end)
+    dst_loc = _line_location(path, source, sink_start, sink_end)
+    evidence = " ".join(source[loop.end() + join.start():sink_end].split())[:350]
+    return Finding(
+        rule_id=definition.rule_id, name=definition.name,
+        cwe=definition.cwe, severity=definition.severity,
+        confidence=Confidence.MEDIUM, category=definition.category,
+        language="Go", location=dst_loc, source=src_loc,
+        sink="ZIP entry to os file write", evidence=evidence,
+        reason=definition.explanation,
+        flow=[
+            FlowStep("SOURCE", src_loc, source[source_start:source_end],
+                     "ZIP archive member name."),
+            FlowStep("SINK", dst_loc, source[sink_start:sink_end],
+                     "Archive-derived path opened for writing."),
+        ],
+        remediations=remediations_for(definition.rule_id, evidence),
+    )
+
+
+def _unguarded_write(
+    join: re.Match[str], body: str, source_body: str
+) -> re.Match[str] | None:
+    """First write to the joined destination with no guard in between."""
+    for write in _WRITE.finditer(body[join.end():]):
+        if write.group("dest") != join.group("dest"):
+            continue
+        safe_section = source_body[join.end():join.end() + write.start()]
+        if _GUARD.search(safe_section):
+            continue
+        return write
+    return None
+
+
 def analyze_go_zip_slip(path: str, source: str) -> list[Finding]:
     visible = blank_comments(source, C_STYLE)
     mask = code_mask(source, C_STYLE)
     if not re.search(r"""["']archive/zip["']""", visible):
         return []
-    definition = rule("GO-ZIPSLIP-001")
     findings: list[Finding] = []
-
-    def loc(start: int, end: int) -> Location:
-        return Location(
-            path,
-            source.count("\n", 0, start) + 1,
-            start - source.rfind("\n", 0, start),
-            source.count("\n", 0, end) + 1,
-        )
-
     for loop in _LOOP.finditer(mask):
         closing = _block_end(mask, loop.end() - 1)
         if closing is None:
@@ -67,33 +112,7 @@ def analyze_go_zip_slip(path: str, source: str) -> list[Finding]:
         for join in _JOIN.finditer(body):
             if join.group("entry") != loop.group("item"):
                 continue
-            following = body[join.end():]
-            for write in _WRITE.finditer(following):
-                if write.group("dest") != join.group("dest"):
-                    continue
-                safe_section = source_body[join.end():join.end() + write.start()]
-                if _GUARD.search(safe_section):
-                    continue
-                source_start = loop.end() + join.start("entry")
-                source_end = loop.end() + join.end("entry") + len(".Name")
-                sink_start = loop.end() + join.end() + write.start()
-                sink_end = loop.end() + join.end() + write.end()
-                src_loc, dst_loc = loc(source_start, source_end), loc(sink_start, sink_end)
-                evidence = " ".join(source[loop.end() + join.start():sink_end].split())[:350]
-                findings.append(Finding(
-                    rule_id=definition.rule_id, name=definition.name,
-                    cwe=definition.cwe, severity=definition.severity,
-                    confidence=Confidence.MEDIUM, category=definition.category,
-                    language="Go", location=dst_loc, source=src_loc,
-                    sink="ZIP entry to os file write", evidence=evidence,
-                    reason=definition.explanation,
-                    flow=[
-                        FlowStep("SOURCE", src_loc, source[source_start:source_end],
-                                 "ZIP archive member name."),
-                        FlowStep("SINK", dst_loc, source[sink_start:sink_end],
-                                 "Archive-derived path opened for writing."),
-                    ],
-                    remediations=remediations_for(definition.rule_id, evidence),
-                ))
-                break
+            write = _unguarded_write(join, body, source_body)
+            if write is not None:
+                findings.append(_zip_finding(path, source, loop, join, write))
     return findings

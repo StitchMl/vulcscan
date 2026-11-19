@@ -12,6 +12,7 @@ from typing import Any
 
 from .js_routes import resolve_handler
 from .models import Finding
+from .source import C_STYLE, blank_comments, code_mask
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
 _EXPRESS_ROUTE = re.compile(
@@ -88,6 +89,59 @@ def _javascript_routes(relative: str, source: str) -> list[dict[str, Any]]:
     return endpoints
 
 
+_GIN_ROUTE = re.compile(
+    r"\b(?:r|router|engine|api|group|v1|v2)\s*\.\s*"
+    r"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Any|Handle)\s*"
+    r"\(\s*(?P<quote>[\"\x60])(?P<path>[^\"\x60\r\n]+)(?P=quote)"
+)
+_GIN_HANDLER = re.compile(r"^\s*,\s*(?P<handler>[A-Za-z_]\w*)\s*\)")
+_GIN_MIDDLEWARE_HANDLER = re.compile(
+    r"^\s*,\s*(?P<middleware>[A-Za-z_]\w*)\s*,\s*(?P<handler>[A-Za-z_]\w*)\s*\)"
+)
+
+
+def _gin_routes(relative: str, source: str) -> list[dict[str, Any]]:
+    """Capture direct literal Gin registrations, not dynamic Group prefixes."""
+    if not (
+        re.search(r"(?m)^[ \t]*import\b[\s\S]{0,2000}github\.com/gin-gonic/gin", source)
+        or re.search(r"\bgin\s*\.\s*(?:Default|New)\s*\(", source)
+    ):
+        return []
+    visible = blank_comments(source, C_STYLE)
+    mask = code_mask(source, C_STYLE)
+    endpoints: list[dict[str, Any]] = []
+    for match in _GIN_ROUTE.finditer(visible):
+        # Do not parse route-like text embedded inside Go string literals.
+        if mask[match.start():match.start() + 1] != visible[match.start():match.start() + 1]:
+            continue
+        method, path = match.group("method"), match.group("path")
+        if not path.startswith("/") or path.startswith("//"):
+            continue
+        if method == "Handle":
+            # Gin.Handle(method, path, handler) has a different signature.
+            continue
+        tail = visible[match.end():match.end() + 200]
+        direct = _GIN_HANDLER.match(tail)
+        middleware = _GIN_MIDDLEWARE_HANDLER.match(tail)
+        handler = direct.group("handler") if direct else (
+            middleware.group("handler") if middleware else None
+        )
+        auth = "unknown"
+        if middleware and any(
+            token in middleware.group("middleware").casefold() for token in _AUTH_NAMES
+        ):
+            auth = "present"
+        endpoints.append({
+            "method": ["ANY" if method == "Any" else method],
+            "path": path,
+            "file": relative,
+            "line": source.count("\n", 0, match.start()) + 1,
+            "handler": handler,
+            "authentication": auth,
+        })
+    return endpoints
+
+
 _QUERY_PARAM = re.compile(
     r"""(?:request\.args(?:\.get)?\(\s*['"]([A-Za-z_]\w*)['"]|"""
     r"""request\.args\[\s*['"]([A-Za-z_]\w*)['"]\s*\]|"""
@@ -129,6 +183,8 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             routes.extend(_python_routes(source.relative, source.text))
         elif source.language in {"JavaScript", "TypeScript"}:
             routes.extend(_javascript_routes(source.relative, source.text))
+        elif source.language == "Go":
+            routes.extend(_gin_routes(source.relative, source.text))
     modules = {
         source.relative: source for source in files
         if source.language in {"JavaScript", "TypeScript"}

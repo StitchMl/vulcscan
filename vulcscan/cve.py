@@ -201,6 +201,27 @@ class OSVClient:
         except (OSError, ValueError, TypeError) as exc:
             self.errors.append(f"cannot write OSV cache: {exc}")
 
+    def _read_snapshot_entries(self, path: Path) -> list[Any] | None:
+        try:
+            if path.is_symlink():
+                raise ValueError("symbolic links are not accepted for local OSV snapshots")
+            with path.open("rb") as handle:
+                body = handle.read(_MAX_RESPONSE_BYTES + 1)
+            if len(body) > _MAX_RESPONSE_BYTES:
+                raise ValueError("local OSV snapshot exceeds size limit")
+            document = json.loads(body.decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            self.errors.append(f"cannot load local OSV snapshot: {exc}")
+            return None
+        if not isinstance(document, dict) or document.get("format") != "vulcscan-osv-v1":
+            self.errors.append("local OSV snapshot has an unsupported format")
+            return None
+        entries = document.get("entries")
+        if not isinstance(entries, list) or len(entries) > 100000:
+            self.errors.append("local OSV snapshot has invalid entries")
+            return None
+        return entries
+
     def _query_local(self, selected: dict[str, Dependency]) -> list[Vulnerability]:
         """Read a user-supplied exact-version snapshot without any network call.
 
@@ -213,23 +234,8 @@ class OSVClient:
         path = self.local_db or self.cache_path
         if path is None:
             return []
-        try:
-            if path.is_symlink():
-                raise ValueError("symbolic links are not accepted for local OSV snapshots")
-            with path.open("rb") as handle:
-                body = handle.read(_MAX_RESPONSE_BYTES + 1)
-            if len(body) > _MAX_RESPONSE_BYTES:
-                raise ValueError("local OSV snapshot exceeds size limit")
-            document = json.loads(body.decode("utf-8"))
-        except (OSError, ValueError) as exc:
-            self.errors.append(f"cannot load local OSV snapshot: {exc}")
-            return []
-        if not isinstance(document, dict) or document.get("format") != "vulcscan-osv-v1":
-            self.errors.append("local OSV snapshot has an unsupported format")
-            return []
-        entries = document.get("entries")
-        if not isinstance(entries, list) or len(entries) > 100000:
-            self.errors.append("local OSV snapshot has invalid entries")
+        entries = self._read_snapshot_entries(path)
+        if entries is None:
             return []
         grouped = _group_snapshot_entries(entries)
         found: list[Vulnerability] = []

@@ -13,6 +13,7 @@ from typing import Any
 from .js_routes import resolve_handler
 from .models import Finding
 from .source import C_STYLE, blank_comments, code_mask
+from .spring_routes import spring_routes
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
 _EXPRESS_ROUTE = re.compile(
@@ -185,6 +186,8 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             routes.extend(_javascript_routes(source.relative, source.text))
         elif source.language == "Go":
             routes.extend(_gin_routes(source.relative, source.text))
+        elif source.language == "Java":
+            routes.extend(spring_routes(source.relative, source.text))
     modules = {
         source.relative: source for source in files
         if source.language in {"JavaScript", "TypeScript"}

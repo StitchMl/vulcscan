@@ -198,7 +198,7 @@ class OSVClient:
                         os.unlink(temporary)
                     except OSError:
                         pass
-        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             self.errors.append(f"cannot write OSV cache: {exc}")
 
     def _query_local(self, selected: dict[str, Dependency]) -> list[Vulnerability]:
@@ -221,7 +221,7 @@ class OSVClient:
             if len(body) > _MAX_RESPONSE_BYTES:
                 raise ValueError("local OSV snapshot exceeds size limit")
             document = json.loads(body.decode("utf-8"))
-        except (OSError, ValueError, UnicodeError) as exc:
+        except (OSError, ValueError) as exc:
             self.errors.append(f"cannot load local OSV snapshot: {exc}")
             return []
         if not isinstance(document, dict) or document.get("format") != "vulcscan-osv-v1":
@@ -344,7 +344,7 @@ class OSVClient:
             except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
                 retryable = True
                 message = f"OSV network error for {url}: {exc}"
-            except (UnicodeError, ValueError, OSError) as exc:
+            except (ValueError, OSError) as exc:
                 retryable = False
                 message = f"OSV invalid response for {url}: {exc}"
             if attempt >= self.retries or not retryable:

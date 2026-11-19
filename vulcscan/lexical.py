@@ -235,6 +235,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language == "Dockerfile":
         _dockerfile(code_lines, add)
     if language == "PHP":
+        _php_twig_ssti(text, add)
         _php_type_juggling(text, add)
         _php_xss(text, add)
         _database_race(text, add)
@@ -636,6 +637,50 @@ def _php_type_juggling(text: str, add: Callable[..., None]) -> None:
             column,
             "loose authentication comparison",
             match.group(0),
+            Confidence.MEDIUM,
+        )
+
+
+_PHP_TWIG_SOURCE = (
+    r"(?:\$_(?:GET|POST|REQUEST)\s*\[\s*['\"][^'\"\n]{1,100}['\"]\s*\]"
+    r"|\$[A-Za-z_]\w*)"
+)
+_PHP_TWIG_COMPILE = re.compile(
+    rf"\$(?:twig|twigEnvironment|twig_env)\s*->\s*createTemplate\s*"
+    rf"\(\s*(?P<value>{_PHP_TWIG_SOURCE})\s*\)"
+)
+_PHP_DIRECT_REQUEST = re.compile(
+    r"^\$_(?:GET|POST|REQUEST)\s*\[\s*['\"][^'\"\n]{1,100}['\"]\s*\]$"
+)
+_PHP_ASSIGN = re.compile(r"\$(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;\n]{0,500});")
+
+
+def _php_twig_ssti(text: str, add: Callable[..., None]) -> None:
+    """Find request-controlled Twig source, never context-only rendering."""
+    clean = blank_comments(text, "php")
+    mask = code_mask(text, "php")
+    for match in _PHP_TWIG_COMPILE.finditer(clean):
+        # Literal strings containing '$twig->createTemplate' are not calls.
+        if mask[match.start():match.start() + 5] != clean[match.start():match.start() + 5]:
+            continue
+        value = match.group("value").strip()
+        if not _PHP_DIRECT_REQUEST.fullmatch(value):
+            if not re.fullmatch(r"\$[A-Za-z_]\w*", value):
+                continue
+            name = value[1:]
+            before = clean[max(0, match.start() - 2000):match.start()]
+            assignments = [
+                assignment for assignment in _PHP_ASSIGN.finditer(before)
+                if assignment.group("name") == name
+            ]
+            if not assignments or not _PHP_DIRECT_REQUEST.fullmatch(assignments[-1].group("value").strip()):
+                continue
+        line = text.count("\n", 0, match.start()) + 1
+        column = match.start() - text.rfind("\n", 0, match.start())
+        add(
+            "PHP-SSTI-001", line, column,
+            "Twig createTemplate source",
+            " ".join(text[match.start():match.end()].split())[:300],
             Confidence.MEDIUM,
         )
 

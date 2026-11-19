@@ -442,3 +442,53 @@ def test_cli_generates_verified_diff_without_changing_target(
 def test_parse_size_rejects_zero_bytes() -> None:
     with pytest.raises(argparse.ArgumentTypeError, match="greater than zero"):
         cli.parse_size("0.1B")
+
+
+def test_cli_files_limits_scan_to_selected_paths(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_scan(config):
+        captured["files"] = config.only_files
+        return _result([])
+
+    monkeypatch.setattr(cli, "scan", fake_scan)
+    assert cli.main([str(tmp_path), "--files", "./src/app.py", "--files", r"src\\other.py"]) == 0
+    assert captured["files"] == frozenset({"src/app.py", "src/other.py"})
+
+
+@pytest.mark.parametrize("unsafe", ["../secret.py", "/etc/passwd", "C:/temp/a.py", "."])
+def test_cli_files_rejects_unsafe_paths(tmp_path: Path, unsafe: str) -> None:
+    assert cli.main([str(tmp_path), "--files", unsafe]) == 2
+
+
+def test_python_diff_skips_syntax_breakage(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "app.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    finding = _finding(
+        Severity.HIGH, 1, current="value = 1",
+        suggested="value = (", machine_applicable=True,
+    )
+    assert render_unified_diff(_result([finding]), tmp_path) == ""
+
+
+def test_python_diff_skips_missing_import(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "app.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    finding = _finding(
+        Severity.HIGH, 1, current="value = 1",
+        suggested="value = hmac.compare_digest(a, b)", machine_applicable=True,
+    )
+    assert render_unified_diff(_result([finding]), tmp_path) == ""
+
+
+def test_python_diff_accepts_existing_import(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "app.py"
+    source.parent.mkdir()
+    source.write_text("import hmac\nvalue = 1\n", encoding="utf-8")
+    finding = _finding(
+        Severity.HIGH, 2, current="value = 1",
+        suggested="value = hmac.compare_digest(a, b)", machine_applicable=True,
+    )
+    assert "+value = hmac.compare_digest(a, b)" in render_unified_diff(_result([finding]), tmp_path)

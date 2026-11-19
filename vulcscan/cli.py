@@ -100,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="exclude a glob pattern; repeat the option for multiple patterns",
     )
     parser.add_argument(
+        "--files",
+        action="append",
+        metavar="PATH",
+        help="scan only this repository-relative file; repeat for multiple files",
+    )
+    parser.add_argument(
         "--max-file-size",
         type=parse_size,
         default=2 * 1024 * 1024,
@@ -218,6 +224,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error("--output and --generate-diff must name different files")
         return 2
 
+    only_files = None
+    if args.files:
+        selected: set[str] = set()
+        for supplied in args.files:
+            normalized = supplied.replace(chr(92), "/")
+            parts = normalized.split("/")
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or any(part == ".." for part in parts)
+                or ":" in parts[0]
+                or not any(part not in ("", ".") for part in parts)
+            ):
+                _error(f"--files requires repository-relative file paths: {supplied}")
+                return 2
+            selected.add("/".join(part for part in parts if part not in ("", ".")))
+        only_files = frozenset(selected)
+
     config = ScanConfig(
         root=root,
         offline=not args.update_cve,
@@ -229,6 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_file_size=args.max_file_size,
         patch_preview=args.patch_preview,
         generate_diff=diff_path,
+        only_files=only_files,
     )
     try:
         result = scan(config)

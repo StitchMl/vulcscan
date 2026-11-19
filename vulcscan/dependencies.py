@@ -13,7 +13,7 @@ import json
 import re
 import tomllib
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -35,7 +35,7 @@ _POETRY_LOCK = "poetry.lock"
 _YARN_LOCK = "yarn.lock"
 _NODE_MODULES = "node_modules/"
 
-_PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s*\[[^\]]*\])?\s*(.*)$")
+_PYTHON_REQUIREMENT = re.compile(r"^\s*+([A-Za-z0-9][A-Za-z0-9._-]*+)(?:\s*+\[[^\]]*+\])?+\s*+(.*)$")
 _EXACT_VERSION = re.compile(r"^v?\d+(?:\.[0-9A-Za-z]+)*(?:[-+.][0-9A-Za-z.+-]*)?$")
 _MANIFEST_NAMES = {
     "build.gradle",
@@ -94,20 +94,23 @@ def discover_manifests(root: Path) -> list[Path]:
     found: list[Path] = []
     stack = [root]
     while stack:
-        directory = stack.pop()
-        try:
-            entries = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
-        except OSError:
-            continue
-        for entry in entries:
-            if entry.is_symlink():
-                continue
-            if entry.is_dir():
-                if entry.name.casefold() not in _SKIPPED_DIRECTORIES:
-                    stack.append(entry)
-            elif entry.is_file() and is_manifest_path(entry.relative_to(root).as_posix()):
-                found.append(entry)
+        _scan_directory(stack.pop(), root, stack, found)
     return found
+
+
+def _scan_directory(directory: Path, root: Path, stack: list[Path], found: list[Path]) -> None:
+    try:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            if entry.name.casefold() not in _SKIPPED_DIRECTORIES:
+                stack.append(entry)
+        elif entry.is_file() and is_manifest_path(entry.relative_to(root).as_posix()):
+            found.append(entry)
 
 
 def scan_dependencies(root: Path, manifest_paths: Iterable[Path] | None = None) -> tuple[list[Dependency], list[ScanError]]:
@@ -220,29 +223,33 @@ def _exact_version(value: str | None) -> str | None:
 def _parse_requirements(text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
     for line_number, raw in _logical_lines(text):
-        value = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+        value = re.split(r"\s#", raw, maxsplit=1)[0].strip()
         if not value or value.startswith(("-", ".", "/", "#")) or "://" in value or " @ " in value:
             continue
         value = value.split(";", 1)[0].strip()
-        value = re.sub(r"\s+--hash(?:=|\s).*$", "", value).strip()
+        value = re.sub(r"\s--hash[=\s].*$", "", value).strip()
         match = _PYTHON_REQUIREMENT.match(value)
         if not match:
             continue
         name, constraint = match.groups()
-        exact = re.fullmatch(r"={2,3}\s*([^,\s*]+)", constraint.strip())
-        dependency = _dependency(
-            name,
-            exact.group(1) if exact else None,
-            "PyPI",
-            source,
-            line_number,
-            direct=True,
-            version_source=MANIFEST_PIN if exact else None,
-            constraint=constraint,
-        )
+        dependency = _requirement_dependency(name, constraint, source, line_number)
         if dependency:
             result.append(dependency)
     return result
+
+
+def _requirement_dependency(name: str, constraint: str, source: str, line: int) -> Dependency | None:
+    exact = re.fullmatch(r"={2,3}\s*([^,\s*]+)", constraint.strip())
+    return _dependency(
+        name,
+        exact.group(1) if exact else None,
+        "PyPI",
+        source,
+        line,
+        direct=True,
+        version_source=MANIFEST_PIN if exact else None,
+        constraint=constraint,
+    )
 
 
 def _logical_lines(text: str) -> list[tuple[int, str]]:
@@ -264,6 +271,10 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
 
 def _parse_pyproject(text: str, source: str) -> list[Dependency]:
     document = tomllib.loads(text)
+    return [*_pyproject_requirements(document, text, source), *_poetry_dependencies(document, text, source)]
+
+
+def _pyproject_requirements(document: dict[str, Any], text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
     project = _mapping(document.get("project"))
     requirements = list(_string_list(project.get("dependencies")))
@@ -277,19 +288,14 @@ def _parse_pyproject(text: str, source: str) -> list[Dependency]:
         if not match or " @ " in value or "://" in value:
             continue
         name, constraint = match.groups()
-        exact = re.fullmatch(r"={2,3}\s*([^,\s*]+)", constraint.strip())
-        dependency = _dependency(
-            name,
-            exact.group(1) if exact else None,
-            "PyPI",
-            source,
-            _line_of(text, requirement),
-            direct=True,
-            version_source=MANIFEST_PIN if exact else None,
-            constraint=constraint,
-        )
+        dependency = _requirement_dependency(name, constraint, source, _line_of(text, requirement))
         if dependency:
             result.append(dependency)
+    return result
+
+
+def _poetry_dependencies(document: dict[str, Any], text: str, source: str) -> list[Dependency]:
+    result: list[Dependency] = []
     poetry = _mapping(_mapping(document.get("tool")).get("poetry"))
     sections = [_mapping(poetry.get("dependencies")), _mapping(poetry.get("dev-dependencies"))]
     sections.extend(_mapping(_mapping(group).get("dependencies")) for group in _mapping(poetry.get("group")).values())
@@ -318,7 +324,7 @@ def _poetry_exact(constraint: str | None) -> str | None:
     """Poetry treats a bare version and ``==x`` as exact requirements."""
     if not constraint:
         return None
-    match = re.fullmatch(r"\s*(?:==)?\s*(\d[0-9A-Za-z.+!-]*)\s*", constraint)
+    match = re.fullmatch(r"(?:==\s*)?(\d[0-9A-Za-z.+!-]*)", constraint.strip())
     return match.group(1) if match and "*" not in constraint else None
 
 
@@ -420,29 +426,32 @@ def _parse_package_lock(text: str, source: str) -> list[Dependency]:
     packages = _mapping(document.get("packages"))
     if packages:
         for package_path, raw in packages.items():
-            if not package_path or _NODE_MODULES not in package_path.replace("\\", "/"):
-                continue  # the root project or a workspace folder
-            item = _mapping(raw)
-            if item.get("link"):
-                continue
-            name = _optional_string(item.get("name")) or _npm_name_from_path(package_path)
-            resolved_url = str(item.get("resolved", ""))
-            registry = not resolved_url or resolved_url.startswith(("https://", "http://"))
-            dependency = _dependency(
-                name,
-                _optional_string(item.get("version")),
-                "npm",
-                source,
-                _line_near_json_object(text, package_path, "version"),
-                direct=_is_top_level_node_module(package_path),
-                version_source=LOCKFILE if registry else None,
-                constraint=None if registry else resolved_url,
-            )
+            dependency = _lock_package(package_path, _mapping(raw), text, source)
             if dependency:
                 result.append(dependency)
     else:
         _walk_npm_v1(_mapping(document.get("dependencies")), text, source, result)
     return result
+
+
+def _lock_package(package_path: str, item: dict[str, Any], text: str, source: str) -> Dependency | None:
+    if not package_path or _NODE_MODULES not in package_path.replace("\\", "/"):
+        return None  # the root project or a workspace folder
+    if item.get("link"):
+        return None
+    name = _optional_string(item.get("name")) or _npm_name_from_path(package_path)
+    resolved_url = str(item.get("resolved", ""))
+    registry = not resolved_url or resolved_url.startswith(("https://", "http://"))
+    return _dependency(
+        name,
+        _optional_string(item.get("version")),
+        "npm",
+        source,
+        _line_near_json_object(text, package_path, "version"),
+        direct=_is_top_level_node_module(package_path),
+        version_source=LOCKFILE if registry else None,
+        constraint=None if registry else resolved_url,
+    )
 
 
 def _walk_npm_v1(dependencies: dict[str, Any], text: str, source: str, result: list[Dependency]) -> None:
@@ -477,21 +486,27 @@ def _parse_yarn_lock(text: str, source: str) -> list[Dependency]:
             continue
         version_line = re.match(r"^\s+version:?\s+\"?([^\"\s]+)\"?\s*$", line)
         if header and version_line:
-            for descriptor in _split_yarn_descriptors(header):
-                if re.search(r"@(?:workspace|link|portal|file|exec|git\+|github):", descriptor):
-                    continue
-                dependency = _dependency(
-                    _yarn_descriptor_name(descriptor),
-                    version_line.group(1),
-                    "npm",
-                    source,
-                    header_line,
-                    direct=False,
-                    version_source=LOCKFILE,
-                )
-                if dependency:
-                    result.append(dependency)
+            result.extend(_yarn_entries(header, header_line, version_line.group(1), source))
             header = None
+    return result
+
+
+def _yarn_entries(header: str, header_line: int, version: str, source: str) -> list[Dependency]:
+    result: list[Dependency] = []
+    for descriptor in _split_yarn_descriptors(header):
+        if re.search(r"@(?:workspace|link|portal|file|exec|git\+|github):", descriptor):
+            continue
+        dependency = _dependency(
+            _yarn_descriptor_name(descriptor),
+            version,
+            "npm",
+            source,
+            header_line,
+            direct=False,
+            version_source=LOCKFILE,
+        )
+        if dependency:
+            result.append(dependency)
     return result
 
 
@@ -507,51 +522,73 @@ def _parse_pnpm_lock(text: str, source: str) -> list[Dependency]:
         if indent == 0 and stripped.endswith(":"):
             section = stripped[:-1].strip("'\"")
             continue
-        if section in {"packages", "snapshots"} and indent == 2 and stripped.endswith(":"):
-            parsed = _pnpm_package_key(stripped[:-1].strip("'\""))
-            if parsed:
-                dependency = _dependency(parsed[0], parsed[1], "npm", source, number, direct=False, version_source=LOCKFILE)
-                if dependency:
-                    result.append(dependency)
+        dependency = _pnpm_package(section, indent, stripped, number, source)
+        if dependency:
+            result.append(dependency)
     result.extend(_parse_pnpm_importers(lines, source))
     return result
 
 
+def _pnpm_package(section: str | None, indent: int, stripped: str, number: int, source: str) -> Dependency | None:
+    if section not in {"packages", "snapshots"} or indent != 2 or not stripped.endswith(":"):
+        return None
+    parsed = _pnpm_package_key(stripped[:-1].strip("'\""))
+    if not parsed:
+        return None
+    return _dependency(parsed[0], parsed[1], "npm", source, number, direct=False, version_source=LOCKFILE)
+
+
+class _PnpmImporterScan:
+    """Track the importers section of a pnpm lock file line by line."""
+
+    def __init__(self) -> None:
+        self.in_importers = False
+        self.dependency_indent: int | None = None
+        self.current_name: str | None = None
+        self.current_line = 0
+
+    def _reset(self) -> None:
+        self.dependency_indent = None
+        self.current_name = None
+
+    def feed(self, number: int, stripped: str, indent: int) -> tuple[str, int, str] | None:
+        """Return ``(name, line, version)`` when the line completes a direct dependency."""
+        if indent == 0:
+            self.in_importers = stripped == "importers:"
+            self._reset()
+            return None
+        if not self.in_importers:
+            return None
+        if stripped in {"dependencies:", "devDependencies:", "optionalDependencies:"}:
+            self.dependency_indent = indent
+            self.current_name = None
+            return None
+        if self.dependency_indent is None or indent <= self.dependency_indent:
+            self._reset()
+            return None
+        if indent == self.dependency_indent + 2 and stripped.endswith(":"):
+            self.current_name = stripped[:-1].strip("'\"")
+            self.current_line = number
+        elif self.current_name and indent == self.dependency_indent + 4 and stripped.startswith("version:"):
+            name = self.current_name
+            self.current_name = None
+            return name, self.current_line, stripped.split(":", 1)[1].strip(" '\"").split("(", 1)[0]
+        return None
+
+
 def _parse_pnpm_importers(lines: list[str], source: str) -> list[Dependency]:
     result: list[Dependency] = []
-    in_importers = False
-    dependency_indent: int | None = None
-    current_name: str | None = None
-    current_line = 0
+    scan = _PnpmImporterScan()
     for number, line in enumerate(lines, 1):
         stripped = line.strip()
         if not stripped:
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent == 0:
-            in_importers = stripped == "importers:"
-            dependency_indent = None
-            current_name = None
+        entry = scan.feed(number, stripped, len(line) - len(line.lstrip(" ")))
+        if entry is None:
             continue
-        if not in_importers:
-            continue
-        if stripped in {"dependencies:", "devDependencies:", "optionalDependencies:"}:
-            dependency_indent = indent
-            current_name = None
-            continue
-        if dependency_indent is None or indent <= dependency_indent:
-            dependency_indent = None
-            current_name = None
-            continue
-        if indent == dependency_indent + 2 and stripped.endswith(":"):
-            current_name = stripped[:-1].strip("'\"")
-            current_line = number
-        elif current_name and indent == dependency_indent + 4 and stripped.startswith("version:"):
-            version = stripped.split(":", 1)[1].strip(" '\"").split("(", 1)[0]
-            dependency = _dependency(current_name, version, "npm", source, current_line, direct=True, version_source=LOCKFILE)
-            if dependency:
-                result.append(dependency)
-            current_name = None
+        dependency = _dependency(entry[0], entry[2], "npm", source, entry[1], direct=True, version_source=LOCKFILE)
+        if dependency:
+            result.append(dependency)
     return result
 
 
@@ -563,7 +600,7 @@ def _parse_composer_json(text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
     for section in ("require", "require-dev"):
         for name, raw_constraint in _mapping(document.get(section)).items():
-            if name == "php" or name.startswith(("ext-", "lib-")) or "/" not in name:
+            if _is_composer_platform(name):
                 continue
             constraint = str(raw_constraint)
             exact = re.fullmatch(r"=?v?(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.]+)?)", constraint.strip())
@@ -580,6 +617,10 @@ def _parse_composer_json(text: str, source: str) -> list[Dependency]:
             if dependency:
                 result.append(dependency)
     return result
+
+
+def _is_composer_platform(name: str) -> bool:
+    return name == "php" or name.startswith(("ext-", "lib-")) or "/" not in name
 
 
 def _parse_composer_lock(text: str, source: str) -> list[Dependency]:
@@ -611,37 +652,46 @@ def _parse_composer_lock(text: str, source: str) -> list[Dependency]:
 def _parse_pom(text: str, source: str) -> list[Dependency]:
     _reject_unsafe_xml(text)
     root = ET.fromstring(text)
+    properties = _pom_properties(root)
+    result: list[Dependency] = []
+    for element in root.iter():
+        if _local_name(element.tag) != "dependency":
+            continue
+        dependency = _pom_dependency(element, properties, text, source)
+        if dependency:
+            result.append(dependency)
+    return result
+
+
+def _pom_properties(root: ET.Element) -> dict[str, str]:
     properties: dict[str, str] = {}
     for element in root.iter():
         if _local_name(element.tag) == "properties":
             for child in element:
                 if child.text:
                     properties[_local_name(child.tag)] = child.text.strip()
-    result: list[Dependency] = []
-    for element in root.iter():
-        if _local_name(element.tag) != "dependency":
-            continue
-        values = {_local_name(child.tag): (child.text or "").strip() for child in element}
-        group, artifact = values.get("groupId", ""), values.get("artifactId", "")
-        if not group or not artifact:
-            continue
-        constraint = values.get("version") or None
-        if constraint and re.fullmatch(r"\$\{[\w.-]+\}", constraint):
-            constraint = properties.get(constraint[2:-1], constraint)
-        exact = constraint if constraint and not re.search(r"[\[\](),$]", constraint) else None
-        dependency = _dependency(
-            f"{group}:{artifact}",
-            exact,
-            "Maven",
-            source,
-            _line_of(text, f"<artifactId>{artifact}</artifactId>"),
-            direct=True,
-            version_source=MANIFEST_PIN if exact else None,
-            constraint=constraint,
-        )
-        if dependency:
-            result.append(dependency)
-    return result
+    return properties
+
+
+def _pom_dependency(element: ET.Element, properties: dict[str, str], text: str, source: str) -> Dependency | None:
+    values = {_local_name(child.tag): (child.text or "").strip() for child in element}
+    group, artifact = values.get("groupId", ""), values.get("artifactId", "")
+    if not group or not artifact:
+        return None
+    constraint = values.get("version") or None
+    if constraint and re.fullmatch(r"\$\{[\w.-]+\}", constraint):
+        constraint = properties.get(constraint[2:-1], constraint)
+    exact = constraint if constraint and not re.search(r"[\[\](),$]", constraint) else None
+    return _dependency(
+        f"{group}:{artifact}",
+        exact,
+        "Maven",
+        source,
+        _line_of(text, f"<artifactId>{artifact}</artifactId>"),
+        direct=True,
+        version_source=MANIFEST_PIN if exact else None,
+        constraint=constraint,
+    )
 
 
 _GRADLE_CONFIGURATIONS = r"(?:api|implementation|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|testCompileOnly|annotationProcessor|kapt|ksp|classpath|compile|testCompile|runtime)"
@@ -677,11 +727,9 @@ def _parse_gradle(text: str, source: str) -> list[Dependency]:
 # Go -------------------------------------------------------------------------------
 
 
-def _parse_go_mod(text: str, source: str) -> list[Dependency]:
-    result: list[Dependency] = []
-    replacements: dict[str, str | None] = {}
+def _go_directives(text: str) -> Iterator[tuple[int, str, str, bool]]:
+    """Yield ``(line, kind, body, indirect)`` for every require and replace directive."""
     block: str | None = None
-    entries: list[tuple[str, str, int, bool]] = []
     for number, raw_line in enumerate(text.splitlines(), 1):
         indirect = "// indirect" in raw_line
         line = raw_line.split("//", 1)[0].strip()
@@ -701,17 +749,22 @@ def _parse_go_mod(text: str, source: str) -> list[Dependency]:
             kind, body = block, line
         else:
             continue
-        if kind == "require":
-            fields = body.split()
-            if len(fields) >= 2:
-                entries.append((fields[0], fields[1], number, not indirect))
-        else:
-            left, _, right = body.partition("=>")
-            target = right.split()
-            module = left.split()[0] if left.split() else ""
-            if module:
-                # "=> other/module v1.2.3" pins a version; "=> ../local" has none.
-                replacements[module] = target[1] if len(target) == 2 and target[1].startswith("v") else None
+        yield number, kind, body, indirect
+
+
+def _record_go_replace(body: str, replacements: dict[str, str | None]) -> None:
+    left, _, right = body.partition("=>")
+    target = right.split()
+    module = left.split()[0] if left.split() else ""
+    if module:
+        # "=> other/module v1.2.3" pins a version; "=> ../local" has none.
+        replacements[module] = target[1] if len(target) == 2 and target[1].startswith("v") else None
+
+
+def _go_dependencies(
+    entries: list[tuple[str, str, int, bool]], replacements: dict[str, str | None], source: str
+) -> list[Dependency]:
+    result: list[Dependency] = []
     for module, version, number, direct in entries:
         replaced = module in replacements
         dependency = _dependency(
@@ -727,6 +780,19 @@ def _parse_go_mod(text: str, source: str) -> list[Dependency]:
         if dependency:
             result.append(dependency)
     return result
+
+
+def _parse_go_mod(text: str, source: str) -> list[Dependency]:
+    replacements: dict[str, str | None] = {}
+    entries: list[tuple[str, str, int, bool]] = []
+    for number, kind, body, indirect in _go_directives(text):
+        if kind == "require":
+            fields = body.split()
+            if len(fields) >= 2:
+                entries.append((fields[0], fields[1], number, not indirect))
+        else:
+            _record_go_replace(body, replacements)
+    return _go_dependencies(entries, replacements, source)
 
 
 def _parse_go_sum(text: str, source: str) -> list[Dependency]:
@@ -755,7 +821,7 @@ def _parse_go_sum(text: str, source: str) -> list[Dependency]:
 
 def _parse_gemfile(text: str, source: str) -> list[Dependency]:
     result: list[Dependency] = []
-    pattern = re.compile(r"(?m)^\s*gem\s*\(?\s*[\"']([^\"']+)[\"'](?:\s*,\s*[\"']([^\"']+)[\"'])?")
+    pattern = re.compile(r"(?m)^\s*gem\s*(?:\(\s*)?[\"']([^\"']+)[\"'](?:\s*,\s*[\"']([^\"']+)[\"'])?")
     for match in pattern.finditer(text):
         name, constraint = match.groups()
         exact = re.fullmatch(r"(?:=\s*)?(\d[0-9A-Za-z.]*)", (constraint or "").strip())
@@ -774,8 +840,7 @@ def _parse_gemfile(text: str, source: str) -> list[Dependency]:
     return result
 
 
-def _parse_gemfile_lock(text: str, source: str) -> list[Dependency]:
-    result: list[Dependency] = []
+def _gemfile_lock_scan(text: str) -> tuple[list[tuple[str, str, int, str]], set[str]]:
     direct_names: set[str] = set()
     section: str | None = None
     in_specs = False
@@ -788,14 +853,18 @@ def _parse_gemfile_lock(text: str, source: str) -> list[Dependency]:
         if line.strip() == "specs:":
             in_specs = section in {"GEM", "GIT", "PATH"}
             continue
-        if in_specs and re.match(r"^    \S", line):
-            match = re.match(r"^    ([^\s(]+) \(([^)]+)\)", line)
+        if in_specs:
+            match = re.match(r"^ {4}([^\s(]+) \(([^)]+)\)", line)
             if match:
                 specs.append((match.group(1), match.group(2), number, section or ""))
         elif section == "DEPENDENCIES":
-            match = re.match(r"^  ([^\s(!]+)", line)
-            if match:
-                direct_names.add(match.group(1))
+            direct_names.update(re.findall(r"^ {2}([^\s(!]+)", line))
+    return specs, direct_names
+
+
+def _parse_gemfile_lock(text: str, source: str) -> list[Dependency]:
+    result: list[Dependency] = []
+    specs, direct_names = _gemfile_lock_scan(text)
     for name, raw_version, number, origin in specs:
         version = re.sub(r"-(?:x86|x64|arm|aarch64|java|mingw|mswin|universal|darwin|linux|ruby)\b.*$", "", raw_version)
         dependency = _dependency(
@@ -845,6 +914,22 @@ def _parse_central_packages(text: str, source: str) -> list[Dependency]:
     return _package_items(text, source, "PackageVersion")
 
 
+def _nuget_constraint(element: ET.Element) -> str | None:
+    constraint = element.attrib.get("Version")
+    if constraint is None:
+        for child in element:
+            if _local_name(child.tag) == "Version":
+                return (child.text or "").strip()
+    return constraint
+
+
+def _nuget_exact(constraint: str | None) -> re.Match[str] | None:
+    exact = re.fullmatch(r"\[?\s*(\d[0-9A-Za-z.+-]*)\s*\]?", constraint or "")
+    if exact and constraint and constraint.startswith("[") != constraint.endswith("]"):
+        return None
+    return exact
+
+
 def _package_items(text: str, source: str, tag: str) -> list[Dependency]:
     _reject_unsafe_xml(text)
     result: list[Dependency] = []
@@ -852,15 +937,8 @@ def _package_items(text: str, source: str, tag: str) -> list[Dependency]:
         if _local_name(element.tag) != tag:
             continue
         name = element.attrib.get("Include") or element.attrib.get("Update") or ""
-        constraint = element.attrib.get("Version")
-        if constraint is None:
-            for child in element:
-                if _local_name(child.tag) == "Version":
-                    constraint = (child.text or "").strip()
-                    break
-        exact = re.fullmatch(r"\[?\s*(\d[0-9A-Za-z.+-]*)\s*\]?", constraint or "")
-        if exact and constraint and constraint.startswith("[") != constraint.endswith("]"):
-            exact = None
+        constraint = _nuget_constraint(element)
+        exact = _nuget_exact(constraint)
         dependency = _dependency(
             name,
             exact.group(1) if exact else None,
@@ -903,35 +981,39 @@ def _parse_packages_lock(text: str, source: str) -> list[Dependency]:
 # Rust -----------------------------------------------------------------------------
 
 
+_CARGO_DEPENDENCY_SECTIONS = {"dependencies", "dev-dependencies", "build-dependencies"}
+
+
+def _cargo_tables(value: Any) -> Iterator[tuple[str, Any]]:
+    """Yield ``(name, specification)`` for every dependency table at any depth."""
+    if not isinstance(value, dict):
+        return
+    for key, raw in value.items():
+        if key in _CARGO_DEPENDENCY_SECTIONS and isinstance(raw, dict):
+            yield from raw.items()
+        elif isinstance(raw, dict):
+            yield from _cargo_tables(raw)
+
+
 def _parse_cargo_toml(text: str, source: str) -> list[Dependency]:
     document = tomllib.loads(text)
     result: list[Dependency] = []
-
-    def visit(value: Any) -> None:
-        if not isinstance(value, dict):
-            return
-        for key, raw in value.items():
-            if key in {"dependencies", "dev-dependencies", "build-dependencies"} and isinstance(raw, dict):
-                for name, specification in raw.items():
-                    constraint = _toml_constraint(specification)
-                    package = str(_mapping(specification).get("package", name))
-                    exact = re.fullmatch(r"\s*=\s*(\d[^,\s]*)\s*", constraint or "")
-                    dependency = _dependency(
-                        package,
-                        exact.group(1) if exact else None,
-                        "Cargo",
-                        source,
-                        _line_of_key(text, name),
-                        direct=True,
-                        version_source=MANIFEST_PIN if exact else None,
-                        constraint=constraint,
-                    )
-                    if dependency:
-                        result.append(dependency)
-            elif isinstance(raw, dict):
-                visit(raw)
-
-    visit(document)
+    for name, specification in _cargo_tables(document):
+        constraint = _toml_constraint(specification)
+        package = str(_mapping(specification).get("package", name))
+        exact = re.fullmatch(r"\s*=\s*(\d[^,\s]*)\s*", constraint or "")
+        dependency = _dependency(
+            package,
+            exact.group(1) if exact else None,
+            "Cargo",
+            source,
+            _line_of_key(text, name),
+            direct=True,
+            version_source=MANIFEST_PIN if exact else None,
+            constraint=constraint,
+        )
+        if dependency:
+            result.append(dependency)
     return result
 
 
@@ -943,6 +1025,9 @@ def _parse_cargo_lock(text: str, source: str) -> list[Dependency]:
         name = str(item.get("name", ""))
         origin = str(item.get("source", ""))
         registry = origin.startswith(("registry+", "sparse+"))
+        constraint = None
+        if not registry:
+            constraint = origin.split("+", 1)[0] + " source" if origin else "workspace crate"
         dependency = _dependency(
             name,
             _optional_string(item.get("version")),
@@ -951,7 +1036,7 @@ def _parse_cargo_lock(text: str, source: str) -> list[Dependency]:
             _line_of_toml_package(text, name),
             direct=False,
             version_source=LOCKFILE if registry else None,
-            constraint=None if registry else ("workspace crate" if not origin else origin.split("+", 1)[0] + " source"),
+            constraint=constraint,
         )
         if dependency:
             result.append(dependency)
@@ -973,17 +1058,7 @@ def _prefer_resolved(candidates: Iterable[Dependency]) -> list[Dependency]:
     for index, item in enumerate(items):
         if item.version_source == LOCKFILE:
             locks.setdefault((item.ecosystem, item.name.casefold()), []).append(index)
-    keep = [True] * len(items)
-    for index, item in enumerate(items):
-        if item.version_source == LOCKFILE or _is_lockfile(item.source_file):
-            continue
-        covering = [lock for lock in locks.get((item.ecosystem, item.name.casefold()), []) if _covers(items[lock].source_file, item.source_file)]
-        if not covering:
-            continue
-        keep[index] = False
-        top_level = [lock for lock in covering if items[lock].direct] or (covering if len(covering) == 1 else [])
-        for lock in top_level:
-            items[lock] = replace(items[lock], direct=True, constraint=items[lock].constraint or item.constraint)
+    keep = [not _absorb_into_lockfile(index, items, locks) for index in range(len(items))]
     result: dict[tuple[str, str, str | None], Dependency] = {}
     for index, item in enumerate(items):
         if not keep[index]:
@@ -998,6 +1073,21 @@ def _prefer_resolved(candidates: Iterable[Dependency]) -> list[Dependency]:
     )
 
 
+def _absorb_into_lockfile(index: int, items: list[Dependency], locks: dict[tuple[str, str], list[int]]) -> bool:
+    """Move a covered manifest entry's constraint and direct flag to its lockfile entries."""
+    item = items[index]
+    if item.version_source == LOCKFILE or _is_lockfile(item.source_file):
+        return False
+    candidates = locks.get((item.ecosystem, item.name.casefold()), [])
+    covering = [lock for lock in candidates if _covers(items[lock].source_file, item.source_file)]
+    if not covering:
+        return False
+    top_level = [lock for lock in covering if items[lock].direct] or (covering if len(covering) == 1 else [])
+    for lock in top_level:
+        items[lock] = replace(items[lock], direct=True, constraint=items[lock].constraint or item.constraint)
+    return True
+
+
 def _is_lockfile(source_file: str) -> bool:
     return PurePosixPath(source_file).name.casefold() in _LOCKFILES
 
@@ -1008,9 +1098,15 @@ def _covers(lockfile: str, manifest: str) -> bool:
     return lock_directory == manifest_directory or lock_directory in manifest_directory.parents or str(lock_directory) == "."
 
 
+def _source_rank(item: Dependency) -> int:
+    if item.version_source == LOCKFILE:
+        return 0
+    return 1 if item.resolved else 2
+
+
 def _preference(item: Dependency) -> tuple[int, int, int, str, int]:
     return (
-        0 if item.version_source == LOCKFILE else 1 if item.resolved else 2,
+        _source_rank(item),
         0 if item.direct else 1,
         0 if item.line is not None else 1,
         item.source_file.casefold(),

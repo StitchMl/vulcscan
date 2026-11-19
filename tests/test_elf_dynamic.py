@@ -92,3 +92,26 @@ def test_dynamic_checks_are_integrated_into_binary_findings() -> None:
     hardening = [f for f in found if f.rule_id == "BINARY-HARDENING-001"]
     assert any("partial RELRO" in f.evidence for f in hardening)
     assert any("RUNPATH" in f.evidence for f in hardening)
+
+
+def test_exact_public_writable_paths_and_nested_paths_are_detected() -> None:
+    for path in (
+        "/tmp", "/tmp/lib", "/var/tmp", "/var/tmp/plugins",
+        "/dev/shm", "/dev/shm/lib",
+        "/opt/app/../../tmp/plugins",
+    ):
+        issues = elf_dynamic_issues(_elf(runpath=path))
+        assert any("RUNPATH" in issue for issue in issues), path
+
+
+def test_similarly_named_absolute_directories_are_not_public_temp_paths() -> None:
+    for path in (
+        "/tmpfiles/lib", "/var/tmpdata/lib", "/dev/shm-files/lib",
+        "/opt/app/tmp/lib", "/usr/local/lib",
+    ):
+        assert elf_dynamic_issues(_elf(runpath=path)) == [], path
+
+
+def test_origin_lookup_remains_supported_with_both_elf_spellings() -> None:
+    for path in ("$ORIGIN/lib", "$"+"{ORIGIN}/lib"):
+        assert elf_dynamic_issues(_elf(rpath=path)) == [], path

@@ -1,6 +1,7 @@
 """Bounds-checked ELF dynamic-header audit; never loads or executes target code."""
 from __future__ import annotations
 
+import posixpath
 import struct
 
 
@@ -11,6 +12,20 @@ def _unpack(fmt: str, data: bytes, offset: int):
         return struct.unpack_from(fmt, data, offset)
     except (ValueError, struct.error):
         return None
+
+
+def _unsafe_library_search_entry(entry: str) -> bool:
+    """Assess ELF loader paths without accessing the filesystem."""
+    if not entry:
+        return True
+    if entry.startswith(("$ORIGIN/", "$"+"{ORIGIN}/")):
+        return False
+    if not entry.startswith("/"):
+        return True
+    parts = tuple(part for part in posixpath.normpath(entry).split("/") if part)
+    if not parts:
+        return True
+    return parts[0] == "tmp" or parts[:2] in {("var", "tmp"), ("dev", "shm")}
 
 
 def elf_dynamic_issues(data: bytes) -> list[str]:
@@ -101,11 +116,7 @@ def elf_dynamic_issues(data: bytes) -> list[str]:
             continue
         raw = data[start:end].decode("utf-8", errors="replace")
         paths = raw.split(":")
-        unsafe = any(
-            not p or p in {".", ".."} or p.startswith(("./", "../", "/tmp/", "/var/tmp/", "/dev/shm/"))
-            or (not p.startswith("/") and not p.startswith(("$ORIGIN/", "$" + "{ORIGIN}/")))
-            for p in paths
-        )
+        unsafe = any(_unsafe_library_search_entry(entry) for entry in paths)
         if unsafe:
             issues.append(f"ELF {label} contains empty, relative or temporary-library lookup entries (untrusted path risk).")
     return issues

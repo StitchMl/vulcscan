@@ -372,7 +372,7 @@ def _dependencies(config: ScanConfig, root: Path, manifests: list[Path], result:
         return
     from .cve import OSVClient
 
-    client = OSVClient(offline=config.offline)
+    client = OSVClient(offline=config.offline, local_db=config.cve_db)
     result.dependency_vulnerabilities = client.query(result.dependencies)
     result.errors.extend(ScanError("", "cve", message) for message in client.errors)
 

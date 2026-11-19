@@ -219,3 +219,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### Timing-sensitive Python secret comparisons
 
 `PY-TIMING-001` (CWE-208) is a conservative review-only check for direct HTTP request values compared using `==` or `!=` to authentication secrets (`token`, `hmac`, `signature`, `api_key`, etc.), including simple same-function assignments. It does not report normal username/numeric equality, `hmac.compare_digest`, or values overwritten before the comparison. The rule does not claim to measure actual timing leakage: review secret types, choose `hmac.compare_digest` for equal-type secrets, and use password-KDF verification for passwords. No target code is executed or automatically modified.
+
+### NoSQL filter injection for JS/TS
+
+`JS-NOSQL-001` (CWE-943) identifies a whole HTTP query or body object flowing into a recognized MongoDB/Mongoose method such as `User.find(req.body)` or `collection.findOne(filter)` after a direct `filter = req.query` assignment. It deliberately avoids flagging structured filters built with explicitly named fields, unrelated JavaScript collection methods, and numeric conversions. Findings retain source-to-sink flow and MEDIUM confidence and require manual review; the scan never executes the target application or applies a patch.

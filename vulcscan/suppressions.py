@@ -72,7 +72,7 @@ def suppression_index(files: list[Any]) -> dict[str, set[tuple[int, str]]]:
                     prefix = lines[row - 1][:column]
                     target = row + 1 if not prefix.strip() else row
                     active.add((target, match.group(1).upper()))
-            except (tokenize.TokenError, IndentationError, SyntaxError):
+            except (tokenize.TokenError, IndentationError):
                 continue
         elif source.language in {"JavaScript", "TypeScript"}:
             active.update(_javascript_directives(source.text))

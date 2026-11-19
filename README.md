@@ -245,3 +245,7 @@ Snapshots are limited to 16 MiB; symbolic-link snapshots are rejected. No databa
 ### JS/TS prototype pollution object merges
 
 `JS-PROTOTYPE-001` (CWE-1321) reports direct use of an HTTP-supplied object such as `req.body` or `req.query` as the second argument of `Object.assign`, `_.merge`, `lodash.merge`, or `lodash.defaultsDeep`, including a simple local assignment. The recommended remediation is explicit schema validation and rejection of dangerous keys such as `__proto__`, `constructor` and `prototype` before merging. It deliberately abstains for explicitly enumerated fields and unrelated merge functions. MEDIUM-confidence findings are review-only and do not prove that application state can be poisoned. No target code is executed or patched.
+
+### C/C++ allocation-size overflow
+
+`C-ALLOC-001` (CWE-190) reviews malloc size multiplications where the count comes directly from CLI input via atoi/atol/strtoul. A recognized SIZE_MAX division guard or overwritten count prevents the alert. This is conservative lexical detection, not proof of exploitability or an automated patch.

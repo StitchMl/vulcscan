@@ -12,6 +12,10 @@ jobs:
       - name: Query SonarCloud read-only APIs
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONARCLOUD_TOKEN: ${{ secrets.SONARCLOUD_TOKEN }}
+          SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN }}
+          SONAR_CLOUD_TOKEN: ${{ secrets.SONAR_CLOUD_TOKEN }}
         run: |
           python - <<'PY'
           import base64
@@ -23,7 +27,14 @@ jobs:
           
           PROJECT = "StitchMl_vulcscan"
           BASE = "https://sonarcloud.io/api/"
-          token = os.environ.get("SONAR_TOKEN", "")
+          token = next((
+              os.environ.get(name, "")
+              for name in (
+                  "SONAR_TOKEN", "SONARCLOUD_TOKEN", "SONARQUBE_TOKEN",
+                  "SONAR_API_TOKEN", "SONAR_CLOUD_TOKEN",
+              )
+              if os.environ.get(name)
+          ), "")
           headers = {"Accept": "application/json", "User-Agent": "vulcscan-sonar-readonly-diagnostics/1.0"}
           if token:
               headers["Authorization"] = "Basic " + base64.b64encode((token + ":").encode()).decode()

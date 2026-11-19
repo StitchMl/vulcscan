@@ -17,7 +17,8 @@ def test_request_token_compared_with_secret(tmp_path: Path) -> None:
         "    return value == stored_api_key\n"
     )
     assert len(found) == 1
-    assert found[0].source is not None and found[0].source.line == 3
+    assert found[0].source is not None
+    assert found[0].source.line == 3
     assert found[0].location.line == 4
     assert found[0].test_vectors
     assert not any(r.machine_applicable for r in found[0].remediations)

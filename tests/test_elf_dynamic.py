@@ -56,8 +56,10 @@ def test_full_relro_does_not_emit_dynamic_hardening_issue() -> None:
 def test_partial_and_missing_relro_are_distinguished() -> None:
     partial = elf_dynamic_issues(_elf(now=False))
     absent = elf_dynamic_issues(_elf(relro=False))
-    assert len(partial) == 1 and "partial RELRO" in partial[0]
-    assert len(absent) == 1 and "RELRO absent" in absent[0]
+    assert len(partial) == 1
+    assert "partial RELRO" in partial[0]
+    assert len(absent) == 1
+    assert "RELRO absent" in absent[0]
 
 
 def test_elf32_dynamic_relro_and_rpath() -> None:

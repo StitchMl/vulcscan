@@ -170,6 +170,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     if language in {"C", "C++"}:
         _c_format_strings(text, add)
         _c_buffer_overflows(text, add)
+        _c_memcpy_lengths(text, add)
         _c_allocation_overflow(text, add)
     if language == "Python":
         return findings
@@ -493,6 +494,60 @@ def _c_allocation_overflow(text: str, add: Callable[..., None]) -> None:
         column = call.start() - text.rfind("\n", 0, call.start())
         add(
             "C-ALLOC-001", line, column, "malloc allocation size multiplication",
+            text[call.start():call.end()], Confidence.MEDIUM,
+        )
+
+
+_C_MEMCPY_LEN = re.compile(
+    r"\bmemcpy\s*\(\s*(?P<dest>[A-Za-z_]\w*)\s*,"
+    r"\s*(?:[A-Za-z_]\w*|argv\s*\[\s*\d+\s*\])\s*,"
+    r"\s*(?P<count>[A-Za-z_]\w*)\s*\)"
+)
+_C_FIXED_BUFFER = re.compile(
+    r"\b(?:unsigned\s+)?(?:char|byte|uint8_t|std::byte)\s+"
+    r"(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>\d{1,8})\s*\]"
+)
+_C_LENGTH_SOURCE = re.compile(
+    r"\b(?P<name>[A-Za-z_]\w*)\s*=\s*"
+    r"(?:atoi|atol|atoll|strtoul|strtoull)\s*\(\s*argv\s*\[\s*\d+\s*\]"
+)
+
+
+def _c_memcpy_lengths(text: str, add: Callable[..., None]) -> None:
+    """Recognize only simple unbounded copies into a local fixed-size array."""
+    mask = code_mask(text, comment_style("C"))
+    for call in _C_MEMCPY_LEN.finditer(mask):
+        destination, count = call.group("dest"), call.group("count")
+        prior = mask[max(0, call.start() - 2200):call.start()]
+        buffers = [
+            item for item in _C_FIXED_BUFFER.finditer(prior)
+            if item.group("name") == destination
+        ]
+        if not buffers:
+            continue
+        source = [
+            item for item in _C_LENGTH_SOURCE.finditer(prior)
+            if item.group("name") == count
+        ]
+        if not source:
+            continue
+        tail = prior[source[-1].end():]
+        if re.search(rf"\b{re.escape(count)}\s*=(?!=)", tail):
+            continue
+        # A preceding clamp, rejection guard or known-size length prevents an
+        # alert; this is not path-sensitive proof that any guard is correct.
+        checks = (
+            rf"\bif\s*\(\s*{re.escape(count)}\s*(?:>=|>)\s*sizeof\s*\(\s*{re.escape(destination)}\s*\)",
+            rf"\bif\s*\(\s*{re.escape(count)}\s*(?:>=|>)\s*{buffers[-1].group('size')}\b",
+            rf"\b{re.escape(count)}\s*=\s*(?:std::)?min\s*\(",
+        )
+        if any(re.search(pattern, tail) for pattern in checks):
+            continue
+        line = text.count("\n", 0, call.start()) + 1
+        column = call.start() - text.rfind("\n", 0, call.start())
+        add(
+            "C-BUFFER-001", line, column,
+            "memcpy with untrusted length into fixed buffer",
             text[call.start():call.end()], Confidence.MEDIUM,
         )
 

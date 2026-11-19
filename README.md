@@ -261,3 +261,7 @@ Generic secret literals under credential-like identifiers now use Shannon entrop
 ### Structural PE import parsing
 
 For well-formed PE32 and PE32+ images, VulcScan now reads DLL import descriptors, thunk tables and named Import Directory entries using bounded `struct` parsing. `BINARY-DANGEROUS-001` is based on the actual imported function name instead of arbitrary ASCII occurrences elsewhere in the binary, reducing false positives from embedded strings. For malformed or unsupported PE metadata, the previous byte-level heuristic remains as a fallback. Ordinal imports are not guessed as named symbols. This is a conservative ordinary-import parser, not full coverage of delay imports or runtime dynamic loading, and it never loads a DLL or executes the binary.
+
+### Node.js secret equality timing checks
+
+`JS-TIMING-001` (CWE-208) recognizes direct JavaScript/TypeScript comparisons (`==`, `!=`, `===`, `!==`) between a request field such as `req.body.token` or `req.headers.signature` and a secret-named identifier. Source-to-sink evidence makes it compatible with `--remote-only`. Prefer validated equal-length Buffers and `crypto.timingSafeEqual` where appropriate; passwords require a password-KDF verifier. This rule does not measure real timing differences or infer values through unresolved intermediates; it is conservative and review-only.

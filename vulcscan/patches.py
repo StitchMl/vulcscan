@@ -15,7 +15,7 @@ from .models import Confidence, Remediation
 
 _SHELL_METACHARACTERS = set("|&;<>()$`\\\"'*?[]#~=%{}!\n\r")
 _VALUE_CONTEXT = re.compile(
-    r"(?is)(?:=|<|>|<=|>=|<>|!=|\blike|\bin\s*\(|,|\(|\bvalues\s*\(|\blimit|\boffset|\bthen|\bwhen|\bbetween|\band)\s*$"
+    r"(?is)(?:[=<>,(]|\blike|\blimit|\boffset|\bthen|\bwhen|\bbetween|\band)\s*$"
 )
 _QMARK_DRIVERS = ("sqlite3", "aiosqlite")
 _FORMAT_DRIVERS = ("psycopg2", "psycopg", "pymysql", "MySQLdb", "mysql.connector", "pgdb")
@@ -97,20 +97,8 @@ def random_suggestion(text: str, call: ast.Call, name: str) -> Remediation | Non
     if not segment:
         return None
     arguments = [ast.get_source_segment(text, item) or "" for item in call.args]
-    replacement: str | None = None
     short = name.rsplit(".", 1)[-1]
-    if short == "choice" and len(arguments) == 1 and not call.keywords:
-        replacement = f"secrets.choice({arguments[0]})"
-    elif short == "getrandbits" and len(arguments) == 1 and not call.keywords:
-        replacement = f"secrets.randbits({arguments[0]})"
-    elif short == "randrange" and len(arguments) == 1 and not call.keywords:
-        replacement = f"secrets.randbelow({arguments[0]})"
-    elif short == "randint" and len(call.args) == 2 and all(
-        isinstance(item, ast.Constant) and type(item.value) is int for item in call.args
-    ):
-        low, high = call.args[0].value, call.args[1].value
-        if high >= low:
-            replacement = f"secrets.randbelow({high - low + 1})" + (f" + {low}" if low else "")
+    replacement = _secrets_replacement(short, call, arguments)
     if replacement is None:
         return None
     return Remediation(
@@ -123,6 +111,26 @@ def random_suggestion(text: str, call: ast.Call, name: str) -> Remediation | Non
         suggested=replacement,
         machine_applicable=False,
     )
+
+
+_SECRETS_SINGLE_ARGUMENT = {
+    "choice": "secrets.choice",
+    "getrandbits": "secrets.randbits",
+    "randrange": "secrets.randbelow",
+}
+
+
+def _secrets_replacement(short: str, call: ast.Call, arguments: list[str]) -> str | None:
+    target = _SECRETS_SINGLE_ARGUMENT.get(short)
+    if target is not None:
+        return f"{target}({arguments[0]})" if len(arguments) == 1 and not call.keywords else None
+    if short == "randint" and len(call.args) == 2 and all(
+        isinstance(item, ast.Constant) and type(item.value) is int for item in call.args
+    ):
+        low, high = call.args[0].value, call.args[1].value
+        if high >= low:
+            return f"secrets.randbelow({high - low + 1})" + (f" + {low}" if low else "")
+    return None
 
 
 def _single_line(node: ast.AST) -> bool:
@@ -173,23 +181,27 @@ def _literal_eval(node: ast.Call, text: str) -> Remediation | None:
     )
 
 
+def _joined_parts(node: ast.JoinedStr, text: str) -> list[tuple[str, str]] | None:
+    parts: list[tuple[str, str]] = []
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(("lit", value.value))
+        elif isinstance(value, ast.FormattedValue) and value.conversion == -1 and value.format_spec is None:
+            source = ast.get_source_segment(text, value.value)
+            if not source:
+                return None
+            parts.append(("expr", source))
+        else:
+            return None
+    return parts
+
+
 def _string_parts(node: ast.expr, text: str) -> list[tuple[str, str]] | None:
     """Flatten an f-string or '+' concatenation into ("lit", text)/("expr", source)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [("lit", node.value)]
     if isinstance(node, ast.JoinedStr):
-        parts: list[tuple[str, str]] = []
-        for value in node.values:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                parts.append(("lit", value.value))
-            elif isinstance(value, ast.FormattedValue) and value.conversion == -1 and value.format_spec is None:
-                source = ast.get_source_segment(text, value.value)
-                if not source:
-                    return None
-                parts.append(("expr", source))
-            else:
-                return None
-        return parts
+        return _joined_parts(node, text)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left = _string_parts(node.left, text)
         right = _string_parts(node.right, text)
@@ -202,31 +214,37 @@ def _string_parts(node: ast.expr, text: str) -> list[tuple[str, str]] | None:
     return None
 
 
+def _literal_tokens(value: str, state: dict) -> bool:
+    """Tokenize literal text into state; False when the text cannot be split safely."""
+    tokens: list[tuple[str, str]] = state["tokens"]
+    for char in value:
+        if char in _SHELL_METACHARACTERS:
+            return False
+        if char.isspace():
+            if state["buffer"]:
+                tokens.append(("lit", state["buffer"]))
+                state["buffer"] = ""
+            state["pending"] = False
+        elif state["pending"]:
+            return False
+        else:
+            state["buffer"] += char
+    return True
+
+
 def _command_tokens(parts: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
-    tokens: list[tuple[str, str]] = []
-    buffer = ""
-    pending_expression = False
+    state: dict = {"tokens": [], "buffer": "", "pending": False}
     for kind, value in parts:
         if kind == "expr":
-            if buffer or pending_expression:
+            if state["buffer"] or state["pending"]:
                 return None  # value glued to other text: the shell would join them
-            tokens.append(("expr", value))
-            pending_expression = True
-            continue
-        for char in value:
-            if char in _SHELL_METACHARACTERS:
-                return None
-            if char.isspace():
-                if buffer:
-                    tokens.append(("lit", buffer))
-                    buffer = ""
-                pending_expression = False
-            else:
-                if pending_expression:
-                    return None
-                buffer += char
-    if buffer:
-        tokens.append(("lit", buffer))
+            state["tokens"].append(("expr", value))
+            state["pending"] = True
+        elif not _literal_tokens(value, state):
+            return None
+    tokens: list[tuple[str, str]] = state["tokens"]
+    if state["buffer"]:
+        tokens.append(("lit", state["buffer"]))
     if not tokens or tokens[0][0] != "lit":
         return None
     return tokens
@@ -288,56 +306,105 @@ def _placeholder(imports: dict[str, str]) -> str | None:
     return styles.pop() if len(styles) == 1 else None
 
 
-def _sql_parts(node: ast.expr, text: str) -> list[tuple[str, str]] | None:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
-        values = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
-        sources = [ast.get_source_segment(text, item) for item in values]
-        if any(item is None for item in sources):
-            return None
-        pieces = re.split(r"(%%|%[sdif])", node.left.value)
-        parts: list[tuple[str, str]] = []
-        cursor = 0
-        for piece in pieces:
-            if piece == "%%":
-                parts.append(("lit", "%"))
-            elif re.fullmatch(r"%[sdif]", piece):
-                if cursor >= len(sources):
-                    return None
-                parts.append(("expr", sources[cursor]))
-                cursor += 1
-            elif "%" in piece:
+def _percent_parts(node: ast.BinOp, text: str) -> list[tuple[str, str]] | None:
+    values = node.right.elts if isinstance(node.right, ast.Tuple) else [node.right]
+    sources = [ast.get_source_segment(text, item) for item in values]
+    if any(item is None for item in sources):
+        return None
+    parts: list[tuple[str, str]] = []
+    cursor = 0
+    for piece in re.split(r"(%%|%[sdif])", node.left.value):
+        if piece == "%%":
+            parts.append(("lit", "%"))
+        elif re.fullmatch(r"%[sdif]", piece):
+            if cursor >= len(sources):
                 return None
-            else:
-                parts.append(("lit", piece))
-        return parts if cursor == len(sources) else None
-    if (
+            parts.append(("expr", sources[cursor]))
+            cursor += 1
+        elif "%" in piece:
+            return None
+        else:
+            parts.append(("lit", piece))
+    return parts if cursor == len(sources) else None
+
+
+def _format_parts(node: ast.Call, text: str) -> list[tuple[str, str]] | None:
+    sources = [ast.get_source_segment(text, item) for item in node.args]
+    if any(item is None for item in sources):
+        return None
+    parts: list[tuple[str, str]] = []
+    cursor = 0
+    for piece in re.split(r"(\{\})", node.func.value.value):
+        if piece == "{}":
+            if cursor >= len(sources):
+                return None
+            parts.append(("expr", sources[cursor]))
+            cursor += 1
+        elif "{" in piece or "}" in piece:
+            return None
+        else:
+            parts.append(("lit", piece))
+    return parts if cursor == len(sources) else None
+
+
+def _is_percent_template(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Mod)
+        and isinstance(node.left, ast.Constant)
+        and isinstance(node.left.value, str)
+    )
+
+
+def _is_format_call(node: ast.expr) -> bool:
+    return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "format"
         and isinstance(node.func.value, ast.Constant)
         and isinstance(node.func.value.value, str)
         and not node.keywords
-    ):
-        sources = [ast.get_source_segment(text, item) for item in node.args]
-        if any(item is None for item in sources):
-            return None
-        pieces = re.split(r"(\{\})", node.func.value.value)
-        parts = []
-        cursor = 0
-        for piece in pieces:
-            if piece == "{}":
-                if cursor >= len(sources):
-                    return None
-                parts.append(("expr", sources[cursor]))
-                cursor += 1
-            elif "{" in piece or "}" in piece:
-                return None
-            else:
-                parts.append(("lit", piece))
-        return parts if cursor == len(sources) else None
+    )
+
+
+def _sql_parts(node: ast.expr, text: str) -> list[tuple[str, str]] | None:
+    if _is_percent_template(node):
+        return _percent_parts(node, text)
+    if _is_format_call(node):
+        return _format_parts(node, text)
     if isinstance(node, (ast.JoinedStr, ast.BinOp)):
         return _string_parts(node, text)
     return None
+
+
+def _unquote_placeholder(sql: str, parts: list[tuple[str, str]], index: int) -> str | None:
+    """Drop the quote pair around a value; None when the context cannot take a bound value."""
+    if sql.endswith(("'", '"')):
+        following = parts[index + 1][1] if index + 1 < len(parts) and parts[index + 1][0] == "lit" else ""
+        if not following.startswith(sql[-1]):
+            return None
+        if index + 1 < len(parts):
+            parts[index + 1] = ("lit", following[1:])
+        return sql[:-1]
+    # identifier or keyword position: binding cannot replace it
+    return sql if _VALUE_CONTEXT.search(sql) else None
+
+
+def _bind_parts(parts: list[tuple[str, str]], placeholder: str) -> tuple[str, list[str]] | None:
+    sql = ""
+    values: list[str] = []
+    for index, (kind, value) in enumerate(parts):
+        if kind == "lit":
+            sql += value
+            continue
+        unquoted = _unquote_placeholder(sql, parts, index)
+        if unquoted is None or (placeholder == "%s" and "%" in unquoted):
+            return None
+        sql = unquoted + placeholder
+        values.append(value)
+    if placeholder == "%s" and "%" in sql.replace("%s", ""):
+        return None
+    return sql, values
 
 
 def _parameterized_query(node: ast.Call, text: str, imports: dict[str, str]) -> Remediation | None:
@@ -349,32 +416,10 @@ def _parameterized_query(node: ast.Call, text: str, imports: dict[str, str]) -> 
     parts = _sql_parts(node.args[0], text)
     if parts is None or not any(kind == "expr" for kind, _ in parts):
         return None
-    sql = ""
-    values: list[str] = []
-    index = 0
-    while index < len(parts):
-        kind, value = parts[index]
-        if kind == "lit":
-            sql += value
-            index += 1
-            continue
-        following = parts[index + 1][1] if index + 1 < len(parts) and parts[index + 1][0] == "lit" else ""
-        if sql.endswith(("'", '"')):
-            quote = sql[-1]
-            if not following.startswith(quote):
-                return None
-            sql = sql[:-1]
-            if index + 1 < len(parts):
-                parts[index + 1] = ("lit", following[1:])
-        elif not _VALUE_CONTEXT.search(sql):
-            return None  # identifier or keyword position: binding cannot replace it
-        if placeholder == "%s" and "%" in sql:
-            return None
-        sql += placeholder
-        values.append(value)
-        index += 1
-    if placeholder == "%s" and "%" in sql.replace("%s", ""):
+    bound = _bind_parts(parts, placeholder)
+    if bound is None:
         return None
+    sql, values = bound
     function = ast.get_source_segment(text, node.func)
     segment = ast.get_source_segment(text, node)
     if not function or not segment:

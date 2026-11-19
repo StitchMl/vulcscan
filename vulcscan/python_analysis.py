@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from . import patches
 from .dataflow import (
@@ -39,6 +39,7 @@ from .dataflow import (
     is_local_path,
     judge,
     merge,
+    replace_value,
     sanitize,
     source_value,
     unique_steps,
@@ -906,14 +907,14 @@ class _Walker:
                 return env[key]
             base = self.expression(node.value, env)
             if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith("pathlib."):
-                return sanitize(replace(base, origin=None), {FILESYSTEM})
+                return sanitize(replace_value(base, origin=None), {FILESYSTEM})
             if base.constant:
                 return Value(dynamic=False) if not base.tainted else base
-            return replace(base, literal=NOT_CONSTANT, prefix=None, composed=False)
+            return replace_value(base, literal=NOT_CONSTANT, prefix=None, composed=False)
         if isinstance(node, ast.Subscript):
             container = self.expression(node.value, env)
             index = self.expression(node.slice, env)
-            return replace(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
+            return replace_value(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
         if isinstance(node, ast.Call):
             return self._call(node, env)
         if isinstance(node, ast.JoinedStr):
@@ -929,27 +930,27 @@ class _Walker:
                 return concatenate([left, right])
             if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith("pathlib."):
                 joined = merge(left, right)
-                return replace(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
+                return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
             merged = merge(left, right)
             if left.constant and right.constant:
                 return merged
-            return replace(merged, literal=NOT_CONSTANT, prefix=None)
+            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             values = [self.expression(item, env) for item in node.elts]
             merged = merge(*values) if values else Value()
             if values and all(item.constant for item in values):
                 literal = tuple(item.literal for item in values)
-                return replace(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
-            return replace(merged, literal=NOT_CONSTANT, prefix=None)
+                return replace_value(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
+            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
         if isinstance(node, ast.Dict):
             values = [self.expression(item, env) for item in [*node.keys, *node.values] if item is not None]
             merged = merge(*values) if values else Value()
             keys = [self.expression(item, env) for item in node.keys if item is not None]
             if keys and all(item.constant for item in keys) and len(keys) == len(node.keys):
-                return replace(merged, literal=tuple(item.literal for item in keys), prefix=None)
-            return replace(merged, literal=NOT_CONSTANT, prefix=None)
+                return replace_value(merged, literal=tuple(item.literal for item in keys), prefix=None)
+            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
         if isinstance(node, ast.BoolOp):
-            return replace(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
+            return replace_value(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
         if isinstance(node, ast.IfExp):
             self.expression(node.test, env)
             when_true, when_false = self._guard(node.test, env)
@@ -986,7 +987,7 @@ class _Walker:
             result = merge(self.expression(node.key, inner), self.expression(node.value, inner))
         else:
             result = self.expression(node.elt, inner)
-        return replace(result, literal=NOT_CONSTANT, prefix=None, dynamic=True)
+        return replace_value(result, literal=NOT_CONSTANT, prefix=None, dynamic=True)
 
     def _source(self, node: ast.AST) -> Value | None:
         target = node.func if isinstance(node, ast.Call) else node
@@ -1029,7 +1030,7 @@ class _Walker:
         # Only the outermost matching node becomes the SOURCE step; deeper
         # attribute accesses (request.args.get) evaluate through the receiver.
         step = FlowStep("SOURCE", self.location(node), self.code(node), description)
-        return replace(source_value(step, trust), origin=origin)
+        return replace_value(source_value(step, trust), origin=origin)
 
     def _call(self, node: ast.Call, env: dict[str, Value]) -> Value:
         name = self.canonical(node.func)
@@ -1051,21 +1052,21 @@ class _Walker:
         self._check_sinks(node, name, receiver, arguments, keywords, env)
 
         if name in _SANITIZERS:
-            return sanitize(replace(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
+            return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
         if name in _NORMALIZERS:
             return sanitize(merge(*arguments), {NORMALIZED})
         if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith("pathlib."):
-            value = replace(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
+            value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
             if short == "resolve" or short == "absolute":
                 value = sanitize(value, {NORMALIZED})
             else:
-                value = replace(value, sanitized=value.sanitized - {NORMALIZED})
+                value = replace_value(value, sanitized=value.sanitized - {NORMALIZED})
             return value
         if name in {"re.compile", "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
             return Value(literal=("re.compile", arguments[0].literal))
         if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
             parsed = merge(*arguments)
-            return replace(parsed, derived_from=(*parsed.derived_from, *([_dotted(node.args[0])] if _dotted(node.args[0]) else [])), literal=NOT_CONSTANT, prefix=None)
+            return replace_value(parsed, derived_from=(*parsed.derived_from, *([_dotted(node.args[0])] if _dotted(node.args[0]) else [])), literal=NOT_CONSTANT, prefix=None)
         if resolved is not None:
             return self._summary_return(resolved, actuals or {})
         if short == "format" and receiver.constant and isinstance(receiver.literal, str):
@@ -1075,8 +1076,8 @@ class _Walker:
         combined = merge(receiver, *arguments, *keywords.values())
         pure = name in _PURE_FUNCTIONS or (short in _STRING_METHODS and receiver_node is not None and not receiver.dynamic)
         if pure and not combined.dynamic and not combined.tainted:
-            return replace(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
-        return replace(
+            return replace_value(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
+        return replace_value(
             combined,
             dynamic=True,
             origin=_origin(name),
@@ -1109,11 +1110,11 @@ class _Walker:
             return UNKNOWN
         returned = summary.returned
         from_params = [actuals[index] for index in sorted(returned.params) if index in actuals]
-        own = replace(returned, params=frozenset())
+        own = replace_value(returned, params=frozenset())
         parts = [own] if own.tainted or own.dynamic or own.constant else []
         value = merge(*from_params, *parts) if (from_params or parts) else Value(dynamic=True)
         sanitized = value.sanitized | (returned.sanitized if returned.params else frozenset())
-        return replace(
+        return replace_value(
             value,
             sanitized=sanitized,
             dynamic=value.dynamic or returned.dynamic,
@@ -1140,7 +1141,7 @@ class _Walker:
             category = rule(template.rule_id).category
             if category in template.value.sanitized:
                 continue
-            propagated = replace(
+            propagated = replace_value(
                 actual,
                 flow=unique_steps((*actual.flow, call_step, *template.value.flow)),
                 sanitized=actual.sanitized | template.value.sanitized,

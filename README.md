@@ -207,3 +207,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### Python argument injection without a shell
 
 `PY-ARG-001` detects a narrowly scoped CWE-88 pattern: an explicit HTTP request value used as a positional argument in a literal list passed to `subprocess.run`, `subprocess.check_output`, `subprocess.check_call`, `subprocess.call`, `subprocess.Popen`, or `asyncio.create_subprocess_exec` for recognized external programs such as `git`, `tar`, `curl`, `ssh`, `rsync`, `find`, `openssl`, and `scp`. This is distinct from shell command injection: external programs may interpret untrusted values beginning with `-` as command-line options even when `shell=False`. Variables assigned from direct request parameters are traced within the same function; numeric casts, explicit `--` terminators, nonliteral executable names, and CLI-only values are not treated as this pattern. Findings are MEDIUM confidence, review-only, with a non-destructive verification description. No patch is applied or target code executed.
+
+### C/C++ uncontrolled format strings
+
+`C-FORMAT-001` (CWE-134) is a conservative review-only rule for `printf`, `fprintf`, and `syslog` when the format argument is directly `argv[n]` or a nearby variable filled by `argv[n]`, `fgets`, `recv` or `read`. Passing user input as an ordinary value with a literal format (`printf("%s", value)`) is not reported. As this is static pattern matching rather than a C/C++ compiler, findings use MEDIUM confidence and may need a source review; no source code is modified or executed.

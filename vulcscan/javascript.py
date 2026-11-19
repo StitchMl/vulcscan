@@ -670,6 +670,15 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
+        elif (
+            (receiver in {"ejs", "pug"} and method in {"render", "compile"})
+            or (receiver in {"Handlebars", "handlebars"} and method == "compile")
+            or (receiver == "nunjucks" and method == "renderString")
+        ):
+            self._emit_argument(
+                "JS-SSTI-001", f"{receiver}.{method} template source",
+                call_start, open_index, 0,
+            )
         elif (receiver == "Object" and method == "assign") or (
             receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
         ):

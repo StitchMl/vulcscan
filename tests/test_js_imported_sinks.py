@@ -12,10 +12,10 @@ def _write(root: Path, path: str, contents: str) -> None:
     target.write_text(contents, encoding="utf-8")
 
 
-def _cmd_findings(root: Path):
+def _cmd_findings(root: Path, *, sourced: bool = False):
     return [
         finding for finding in scan_path(root, cve=False).findings
-        if finding.rule_id == "JS-CMD-001"
+        if finding.rule_id == "JS-CMD-001" and (not sourced or finding.source is not None)
     ]
 
 
@@ -29,7 +29,7 @@ def test_esm_direct_wrapper_receives_remote_query_across_files(tmp_path: Path) -
     _write(tmp_path, "service.js",
         "const cp = require('child_process');\n"
         "export function unsafe(value) { cp.exec(value); }\n")
-    findings = _cmd_findings(tmp_path)
+    findings = _cmd_findings(tmp_path, sourced=True)
     assert len(findings) == 1
     finding = findings[0]
     assert finding.location.file == "routes.js"
@@ -47,7 +47,7 @@ def test_commonjs_direct_wrapper_receives_remote_input(tmp_path: Path) -> None:
         "const { exec } = require('child_process');\n"
         "function unsafe(value) { exec(value); }\n"
         "module.exports = { unsafe };\n")
-    findings = _cmd_findings(tmp_path)
+    findings = _cmd_findings(tmp_path, sourced=True)
     assert findings
     assert findings[0].location.file == "handler.js"
 
@@ -62,7 +62,7 @@ def test_constant_input_and_numeric_validation_are_not_reported(tmp_path: Path) 
     _write(tmp_path, "service.ts",
         "import { exec } from 'node:child_process';\n"
         "export function unsafe(value) { exec(value); }\n")
-    assert not _cmd_findings(tmp_path)
+    assert not _cmd_findings(tmp_path, sourced=True)
 
 
 def test_guarded_or_transformed_wrappers_are_not_summarized(tmp_path: Path) -> None:

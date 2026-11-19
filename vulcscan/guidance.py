@@ -10,6 +10,9 @@ from .models import Confidence, Finding, Remediation
 from .patch_guidance import computed_remediation
 from .rules import test_vectors_for
 
+_SQL_QUOTES = frozenset({"'", '"', "`"})
+_PHP_QUOTES = frozenset({"'", '"'})
+
 _FAMILY_PATCHES: dict[str, dict[str, tuple[str, str]]] = {
     "SQL": {
         "Python": ("Bind the value with the active database driver's placeholder.", 'cursor.execute("SELECT ... WHERE field = ?", (value,))'),
@@ -99,123 +102,189 @@ def enrich_finding(finding: Finding) -> None:
     finding.test_vectors = _unique_text([*_contextual_vectors(finding), *base])
 
 
-def _rule_specific_remediation(finding: Finding) -> Remediation | None:
-    rule = finding.rule_id
-    suggested: str | None = None
-    title = f"Apply the safe form for {finding.sink}."
-    confidence = Confidence.MEDIUM
-    patch_risk = "MEDIUM"
-    if rule == "PHP-URL-INCLUDE-001":
-        suggested = re.sub(r"(?i)\bOn\b", "Off", finding.evidence, count=1)
-        confidence = Confidence.HIGH
-    elif rule == "DEBUG-001" and "=" in finding.evidence:
-        key = finding.evidence.split("=", 1)[0].strip()
-        suggested = f"{key} = Off"
-        confidence = Confidence.HIGH
-    elif rule == "DOCKER-ROOT-001":
-        suggested = "RUN groupadd --system app && useradd --system --gid app --uid 10001 app\nUSER 10001:10001"
-    elif rule == "SECRET-001":
-        key = re.sub(r"[^A-Za-z0-9_]", "_", finding.sink).upper().strip("_") or "APP_SECRET"
-        if finding.language == "Shell" and "mysql" in finding.evidence.casefold():
-            suggested = 'mysql --defaults-extra-file="$MYSQL_CREDENTIALS_FILE" # file mode 0600, supplied at runtime'
-        elif finding.language == "Environment":
-            suggested = f"# Remove {key} from the committed file; inject it as a runtime secret named {key}."
-        elif finding.language == "Dockerfile":
-            suggested = f"# Remove ENV {key}=...; mount or inject {key} only when the container starts."
-        else:
-            suggested = f'{key} = os.environ["{key}"]'
-    elif rule == "CSRF-001" and finding.language == "PHP":
-        suggested = (
-            "$_SESSION['csrf_token'] ??= bin2hex(random_bytes(32));\n"
-            "if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {\n"
-            "    http_response_code(403); exit;\n}"
-        )
-    elif rule == "DB-RACE-001":
-        update = re.search(r"(?i)(UPDATE\s+\w+\s+SET\s+(\w+)\s*=\s*\2\s*-\s*1\s+WHERE\s+.+?)(?:[\";]|$)", finding.evidence)
-        if update:
-            sql, counter = update.group(1), update.group(2)
-            suggested = f'{sql} AND {counter} > 0;\n# Accept success only when exactly one row was affected.'
-    elif rule == "SESSION-FIXATION-001" and finding.language == "PHP":
-        suggested = f"session_regenerate_id(true);\n{finding.evidence.strip()}"
-        confidence = Confidence.HIGH
-    elif rule == "UPLOAD-MIME-001" and finding.language == "PHP":
-        field_match = re.search(r"\$_FILES\[['\"]([^'\"]+)", finding.evidence)
-        field = field_match.group(1) if field_match else "upload"
-        suggested = (
-            f"$tmp = $_FILES['{field}']['tmp_name'];\n"
-            "$mime = (new finfo(FILEINFO_MIME_TYPE))->file($tmp);\n"
-            "if (!isset(['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime])) { http_response_code(415); exit; }\n"
-            "$safeName = bin2hex(random_bytes(16)) . '.' . ['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime];\n"
-            "move_uploaded_file($tmp, $nonExecutableUploadDir . DIRECTORY_SEPARATOR . $safeName);"
-        )
-    elif rule == "WEAK-HASH-001":
-        suggested = re.sub(
+_RulePatch = tuple[str | None, Confidence, str]
+_NO_PATCH: _RulePatch = (None, Confidence.MEDIUM, "MEDIUM")
+_JS_LANGUAGES = frozenset({"JavaScript", "TypeScript"})
+_AES_GCM_NODE_PATCH = (
+    "const decipher = createDecipheriv('aes-256-gcm', key, nonce);\n"
+    "decipher.setAuthTag(tag);\n"
+    "const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);"
+)
+_CLEARTEXT_PASSWORD_PATCHES = {
+    "Python": "password_hash = argon2.PasswordHasher().hash(password)\nf.write(password_hash)",
+    "JavaScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
+    "TypeScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
+    "PHP": "$passwordHash = password_hash($password, PASSWORD_ARGON2ID);",
+}
+_CLEARTEXT_PASSWORD_DEFAULT = (
+    "INSERT INTO users (username, password) VALUES ('<test-user>', '<argon2id-hash-generated-by-the-application>');"
+)
+_UNAUTH_ENCRYPTION_PATCHES = {
+    "Python": (
+        "cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)\n"
+        "plaintext = cipher.decrypt_and_verify(ciphertext, tag)"
+    ),
+    "JavaScript": _AES_GCM_NODE_PATCH,
+    "TypeScript": _AES_GCM_NODE_PATCH,
+    "Java": (
+        "Cipher cipher = Cipher.getInstance(\"AES/GCM/NoPadding\");\n"
+        "cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, nonce));\n"
+        "byte[] plaintext = cipher.doFinal(ciphertextAndTag);"
+    ),
+}
+
+
+def _plain_patch(suggested: str | None) -> _RulePatch:
+    return suggested, Confidence.MEDIUM, "MEDIUM"
+
+
+def _patch_url_include(finding: Finding) -> _RulePatch:
+    return re.sub(r"(?i)\bOn\b", "Off", finding.evidence, count=1), Confidence.HIGH, "MEDIUM"
+
+
+def _patch_debug(finding: Finding) -> _RulePatch:
+    if "=" not in finding.evidence:
+        return _NO_PATCH
+    key = finding.evidence.split("=", 1)[0].strip()
+    return f"{key} = Off", Confidence.HIGH, "MEDIUM"
+
+
+def _patch_docker_root(_finding: Finding) -> _RulePatch:
+    return _plain_patch("RUN groupadd --system app && useradd --system --gid app --uid 10001 app\nUSER 10001:10001")
+
+
+def _patch_secret(finding: Finding) -> _RulePatch:
+    key = re.sub(r"\W", "_", finding.sink, flags=re.ASCII).upper().strip("_") or "APP_SECRET"
+    if finding.language == "Shell" and "mysql" in finding.evidence.casefold():
+        return _plain_patch('mysql --defaults-extra-file="$MYSQL_CREDENTIALS_FILE" # file mode 0600, supplied at runtime')
+    if finding.language == "Environment":
+        return _plain_patch(f"# Remove {key} from the committed file; inject it as a runtime secret named {key}.")
+    if finding.language == "Dockerfile":
+        return _plain_patch(f"# Remove ENV {key}=...; mount or inject {key} only when the container starts.")
+    return _plain_patch(f'{key} = os.environ["{key}"]')
+
+
+def _patch_csrf(finding: Finding) -> _RulePatch:
+    if finding.language != "PHP":
+        return _NO_PATCH
+    return _plain_patch(
+        "$_SESSION['csrf_token'] ??= bin2hex(random_bytes(32));\n"
+        "if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {\n"
+        "    http_response_code(403); exit;\n}"
+    )
+
+
+def _patch_db_race(finding: Finding) -> _RulePatch:
+    update = re.search(r"(?i)(UPDATE\s+\w+\s+SET\s+(\w+)\s*=\s*\2\s*-\s*1\s+WHERE\s+.[^\";\n]*)(?:[\";]|$)", finding.evidence)
+    if not update:
+        return _NO_PATCH
+    sql, counter = update.group(1), update.group(2)
+    return _plain_patch(f'{sql} AND {counter} > 0;\n# Accept success only when exactly one row was affected.')
+
+
+def _patch_session_fixation(finding: Finding) -> _RulePatch:
+    if finding.language != "PHP":
+        return _NO_PATCH
+    return f"session_regenerate_id(true);\n{finding.evidence.strip()}", Confidence.HIGH, "MEDIUM"
+
+
+def _patch_upload_mime(finding: Finding) -> _RulePatch:
+    if finding.language != "PHP":
+        return _NO_PATCH
+    field_match = re.search(r"\$_FILES\[['\"]([^'\"]+)", finding.evidence)
+    field = field_match.group(1) if field_match else "upload"
+    return _plain_patch(
+        f"$tmp = $_FILES['{field}']['tmp_name'];\n"
+        "$mime = (new finfo(FILEINFO_MIME_TYPE))->file($tmp);\n"
+        "if (!isset(['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime])) { http_response_code(415); exit; }\n"
+        "$safeName = bin2hex(random_bytes(16)) . '.' . ['image/jpeg' => 'jpg', 'image/png' => 'png'][$mime];\n"
+        "move_uploaded_file($tmp, $nonExecutableUploadDir . DIRECTORY_SEPARATOR . $safeName);"
+    )
+
+
+def _patch_weak_hash(finding: Finding) -> _RulePatch:
+    return _plain_patch(
+        re.sub(
             r"(?i)MD5\s*\([^)]*\)",
             "'<argon2id-hash-generated-by-the-application>'",
             finding.evidence,
             count=1,
         )
-    elif rule == "CLEARTEXT-PASSWORD-001":
-        suggested = {
-            "Python": "password_hash = argon2.PasswordHasher().hash(password)\nf.write(password_hash)",
-            "JavaScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
-            "TypeScript": "const passwordHash = await argon2.hash(password);\nawait storeUser(username, passwordHash);",
-            "PHP": "$passwordHash = password_hash($password, PASSWORD_ARGON2ID);",
-        }.get(
-            finding.language,
-            "INSERT INTO users (username, password) VALUES ('<test-user>', '<argon2id-hash-generated-by-the-application>');",
-        )
-    elif rule == "UNAUTH-ENCRYPTION-001":
-        suggested = {
-            "Python": (
-                "cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)\n"
-                "plaintext = cipher.decrypt_and_verify(ciphertext, tag)"
-            ),
-            "JavaScript": (
-                "const decipher = createDecipheriv('aes-256-gcm', key, nonce);\n"
-                "decipher.setAuthTag(tag);\n"
-                "const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);"
-            ),
-            "TypeScript": (
-                "const decipher = createDecipheriv('aes-256-gcm', key, nonce);\n"
-                "decipher.setAuthTag(tag);\n"
-                "const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);"
-            ),
-            "Java": (
-                "Cipher cipher = Cipher.getInstance(\"AES/GCM/NoPadding\");\n"
-                "cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, nonce));\n"
-                "byte[] plaintext = cipher.doFinal(ciphertextAndTag);"
-            ),
-        }.get(finding.language)
-    elif rule == "GO-CODE-001" and "CEL" in finding.sink:
+    )
+
+
+def _patch_cleartext_password(finding: Finding) -> _RulePatch:
+    return _plain_patch(_CLEARTEXT_PASSWORD_PATCHES.get(finding.language, _CLEARTEXT_PASSWORD_DEFAULT))
+
+
+def _patch_unauth_encryption(finding: Finding) -> _RulePatch:
+    return _plain_patch(_UNAUTH_ENCRYPTION_PATCHES.get(finding.language))
+
+
+def _patch_go_cel(finding: Finding) -> _RulePatch:
+    if "CEL" not in finding.sink:
+        return _NO_PATCH
+    return _plain_patch(
+        "ast, issues := env.Compile(expression)\n"
+        "if issues.Err() != nil { return issues.Err() }\n"
+        "if err := validateAllowedCelAST(ast); err != nil { return err }\n"
+        "program, err := env.Program(ast, cel.CostLimit(maxCost))"
+    )
+
+
+def _patch_authz_scope(finding: Finding) -> _RulePatch:
+    if finding.language not in _JS_LANGUAGES:
+        return _NO_PATCH
+    parameter = re.search(r"req\.params\.([A-Za-z_]\w*)", finding.evidence)
+    name = parameter.group(1) if parameter else "id"
+    return _plain_patch(
+        f"const resource = await Model.findOne({{ where: {{ {name}: req.params.{name}, owner_id: req.user.id }} }});\n"
+        "if (!resource) throw new HttpError(404, 'Resource not found');"
+    )
+
+
+def _patch_orm_empty_auth(finding: Finding) -> _RulePatch:
+    if finding.language != "Go":
+        return _NO_PATCH
+    result_match = re.search(r"\b([A-Za-z_]\w*)\s*(?::=|=)", finding.evidence)
+    result = result_match.group(1) if result_match else "result"
+    if re.search(r"GORM (?:First|Take|Last)\(", finding.sink):
+        suggested = f"if {result}.Error != nil {{\n    return errUnauthorized\n}}"
+    else:
         suggested = (
-            "ast, issues := env.Compile(expression)\n"
-            "if issues.Err() != nil { return issues.Err() }\n"
-            "if err := validateAllowedCelAST(ast); err != nil { return err }\n"
-            "program, err := env.Program(ast, cel.CostLimit(maxCost))"
+            f"if {result}.Error != nil || {result}.RowsAffected == 0 {{\n"
+            "    return errUnauthorized\n"
+            "}"
         )
-    elif rule == "AUTHZ-SCOPE-001" and finding.language in {"JavaScript", "TypeScript"}:
-        parameter = re.search(r"req\.params\.([A-Za-z_]\w*)", finding.evidence)
-        name = parameter.group(1) if parameter else "id"
-        suggested = (
-            f"const resource = await Model.findOne({{ where: {{ {name}: req.params.{name}, owner_id: req.user.id }} }});\n"
-            "if (!resource) throw new HttpError(404, 'Resource not found');"
-        )
-    elif rule == "ORM-EMPTY-AUTH-001" and finding.language == "Go":
-        result_match = re.search(r"\b([A-Za-z_]\w*)\s*(?::=|=)", finding.evidence)
-        result = result_match.group(1) if result_match else "result"
-        if re.search(r"GORM (?:First|Take|Last)\(", finding.sink):
-            suggested = f"if {result}.Error != nil {{\n    return errUnauthorized\n}}"
-        else:
-            suggested = (
-                f"if {result}.Error != nil || {result}.RowsAffected == 0 {{\n"
-                "    return errUnauthorized\n"
-                "}"
-            )
-        confidence = Confidence.HIGH
-        patch_risk = "LOW"
+    return suggested, Confidence.HIGH, "LOW"
+
+
+_RULE_PATCHES = {
+    "PHP-URL-INCLUDE-001": _patch_url_include,
+    "DEBUG-001": _patch_debug,
+    "DOCKER-ROOT-001": _patch_docker_root,
+    "SECRET-001": _patch_secret,
+    "CSRF-001": _patch_csrf,
+    "DB-RACE-001": _patch_db_race,
+    "SESSION-FIXATION-001": _patch_session_fixation,
+    "UPLOAD-MIME-001": _patch_upload_mime,
+    "WEAK-HASH-001": _patch_weak_hash,
+    "CLEARTEXT-PASSWORD-001": _patch_cleartext_password,
+    "UNAUTH-ENCRYPTION-001": _patch_unauth_encryption,
+    "GO-CODE-001": _patch_go_cel,
+    "AUTHZ-SCOPE-001": _patch_authz_scope,
+    "ORM-EMPTY-AUTH-001": _patch_orm_empty_auth,
+}
+
+
+def _rule_specific_remediation(finding: Finding) -> Remediation | None:
+    handler = _RULE_PATCHES.get(finding.rule_id)
+    if handler is None:
+        return None
+    suggested, confidence, patch_risk = handler(finding)
     if suggested is None:
         return None
+    title = f"Apply the safe form for {finding.sink}."
     existing = finding.remediations[0].guidance if finding.remediations else "Review the change against application policy."
     return Remediation(
         title=title,
@@ -339,7 +408,14 @@ def _sql_binding_plan(expression: str, language: str) -> tuple[str, list[str]] |
     return sql, values
 
 
-def _split_string_expression(expression: str, separator: str) -> list[str] | None:
+def _next_quote(quote: str, char: str) -> str:
+    if quote == char:
+        return ""
+    return quote or char
+
+
+def _split_top_level(expression: str, separator: str, quotes: frozenset[str]) -> list[str] | None:
+    """Split on a separator outside quoted text; None when a quote stays open or a part is empty."""
     parts: list[str] = []
     start = 0
     quote = ""
@@ -347,20 +423,21 @@ def _split_string_expression(expression: str, separator: str) -> list[str] | Non
     for index, char in enumerate(expression):
         if escaped:
             escaped = False
-            continue
-        if char == "\\" and quote:
+        elif char == "\\" and quote:
             escaped = True
-            continue
-        if char in {"'", '"', "`"}:
-            quote = "" if quote == char else quote if quote else char
-            continue
-        if char == separator and not quote:
+        elif char in quotes:
+            quote = _next_quote(quote, char)
+        elif char == separator and not quote:
             parts.append(expression[start:index].strip())
             start = index + 1
     if quote:
         return None
     parts.append(expression[start:].strip())
     return parts if all(parts) else None
+
+
+def _split_string_expression(expression: str, separator: str) -> list[str] | None:
+    return _split_top_level(expression, separator, _SQL_QUOTES)
 
 
 def _quoted_text(value: str) -> str | None:
@@ -400,6 +477,44 @@ def _render_sql_patch(finding: Finding, sql: str, values: list[str]) -> str | No
     return None
 
 
+def _statement_body(text: str, allow_newline: bool) -> str | None:
+    """Drop surrounding whitespace and one trailing semicolon; None when nothing is left."""
+    body = text.rstrip()
+    if body.endswith(";"):
+        body = body[:-1].rstrip()
+    if not body or (not allow_newline and "\n" in body):
+        return None
+    return body
+
+
+def _php_bind(sql: str, part: str, following: str | None, parts: list[str], index: int) -> tuple[str, str]:
+    """Return the SQL with a placeholder for the variable and the value to bind."""
+    if following is not None and sql.endswith("'%") and following.startswith("%'"):
+        parts[index + 1] = repr(following[2:])
+        return sql[:-2] + "?", f'"%" . {part} . "%"'
+    if following is not None and sql.endswith(("'", '"')) and following.startswith(sql[-1]):
+        parts[index + 1] = repr(following[1:])
+        return sql[:-1] + "?", part
+    return sql + "?", part
+
+
+def _php_sql_template(parts: list[str]) -> tuple[str, list[str]] | None:
+    sql = ""
+    values: list[str] = []
+    for index in range(len(parts)):
+        part = parts[index].strip()
+        literal = _php_string(part)
+        if literal is not None:
+            sql += literal
+            continue
+        if not re.fullmatch(r"\$[A-Za-z_]\w*", part):
+            return None
+        following = _php_string(parts[index + 1].strip()) if index + 1 < len(parts) else None
+        sql, value = _php_bind(sql, part, following, parts, index)
+        values.append(value)
+    return (sql, values) if values else None
+
+
 def _php_sql_patch(finding: Finding) -> tuple[str, str] | None:
     """Build a mysqli review template from a simple concatenated query assignment."""
     assignment = next(
@@ -412,40 +527,15 @@ def _php_sql_patch(finding: Finding) -> tuple[str, str] | None:
     )
     if assignment is None:
         return None
-    match = re.match(r"^\s*(\$[A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$", assignment)
-    if match is None:
-        return None
-    parts = _split_php_concat(match.group(2))
+    head = re.match(r"\s*(\$[A-Za-z_]\w*)\s*=\s*", assignment)
+    body = _statement_body(assignment[head.end() :], allow_newline=False) if head else None
+    parts = _split_php_concat(body) if body else None
     if not parts:
         return None
-    sql = ""
-    values: list[str] = []
-    index = 0
-    while index < len(parts):
-        part = parts[index].strip()
-        literal = _php_string(part)
-        if literal is not None:
-            sql += literal
-            index += 1
-            continue
-        if not re.fullmatch(r"\$[A-Za-z_]\w*", part):
-            return None
-        following = _php_string(parts[index + 1].strip()) if index + 1 < len(parts) else None
-        if following is not None and sql.endswith("'%") and following.startswith("%'"):
-            sql = sql[:-2] + "?"
-            parts[index + 1] = repr(following[2:])
-            values.append(f'"%" . {part} . "%"')
-        elif following is not None and sql.endswith(("'", '"')) and following.startswith(sql[-1]):
-            quote = sql[-1]
-            sql = sql[:-1] + "?"
-            parts[index + 1] = repr(following[1:] if following.startswith(quote) else following)
-            values.append(part)
-        else:
-            sql += "?"
-            values.append(part)
-        index += 1
-    if not values:
+    template = _php_sql_template(parts)
+    if template is None:
         return None
+    sql, values = template
     escaped_sql = sql.replace("\\", "\\\\").replace('"', '\\"')
     bind_types = "s" * len(values)
     suggested = (
@@ -454,16 +544,15 @@ def _php_sql_patch(finding: Finding) -> tuple[str, str] | None:
         "$stmt->execute();\n$result = $stmt->get_result();"
     )
     return (
-        f"The flow builds {match.group(1)} from {', '.join(values)}. Keep its SQL text constant and bind those values in the same order; confirm the receiver is the reported mysqli connection.",
+        f"The flow builds {head.group(1)} from {', '.join(values)}. Keep its SQL text constant and bind those values in the same order; confirm the receiver is the reported mysqli connection.",
         suggested,
     )
 
 
 def _php_xss_remediation(finding: Finding) -> Remediation | None:
-    match = re.match(r"^\s*echo\s+(.+?)\s*;?\s*$", finding.evidence, re.DOTALL)
-    if match is None:
-        return None
-    parts = _split_php_concat(match.group(1))
+    head = re.match(r"\s*echo\s+", finding.evidence)
+    body = _statement_body(finding.evidence[head.end() :], allow_newline=True) if head else None
+    parts = _split_php_concat(body) if body else None
     if not parts:
         return None
     changed = False
@@ -513,27 +602,7 @@ def _dynamic_svg_remediation(finding: Finding) -> Remediation | None:
 
 
 def _split_php_concat(expression: str) -> list[str] | None:
-    parts: list[str] = []
-    start = 0
-    quote = ""
-    escaped = False
-    for index, char in enumerate(expression):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\" and quote:
-            escaped = True
-            continue
-        if char in {"'", '"'}:
-            quote = "" if quote == char else quote if quote else char
-            continue
-        if char == "." and not quote:
-            parts.append(expression[start:index].strip())
-            start = index + 1
-    if quote:
-        return None
-    parts.append(expression[start:].strip())
-    return parts if all(parts) else None
+    return _split_top_level(expression, ".", _PHP_QUOTES)
 
 
 def _php_string(value: str) -> str | None:
@@ -624,13 +693,13 @@ def _traced_value(finding: Finding) -> str:
     for step in reversed(steps):
         code = step.code.strip()
         assignment = re.match(
-            r"^(?:const\s+|let\s+|var\s+|String\s+|string\s+|auto\s+)?([@$]?[A-Za-z_]\w*)\s*(?::=|=)",
+            r"^(?:(?:const|let|var|String|string|auto)\s+)?([@$]?[A-Za-z_]\w*)\s*:?=",
             code,
         )
         if assignment:
             return assignment.group(1)
         source = re.search(
-            r"(?:request\.(?:args|form|values)|req\.(?:query|body|params)|params|_GET|_POST|Query\(\)|FormValue)\s*(?:\[|\.|\()\s*['\"]?([A-Za-z_]\w*)",
+            r"(?:request\.(?:args|form|values)|req\.(?:query|body|params)|params|_GET|_POST|Query\(\)|FormValue)\s*[\[.(]\s*['\"]?([A-Z_]\w*)",
             code,
             re.IGNORECASE,
         )
@@ -778,8 +847,9 @@ def _sql_flow_expression(finding: Finding) -> str | None:
     for step in reversed(finding.flow):
         if step.kind != "PROPAGATION" or not re.search(r"(?i)\bselect\b", step.code):
             continue
-        match = re.match(r"^\s*\$?[A-Za-z_]\w*\s*=\s*(.+?)\s*;?\s*$", step.code, re.DOTALL)
-        return match.group(1) if match else step.code
+        head = re.match(r"\s*\$?[A-Za-z_]\w*\s*=\s*", step.code)
+        body = _statement_body(step.code[head.end() :], allow_newline=True) if head else None
+        return body or step.code
     return None
 
 
@@ -792,10 +862,17 @@ def _row_scope_proof(target: str) -> str:
 
 def _select_shape(expression: str) -> list[str] | None:
     """Recover a simple SELECT list from source in any supported language."""
-    match = re.search(r"(?is)\bSELECT\s+(.+?)\s+FROM\b", expression)
-    if not match or "*" in match.group(1):
+    select = re.search(r"(?i)\bSELECT\s+", expression)
+    if select is None:
         return None
-    raw_columns = match.group(1).strip().lstrip("'\"`")
+    rest = expression[select.end() :]
+    keyword = re.search(r"(?i)(?<=\s)FROM\b", rest)
+    if keyword is None:
+        return None
+    selected = rest[: keyword.start()].rstrip()
+    if "*" in selected:
+        return None
+    raw_columns = selected.strip().lstrip("'\"`")
     columns = [item.strip().rsplit(".", 1)[-1].strip("`\"[] ") for item in raw_columns.split(",")]
     if not 1 <= len(columns) <= 20 or any(not re.fullmatch(r"[A-Za-z_]\w*", item) for item in columns):
         return None

@@ -257,3 +257,7 @@ Use `--workers N` with `N` from 1 to 8 to analyze independent source files and b
 ### Entropy-aware generic secret confidence
 
 Generic secret literals under credential-like identifiers now use Shannon entropy to calibrate confidence: long (16+ character) highly repetitive values below 2.5 bits/character remain reported but are classified MEDIUM instead of HIGH confidence. Random-looking generic credential strings remain HIGH confidence, as do recognizable known-token prefixes. No finding is suppressed purely because of low entropy; long weak passwords and tokens still merit review. This is an ordering heuristic, not a test of cryptographic key strength.
+
+### Structural PE import parsing
+
+For well-formed PE32 and PE32+ images, VulcScan now reads DLL import descriptors, thunk tables and named Import Directory entries using bounded `struct` parsing. `BINARY-DANGEROUS-001` is based on the actual imported function name instead of arbitrary ASCII occurrences elsewhere in the binary, reducing false positives from embedded strings. For malformed or unsupported PE metadata, the previous byte-level heuristic remains as a fallback. Ordinal imports are not guessed as named symbols. This is a conservative ordinary-import parser, not full coverage of delay imports or runtime dynamic loading, and it never loads a DLL or executes the binary.

@@ -305,3 +305,7 @@ With `--attack-surface`, VulcScan statically inspects literal `urlpatterns = [pa
 ### Java ZIP entry extraction traversal
 
 `JAVA-ZIPSLIP-001` (CWE-22) conservatively checks a direct `ZipEntry` obtained from `getNextEntry`/`nextElement`/`getEntry`, whose `getName()` is combined with an output directory in `new File(...)` and subsequently written via `FileOutputStream` or `Files.copy`. A recognizable canonical or normalized containment check makes the detector abstain, but does not constitute proof that an implementation is secure. It is review-only, with a non-destructive disposable ZIP verification suggestion. General ZipFile streaming, alternate path APIs, symlink races and indirect assignments remain outside this narrow rule. No archive is opened or extracted during the scan.
+
+### PHP Laravel and Slim Attack Surface routes
+
+With `--attack-surface`, VulcScan now identifies literal Laravel `Route::get/post/put/patch/delete/options/any` declarations and Slim `$app->get/post/...` registrations when the file clearly references Slim. It records HTTP method, route path, file/line, named controllers when directly declared as `[Controller::class, 'method']` or `Controller@method`, and explicitly chained Laravel `->middleware('auth')`. Anonymous closures have unknown handler names; dynamic paths, route prefixes/groups, aliases and unknown runtime registrations are not inferred. No target PHP code is executed.

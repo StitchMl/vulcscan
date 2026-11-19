@@ -382,6 +382,15 @@ def _definitions() -> dict[str, RuleDefinition]:
             "A password is seeded or stored as cleartext instead of a salted password hash.",
         ),
         RuleDefinition(
+            "PY-ARG-001",
+            "Argument Injection into External Program",
+            "CWE-88",
+            "COMMAND_EXECUTION",
+            Severity.HIGH,
+            Confidence.MEDIUM,
+            "A network-controlled string is passed as a standalone argument to a command-line program that may interpret leading hyphens as options, despite shell=False.",
+        ),
+        RuleDefinition(
             "PHP-TYPE-JUGGLING-001",
             "Loose PHP Comparison of Authentication Values",
             "CWE-697",
@@ -772,6 +781,14 @@ _RULE_ADVICE: dict[str, tuple[Advice, ...]] = {
             "LOW",
         ),
     ),
+    "PY-ARG-001": (
+        Advice(
+            "Validate or disambiguate external command arguments.",
+            "For argument values taken from requests, enforce an allowlist appropriate to the selected program. Where supported, terminate option parsing with '--' before the untrusted positional value and do not allow the user to choose an option or subcommand.",
+            Confidence.MEDIUM,
+            "MEDIUM",
+        ),
+    ),
     "PHP-TYPE-JUGGLING-001": (
         Advice(
             "Use strict comparisons or a purpose-built credential verifier.",
@@ -896,6 +913,7 @@ def test_vectors_for(rule_id: str) -> list[str]:
         "BINARY-SECRET-001": ["Run `strings BINARY` in an isolated workspace and search for the redacted credential label; production secrets must not appear in the executable."],
         "PHP-URL-INCLUDE-001": ["On an isolated PHP test instance, submit `data://text/plain,<?php echo 'VULCSCAN_PROBE'; ?>`; the include must reject the wrapper and must not print the marker."],
         "CLEARTEXT-PASSWORD-001": ["Export a disposable database row or seed artifact and confirm it contains a salted password-KDF hash, never the test password itself."],
+        "PY-ARG-001": ["Use a disposable workspace and send a benign string beginning with a hyphen through the reported field. Confirm it is handled as data rather than an option; do not run the test against production repositories or accounts."],
         "PHP-TYPE-JUGGLING-001": ["On a disposable test instance compare synthetic token strings that PHP may coerce, such as `0e123` and `0e456`. Authentication must reject unequal tokens; verify strict comparison or hash_equals with strings."],
         "AUTHZ-SCOPE-001": ["Create one disposable resource as account A, then request the same identifier as account B. Any resource content or metadata in B's response proves missing object-level authorization."],
         "ORM-EMPTY-AUTH-001": ["Use a random nonexistent session token on the reported state-changing request. The service must reject it before inserting, updating or deleting a row; verify that no row with an empty owner or principal was created."],

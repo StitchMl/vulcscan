@@ -20,7 +20,7 @@ def _javascript_directives(text: str) -> set[tuple[int, str]]:
     line, line_start, index = 1, 0, 0
     inside_block = False
     while index < len(text):
-        if text[index] == "\\n":
+        if text[index] == "\n":
             line += 1
             line_start = index + 1
             index += 1
@@ -37,7 +37,7 @@ def _javascript_directives(text: str) -> set[tuple[int, str]]:
             index += 2
             continue
         elif blanked and pair == "//":
-            end = text.find("\\n", index)
+            end = text.find("\n", index)
             end = len(text) if end < 0 else end
             match = _JS_DIRECTIVE.fullmatch(text[index:end].strip())
             if match:

@@ -309,3 +309,7 @@ With `--attack-surface`, VulcScan statically inspects literal `urlpatterns = [pa
 ### PHP Laravel and Slim Attack Surface routes
 
 With `--attack-surface`, VulcScan now identifies literal Laravel `Route::get/post/put/patch/delete/options/any` declarations and Slim `$app->get/post/...` registrations when the file clearly references Slim. It records HTTP method, route path, file/line, named controllers when directly declared as `[Controller::class, 'method']` or `Controller@method`, and explicitly chained Laravel `->middleware('auth')`. Anonymous closures have unknown handler names; dynamic paths, route prefixes/groups, aliases and unknown runtime registrations are not inferred. No target PHP code is executed.
+
+### Go archive/zip extraction traversal
+
+`GO-ZIPSLIP-001` (CWE-22) identifies a conservative extraction pattern: an `archive/zip` reader iterates `reader.File`, joins `entry.Name` to an output root using `filepath.Join`, and opens that same destination via `os.Create` or `os.OpenFile`. A recognizable `filepath.Rel` containment check plus a prefix condition makes the analyzer abstain. This is a review-only finding, not proof of exploitation; symbolic links, complex file handling and more elaborate archive flows require manual inspection. The scanner never runs Go code or opens an archive.

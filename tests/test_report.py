@@ -464,7 +464,7 @@ def test_cli_files_rejects_unsafe_paths(tmp_path: Path, unsafe: str) -> None:
 def test_python_diff_skips_syntax_breakage(tmp_path: Path) -> None:
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()
-    source.write_text("value = 1\\n", encoding="utf-8")
+    source.write_text("value = 1\n", encoding="utf-8")
     finding = _finding(
         Severity.HIGH, 1, current="value = 1",
         suggested="value = (", machine_applicable=True,
@@ -475,7 +475,7 @@ def test_python_diff_skips_syntax_breakage(tmp_path: Path) -> None:
 def test_python_diff_skips_missing_import(tmp_path: Path) -> None:
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()
-    source.write_text("value = 1\\n", encoding="utf-8")
+    source.write_text("value = 1\n", encoding="utf-8")
     finding = _finding(
         Severity.HIGH, 1, current="value = 1",
         suggested="value = hmac.compare_digest(a, b)", machine_applicable=True,
@@ -486,7 +486,7 @@ def test_python_diff_skips_missing_import(tmp_path: Path) -> None:
 def test_python_diff_accepts_existing_import(tmp_path: Path) -> None:
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()
-    source.write_text("import hmac\\nvalue = 1\\n", encoding="utf-8")
+    source.write_text("import hmac\nvalue = 1\n", encoding="utf-8")
     finding = _finding(
         Severity.HIGH, 2, current="value = 1",
         suggested="value = hmac.compare_digest(a, b)", machine_applicable=True,

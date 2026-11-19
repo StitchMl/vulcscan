@@ -35,6 +35,9 @@ _DIRECT_CALL = re.compile(
 _REQUIRE = re.compile(
     r"""\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['"](?:node:)?(child_process|fs|fs/promises)['"]\s*\)"""
 )
+_NAMED_REQUIRE = re.compile(
+    r"""\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*['"](?:node:)?(child_process|fs|fs/promises)['"]\s*\)"""
+)
 _NAMED_IMPORT = re.compile(
     r"""\bimport\s*\{([^}]*)\}\s*from\s*['"](?:node:)?(child_process|fs|fs/promises)['"]"""
 )
@@ -60,10 +63,11 @@ def _safe_sink_names(source: str) -> dict[str, tuple[str, str]]:
         methods = {"exec": "JS-CMD-001", "execSync": "JS-CMD-001"} if kind == "child_process" else {"readFile": "JS-PATH-001", "readFileSync": "JS-PATH-001"}
         for method, rule in methods.items():
             names[alias + "." + method] = (rule, alias + "." + method)
-    for match in _NAMED_IMPORT.finditer(source):
+    for match in list(_NAMED_IMPORT.finditer(source)) + list(_NAMED_REQUIRE.finditer(source)):
         entries, module = match.groups()
+        separator = ":" if match.re is _NAMED_REQUIRE else "as"
         for entry in entries.split(","):
-            parts = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*", entry)
+            parts = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)(?:\s+" + (r":" if separator == ":" else r"as") + r"\s*([A-Za-z_$][\w$]*))?\s*", entry)
             if not parts:
                 continue
             exported, local = parts.group(1), parts.group(2) or parts.group(1)

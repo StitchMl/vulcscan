@@ -13,6 +13,7 @@ from typing import Any
 from .django_routes import django_routes
 from .js_routes import resolve_handler
 from .models import Finding
+from .php_routes import php_routes
 from .source import C_STYLE, blank_comments, code_mask
 from .spring_routes import spring_routes
 
@@ -189,6 +190,8 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
             routes.extend(_gin_routes(source.relative, source.text))
         elif source.language == "Java":
             routes.extend(spring_routes(source.relative, source.text))
+        elif source.language == "PHP":
+            routes.extend(php_routes(source.relative, source.text))
     available_python = {source.relative for source in files if source.language == "Python"}
     for source in files:
         if source.language == "Python":

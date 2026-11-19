@@ -670,6 +670,27 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
+        elif method in {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"} and (
+            receiver in {"collection", "Model", "User", "Account"}
+            or receiver.startswith(("db.collection", "mongoose.model"))
+            or re.fullmatch(r"(?:users|accounts|orders|products)Collection", receiver, re.IGNORECASE)
+        ):
+            arguments = self._arguments(open_index)
+            if not arguments:
+                return
+            original = self.text[arguments[0][0]:arguments[0][1]].strip()
+            if not re.fullmatch(
+                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
+                original,
+            ):
+                return
+            value = self._value(*arguments[0])
+            if value.trust != REMOTE or not value.sources:
+                return
+            self._emit_value(
+                "JS-NOSQL-001", receiver + "." + method,
+                call_start, open_index, value, Confidence.MEDIUM,
+            )
         elif method in {"query", "execute", "raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}:
             arguments = self._arguments(open_index)
             if not arguments:

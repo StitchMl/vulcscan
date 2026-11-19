@@ -227,3 +227,7 @@ The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` compariso
 ### Classic C/C++ unbounded buffer writes
 
 `C-BUFFER-001` (CWE-120) identifies a narrow set of potentially unbounded writes: `gets(buffer)`, bare `scanf("%s", buffer)` without an explicit field width, and direct `strcpy`/`strcat`/`sprintf` copies from `argv[n]` into a destination. Width-bounded formats, `fgets`, and constant-string copies are not automatically flagged. This review-only lexical rule is not a substitute for compiled analysis; findings are MEDIUM confidence and should be assessed with test binaries and memory sanitizers. No application is run or automatically patched.
+
+### ELF dynamic hardening without execution
+
+For well-formed ELF32/ELF64 dynamic binaries, VulcScan now reads bounded program headers and dynamic string tables with Python's standard `struct` module. It distinguishes absent and partial RELRO (GNU_RELRO without BIND_NOW) from full RELRO, and flags clearly unsafe RPATH/RUNPATH entries such as empty, current-directory, relative paths, or temporary folders. A common `$ORIGIN/lib` or absolute system path is not automatically labeled unsafe. Malformed, truncated and static binaries are not guessed. Findings appear under `BINARY-HARDENING-001`; no binary is executed or loaded. This is a conservative hardening audit, not a complete ELF loader or checksec replacement.

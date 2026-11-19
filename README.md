@@ -293,3 +293,7 @@ Use `--update-cve --cve-cache ./osv-cache.json` **before** a contest to query th
 ### Gin (Go) Attack Surface routes
 
 With `--attack-surface`, VulcScan now lists direct literal route registrations such as `r.GET("/users/:id", getUser)`, `router.POST(...)`, or `engine.Any(...)` in Gin-enabled Go source files. It reports HTTP method, literal route, source file and line, and the handler identifier when unambiguous. A clearly named authentication middleware passed directly in the registration is marked as present; otherwise authentication remains unknown. Dynamic paths, unresolved router groups/prefixes and route-like text inside comments or strings are deliberately ignored. This is an execution-free static inventory, not a runtime map of registered routes.
+
+### Spring MVC literal Attack Surface routes
+
+With `--attack-surface`, Java files containing annotated Spring controllers are inspected for literal `@GetMapping`, `@PostMapping`, `@PutMapping`, `@PatchMapping`, `@DeleteMapping` and `@RequestMapping` paths. Literal class-level `@RequestMapping("/prefix")` values are joined with method paths, and a visible `@PreAuthorize`, `@Secured` or related authorization annotation is recorded for the handler. Dynamic route expressions and unrecognized prefix expressions are omitted instead of guessing. The inventory is static and does not load the Java application or expand composed annotations, inheritance or programmatic registrations.

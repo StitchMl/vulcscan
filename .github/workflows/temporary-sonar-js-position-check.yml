@@ -1,4 +1,5 @@
 name: Temporary exact SonarCloud main check
+# Re-run after complexity refactor
 on:
   push:
     branches: [main]

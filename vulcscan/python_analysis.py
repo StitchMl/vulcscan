@@ -439,6 +439,33 @@ def _single_name_assignment(statement: ast.stmt) -> tuple[str, ast.expr] | None:
     return targets[0].id, statement.value
 
 
+def _constructed_local_class(
+    module: Module, function: FunctionInfo, variable: str, call_line: int
+) -> str | None:
+    """Resolve only a single local constructor assignment preceding the call."""
+    if variable in (*function.params, *function.kwonly):
+        return None
+    writes = [
+        node
+        for statement in function.node.body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+        and node.id == variable
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+    ]
+    if len(writes) != 1:
+        return None
+    for statement in function.node.body:
+        assigned = _single_name_assignment(statement)
+        if assigned is None or assigned[0] != variable or statement.lineno >= call_line:
+            continue
+        constructor = assigned[1]
+        if isinstance(constructor, ast.Call) and isinstance(constructor.func, ast.Name):
+            if constructor.func.id in module.classes:
+                return constructor.func.id
+    return None
+
+
 def _django_route_string(module: Module, node: ast.AST) -> str | None:
     """The literal route of a ``path``/``re_path``/``url`` call; None for other nodes."""
     if not isinstance(node, ast.Call) or len(node.args) < 2:
@@ -623,6 +650,12 @@ class PythonProject:
         if base.id in module.classes:
             method = module.functions.get(f"{base.id}.{func.attr}")
             return (module, method, False) if method is not None else None
+        if function is not None:
+            class_name = _constructed_local_class(module, function, base.id, func.lineno)
+            if class_name is not None:
+                method = module.functions.get(f"{class_name}.{func.attr}")
+                if method is not None and method.receives_instance:
+                    return module, method, True
         target = module.imports.get(base.id)
         if target:
             return self._resolve_dotted(f"{target}.{func.attr}", bound=False)

@@ -144,109 +144,164 @@ def _spaces(value: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in value)
 
 
-def _scan(text: str, style: str, *, keep_comments: bool, blank_strings: bool = False) -> list[str]:
-    out = list(text)
-    length = len(text)
-    index = 0
-    line_comment = {"//"} if style in {C_STYLE, JS_STYLE, PHP_STYLE} else set()
-    hash_comment = style in {HASH_STYLE, PHP_STYLE, POWERSHELL_STYLE, PYTHON_STYLE, SHELL_STYLE}
-    block = style in {C_STYLE, JS_STYLE, PHP_STYLE}
-    quotes = {"'", '"'}
-    if style in {JS_STYLE, C_STYLE}:
-        quotes.add("`")
-    template_stack: list[int] = []  # brace depth of each open ${ ... } in JS
-    brace_depth = 0
-    previous_code = ""  # last significant code character (for JS regex detection)
-    previous_word = ""
+class _Scanner:
+    """Single-pass lexer that blanks comments (and optionally string bodies)."""
 
-    def blank(start: int, end: int) -> None:
-        for position in range(start, end):
-            if out[position] != "\n":
-                out[position] = " "
+    def __init__(self, text: str, style: str, keep_comments: bool, blank_strings: bool) -> None:
+        self.text = text
+        self.style = style
+        self.keep_comments = keep_comments
+        self.blank_strings = blank_strings
+        self.out = list(text)
+        self.length = len(text)
+        self.index = 0
+        self.char = ""
+        self.pair = ""
+        self.line_comment = {"//"} if style in {C_STYLE, JS_STYLE, PHP_STYLE} else set()
+        self.hash_comment = style in {HASH_STYLE, PHP_STYLE, POWERSHELL_STYLE, PYTHON_STYLE, SHELL_STYLE}
+        self.block = style in {C_STYLE, JS_STYLE, PHP_STYLE}
+        self.quotes = {"'", '"'}
+        if style in {JS_STYLE, C_STYLE}:
+            self.quotes.add("`")
+        self.template_stack: list[int] = []  # brace depth of each open ${ ... } in JS
+        self.brace_depth = 0
+        self.previous_code = ""  # last significant code character (for JS regex detection)
+        self.previous_word = ""
 
-    while index < length:
-        char = text[index]
-        pair = text[index : index + 2]
-        # Line comments.
-        if pair in line_comment or (
-            hash_comment
-            and char == "#"
-            and _hash_starts_comment(text, index, style)
-        ):
-            end = text.find("\n", index)
-            end = length if end < 0 else end
-            if not keep_comments:
-                blank(index, end)
-            index = end
-            continue
-        if block and pair == "/*":
-            end = text.find("*/", index + 2)
-            end = length if end < 0 else end + 2
-            if not keep_comments:
-                blank(index, end)
-            index = end
-            continue
-        if style == POWERSHELL_STYLE and pair == "<#":
-            end = text.find("#>", index + 2)
-            end = length if end < 0 else end + 2
-            if not keep_comments:
-                blank(index, end)
-            index = end
-            continue
-        if style == HASH_STYLE and char == "=" and text.startswith("=begin", index) and (
-            index == 0 or text[index - 1] == "\n"
-        ):
-            end = text.find("\n=end", index)
-            end = length if end < 0 else end + 5
-            if not keep_comments:
-                blank(index, end)
-            index = end
-            continue
-        # JavaScript template expression close.
-        if style == JS_STYLE and template_stack and char == "}" and brace_depth == template_stack[-1]:
-            template_stack.pop()
-            index = _scan_string(text, index + 1, "`", out, blank_strings, template_stack, brace_depth, True)
-            previous_code = "`"
-            continue
-        if char in quotes:
-            if style == PYTHON_STYLE and text.startswith(char * 3, index):
-                end = text.find(char * 3, index + 3)
-                while end > 0 and _escaped(text, end):
-                    end = text.find(char * 3, end + 1)
-                end = length if end < 0 else end + 3
-                if blank_strings:
-                    blank(index + 3, max(index + 3, end - 3))
-                index = end
-            else:
-                index = _scan_string(
-                    text, index + 1, char, out, blank_strings, template_stack, brace_depth, style == JS_STYLE
-                )
-            previous_code = char
-            previous_word = ""
-            continue
-        if style == JS_STYLE and char == "/" and _js_regex_allowed(previous_code, previous_word):
-            end = _scan_js_regex(text, index)
-            if end > index:
-                if blank_strings:
-                    blank(index + 1, end)
-                index = end
-                previous_code = "/"
-                previous_word = ""
+    def run(self) -> list[str]:
+        while self.index < self.length:
+            self.char = self.text[self.index]
+            self.pair = self.text[self.index : self.index + 2]
+            if (
+                self._skip_comment()
+                or self._skip_template_close()
+                or self._skip_string()
+                or self._skip_regex()
+            ):
                 continue
+            self._advance_code()
+        return self.out
+
+    def _blank(self, start: int, end: int) -> None:
+        for position in range(start, end):
+            if self.out[position] != "\n":
+                self.out[position] = " "
+
+    def _delimited_end(self, terminator: str, offset: int, extra: int) -> int:
+        end = self.text.find(terminator, self.index + offset)
+        return self.length if end < 0 else end + extra
+
+    def _line_comment_end(self) -> int | None:
+        starts_comment = self.pair in self.line_comment or (
+            self.hash_comment
+            and self.char == "#"
+            and _hash_starts_comment(self.text, self.index, self.style)
+        )
+        if not starts_comment:
+            return None
+        end = self.text.find("\n", self.index)
+        return self.length if end < 0 else end
+
+    def _block_comment_end(self) -> int | None:
+        if self.block and self.pair == "/*":
+            return self._delimited_end("*/", 2, 2)
+        if self.style == POWERSHELL_STYLE and self.pair == "<#":
+            return self._delimited_end("#>", 2, 2)
+        if self.style == HASH_STYLE and self.char == "=" and self.text.startswith("=begin", self.index) and (
+            self.index == 0 or self.text[self.index - 1] == "\n"
+        ):
+            return self._delimited_end("\n=end", 0, 5)
+        return None
+
+    def _skip_comment(self) -> bool:
+        end = self._line_comment_end()
+        if end is None:
+            end = self._block_comment_end()
+        if end is None:
+            return False
+        if not self.keep_comments:
+            self._blank(self.index, end)
+        self.index = end
+        return True
+
+    def _skip_template_close(self) -> bool:
+        """JavaScript template expression close."""
+        if not (
+            self.style == JS_STYLE
+            and self.template_stack
+            and self.char == "}"
+            and self.brace_depth == self.template_stack[-1]
+        ):
+            return False
+        self.template_stack.pop()
+        self.index = _scan_string(
+            self.text, self.index + 1, "`", self.out, self.blank_strings,
+            self.template_stack, self.brace_depth, True,
+        )
+        self.previous_code = "`"
+        return True
+
+    def _triple_quote_end(self) -> int:
+        quote3 = self.char * 3
+        end = self.text.find(quote3, self.index + 3)
+        while end > 0 and _escaped(self.text, end):
+            end = self.text.find(quote3, end + 1)
+        return self.length if end < 0 else end + 3
+
+    def _skip_string(self) -> bool:
+        if self.char not in self.quotes:
+            return False
+        if self.style == PYTHON_STYLE and self.text.startswith(self.char * 3, self.index):
+            end = self._triple_quote_end()
+            if self.blank_strings:
+                self._blank(self.index + 3, max(self.index + 3, end - 3))
+            self.index = end
+        else:
+            self.index = _scan_string(
+                self.text, self.index + 1, self.char, self.out, self.blank_strings,
+                self.template_stack, self.brace_depth, self.style == JS_STYLE,
+            )
+        self.previous_code = self.char
+        self.previous_word = ""
+        return True
+
+    def _skip_regex(self) -> bool:
+        if not (
+            self.style == JS_STYLE
+            and self.char == "/"
+            and _js_regex_allowed(self.previous_code, self.previous_word)
+        ):
+            return False
+        end = _scan_js_regex(self.text, self.index)
+        if end <= self.index:
+            return False
+        if self.blank_strings:
+            self._blank(self.index + 1, end)
+        self.index = end
+        self.previous_code = "/"
+        self.previous_word = ""
+        return True
+
+    def _advance_code(self) -> None:
+        char = self.char
         if char == "{":
-            brace_depth += 1
+            self.brace_depth += 1
         elif char == "}":
-            brace_depth -= 1
+            self.brace_depth -= 1
         if not char.isspace():
             if char.isalnum() or char in "_$":
-                previous_word = previous_word + char if previous_code and (
-                    previous_code.isalnum() or previous_code in "_$"
-                ) else char
+                continues_word = self.previous_code and (
+                    self.previous_code.isalnum() or self.previous_code in "_$"
+                )
+                self.previous_word = self.previous_word + char if continues_word else char
             else:
-                previous_word = ""
-            previous_code = char
-        index += 1
-    return out
+                self.previous_word = ""
+            self.previous_code = char
+        self.index += 1
+
+
+def _scan(text: str, style: str, *, keep_comments: bool, blank_strings: bool = False) -> list[str]:
+    return _Scanner(text, style, keep_comments, blank_strings).run()
 
 
 def _hash_starts_comment(text: str, index: int, style: str) -> bool:
@@ -271,6 +326,15 @@ def _escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
+def _skip_escape(text: str, index: int, out: list[str], blank_strings: bool) -> int:
+    """Step over a backslash escape, blanking it when string bodies are blanked."""
+    if blank_strings:
+        out[index] = " "
+        if index + 1 < len(text) and text[index + 1] != "\n":
+            out[index + 1] = " "
+    return index + 2
+
+
 def _scan_string(
     text: str,
     index: int,
@@ -286,11 +350,7 @@ def _scan_string(
     while index < length:
         char = text[index]
         if char == "\\":
-            if blank_strings:
-                out[index] = " "
-                if index + 1 < length and text[index + 1] != "\n":
-                    out[index + 1] = " "
-            index += 2
+            index = _skip_escape(text, index, out, blank_strings)
             continue
         if templates and quote == "`" and text.startswith("${", index):
             template_stack.append(brace_depth)

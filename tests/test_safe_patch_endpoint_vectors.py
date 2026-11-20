@@ -188,3 +188,53 @@ def test_missing_module_reference_does_not_hide_independent_safe_edit(tmp_path: 
     assert "+other = 3" in diff
     assert "+value = hmac.compare_digest(x, y)" not in diff
     assert source.read_text(encoding="utf-8") == original
+
+
+def test_function_local_import_cannot_authorize_patch_in_another_scope(tmp_path: Path) -> None:
+    original = (
+        "def helper():\n"
+        "    import hmac\n"
+        "    return hmac.compare_digest('a', 'a')\n"
+        "value = 1\n"
+    )
+    target = tmp_path / "app.py"
+    target.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(4, current="value = 1", suggested="value = hmac.compare_digest(x, y)")
+        ]),
+        tmp_path,
+    )
+    assert diff == ""
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_conditional_import_cannot_authorize_generated_patch(tmp_path: Path) -> None:
+    original = (
+        "if False:\n"
+        "    import hmac\n"
+        "value = 1\n"
+    )
+    target = tmp_path / "app.py"
+    target.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(3, current="value = 1", suggested="value = hmac.compare_digest(x, y)")
+        ]),
+        tmp_path,
+    )
+    assert diff == ""
+
+
+def test_unconditional_top_level_import_keeps_patch_applicable(tmp_path: Path) -> None:
+    original = "import hmac\nvalue = 1\n"
+    target = tmp_path / "app.py"
+    target.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(2, current="value = 1", suggested="value = hmac.compare_digest(x, y)")
+        ]),
+        tmp_path,
+    )
+    assert "+value = hmac.compare_digest(x, y)" in diff
+    assert target.read_text(encoding="utf-8") == original

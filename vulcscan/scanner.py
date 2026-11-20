@@ -308,6 +308,21 @@ class RepositoryDiscovery:
         return ScanError(self._relative(path), phase, f"{exc.__class__.__name__}: {exc}")
 
 
+
+def _validate_selected_files(
+    config: ScanConfig, discovery: RepositoryDiscovery, files: list[SourceFile]
+) -> None:
+    """Explicit selections must reach source, binary, or manifest analysis."""
+    if config.only_files is None:
+        return
+    processed = {source.relative for source in files}
+    processed.update(binary.relative for binary in discovery.binaries)
+    processed.update(discovery._relative(path) for path in discovery.manifests)
+    skipped = sorted(config.only_files - processed)
+    if skipped:
+        raise ValueError(f"--files selection was not processed: {', '.join(skipped)}")
+
+
 def scan(config: ScanConfig) -> ScanResult:
     started = time.perf_counter()
     root = config.root.resolve()
@@ -315,6 +330,7 @@ def scan(config: ScanConfig) -> ScanResult:
         raise ValueError(f"scan path is not a directory: {root}")
     discovery = RepositoryDiscovery(config)
     files = discovery.run()
+    _validate_selected_files(config, discovery, files)
     result = ScanResult(
         metadata={
             "platform": "Windows" if os.name == "nt" else platform.system(),

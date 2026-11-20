@@ -115,8 +115,8 @@ _IMPORT_NAMED = r"(?:\{([^}]*)\}\s*)?"
 _IMPORT_SOURCE = r"""from\s*['"](?:node:)?([\w@/.-]+)['"]"""
 _IMPORT_STATEMENT = re.compile(r"import\s+" + _IMPORT_DEFAULT + _IMPORT_NAMESPACE + _IMPORT_NAMED + _IMPORT_SOURCE)
 _FUNCTION_DECLARATION = re.compile(r"\bfunction\b\s*+(?:\*\s*+)?([\w$]*+)\s*+\(([^)]*+)\)\s*+(?::[^{]*+)?$")
-_ARROW_PARENS = re.compile(r"(?:(?<![\w$])([\w$]++)\s*+[=:]\s*+)?(?:async\s++)?\(([^()]*+)\)\s*+(?::[^=]*+)?=>\s*+$")
-_ARROW_BARE = re.compile(r"(?:(?<![\w$])([\w$]++)\s*+[=:]\s*+)?(?:async\s++)?(?<![\w$])([\w$]++)\s*+=>\s*+$")
+_ARROW_PARENS_CORE = re.compile(r"\(([^()]*+)\)\s*+(?::[^=]*+)?=>\s*+$")
+_ARROW_BARE_CORE = re.compile(r"(?<![\w$])([\w$]++)\s*+=>\s*+$")
 _METHOD_MODIFIERS = r"(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
 _METHOD_HEADER = re.compile(r"\s*" + _METHOD_MODIFIERS + r"([\w$]+)\s*(?:<[^>]*>\s*)?\(([^)]*)\)\s*(?::[^{]*)?$")
 _CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
@@ -189,8 +189,51 @@ def _is_mongo_call(receiver: str, method: str) -> bool:
 
 
 
-def _function_header(header: str) -> re.Match[str] | None:
-    function_match = _FUNCTION_DECLARATION.search(header) or _ARROW_PARENS.search(header) or _ARROW_BARE.search(header)
+@dataclass(frozen=True, slots=True)
+class _ArrowHeader:
+    name: str | None
+    parameters: str
+
+    def group(self, index: int) -> str | None:
+        return self.name if index == 1 else self.parameters
+
+
+def _is_name_char(char: str) -> bool:
+    return char.isalnum() or char in "_$"
+
+
+def _arrow_name(header: str, core_start: int) -> str | None:
+    """Name bound by ``name =``/``name:`` (optionally followed by ``async``) just before an arrow function."""
+    end = core_start
+    while end > 0 and header[end - 1].isspace():
+        end -= 1
+    if end < core_start and header.endswith("async", 0, end):
+        end -= len("async")
+        while end > 0 and header[end - 1].isspace():
+            end -= 1
+    if end == 0 or header[end - 1] not in "=:":
+        return None
+    end -= 1
+    while end > 0 and header[end - 1].isspace():
+        end -= 1
+    start = end
+    while start > 0 and _is_name_char(header[start - 1]):
+        start -= 1
+    return header[start:end] or None
+
+
+def _arrow_header(header: str) -> _ArrowHeader | None:
+    parens = _ARROW_PARENS_CORE.search(header)
+    if parens is not None:
+        return _ArrowHeader(_arrow_name(header, parens.start()), parens.group(1))
+    bare = _ARROW_BARE_CORE.search(header)
+    if bare is not None:
+        return _ArrowHeader(_arrow_name(header, bare.start()), bare.group(1))
+    return None
+
+
+def _function_header(header: str) -> re.Match[str] | _ArrowHeader | None:
+    function_match = _FUNCTION_DECLARATION.search(header) or _arrow_header(header)
     method_match = _METHOD_HEADER.match(header)
     if method_match and method_match.group(1) in _CONTROL_KEYWORDS:
         method_match = None

@@ -80,18 +80,22 @@ _SHELL_READ_TARGET = re.compile(r"\s++([A-Za-z_]\w*)")
 
 
 @dataclass(frozen=True, slots=True)
-class _ReadMatch:
+class _SpanMatch:
+    """Minimal ``re.Match`` stand-in: overall span plus one captured name."""
+
     first: int
     last: int
     target: str
+    target_first: int = -1
+    target_last: int = -1
 
-    def start(self) -> int:
-        return self.first
+    def start(self, index: int = 0) -> int:
+        return self.first if index == 0 else self.target_first
 
-    def end(self) -> int:
-        return self.last
+    def end(self, index: int = 0) -> int:
+        return self.last if index == 0 else self.target_last
 
-    def group(self, index: int) -> str:
+    def group(self, *_: int) -> str:
         return self.target
 
 
@@ -99,7 +103,7 @@ class _ShellRead:
     """``read [options] NAME``: skips option flags (with their arguments), then captures the variable."""
 
     @staticmethod
-    def finditer(text: str) -> Iterator[_ReadMatch]:
+    def finditer(text: str) -> Iterator[_SpanMatch]:
         position = 0
         while (keyword := _SHELL_READ.search(text, position)) is not None:
             position = keyword.end()
@@ -110,7 +114,7 @@ class _ShellRead:
                 position = keyword.end()
                 continue
             position = target.end()
-            yield _ReadMatch(keyword.start(), position, target.group(1))
+            yield _SpanMatch(keyword.start(), position, target.group(1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +128,7 @@ class Catalog:
     sanitizers: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = ()
     normalizers: re.Pattern[str] | None = None
     inputs: tuple[tuple[_Finder, int, str], ...] = ()  # statements that fill a variable
-    parameters: re.Pattern[str] | None = None  # framework-bound handler parameters
+    parameters: _Finder | None = None  # framework-bound handler parameters
     interpolation: re.Pattern[str] | None = None
     function_header: re.Pattern[str] | None = None
     concat: str = "+"
@@ -167,9 +171,39 @@ _JAVA_PARAMETERS = re.compile(
 _CS_PARSE_METHODS = r"\b(?:int|long|short|double|float|decimal|bool|Guid)\s*\.\s*(?:Parse|TryParse)\s*\("
 _CS_CONVERT_METHODS = r"\bConvert\s*\.\s*To(?:Int\d+|Double|Decimal|Boolean)\s*\("
 _CS_NUMERIC_PARSE = re.compile(f"{_CS_PARSE_METHODS}|{_CS_CONVERT_METHODS}")
-_CS_PARAMETERS = re.compile(
-    r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*+\))?+\](?:\s*+[\w<>\[\],.?]++(?:[ ]++[\w<>\[\],.?]++)*?\s++|[^\S ]*+[ ]\s++)(\w++)\s*+(?=[,)=])"
-)
+_CS_ATTRIBUTE = re.compile(r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*+\))?+\]")
+_CS_TYPE_TOKEN = re.compile(r"\s*+([\w<>\[\],.?]++)")
+_CS_TYPE_GAP = re.compile(r" ++([\w<>\[\],.?]++)")
+_CS_NAME = re.compile(r"\s++(\w++)\s*+(?=[,)=])")
+_CS_UNTYPED_NAME = re.compile(r"[^\S ]*+ \s++(\w++)\s*+(?=[,)=])")
+
+
+class _CsParameters:
+    """``[FromX] Type name`` parameters: attribute, then a (possibly spaced) type, then the bound name."""
+
+    @staticmethod
+    def finditer(text: str) -> Iterator[_SpanMatch]:
+        position = 0
+        while (attribute := _CS_ATTRIBUTE.search(text, position)) is not None:
+            name = _CsParameters._name(text, attribute.end())
+            if name is None:
+                position = attribute.start() + 1
+                continue
+            position = name.end()
+            yield _SpanMatch(attribute.start(), position, name.group(1), name.start(1), name.end(1))
+
+    @staticmethod
+    def _name(text: str, position: int) -> re.Match[str] | None:
+        token = _CS_TYPE_TOKEN.match(text, position)
+        while token is not None:
+            name = _CS_NAME.match(text, token.end())
+            if name is not None:
+                return name
+            token = _CS_TYPE_GAP.match(text, token.end())
+        return _CS_UNTYPED_NAME.match(text, position)
+
+
+_CS_PARAMETERS = _CsParameters()
 _GO_EXTRA_NAMES = r"(?:\s*,\s*[A-Za-z_]\w*)*"
 _GO_TYPE = r"(?:\s+[A-Za-z_][\w.\[\]*]*)?"
 _GO_ASSIGNMENT = re.compile(

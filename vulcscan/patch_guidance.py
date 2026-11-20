@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 
 from .models import Confidence, Finding, Remediation
 
@@ -10,6 +11,7 @@ _SUPPORTED = frozenset({"CMD", "XSS", "PATH", "SSRF", "DESER", "CODE"})
 _QUOTES = frozenset({"'", '"', "`"})
 _ASSIGNMENT_PREFIX = re.compile(r"\.\s*CommandText\s*=|\b(?:include|require)(?:_once)?\s+")
 _QUOTE_CHAR = re.compile(r"""["']""")
+_IDENT_START = string.ascii_letters + "_$"
 _DRIVE_PREFIX = re.compile(r"[A-Za-z]:[\\/]")
 _CALLEE = re.compile(r"([A-Za-z_$][\w$:.>\-]*)\s*\(")
 
@@ -386,8 +388,31 @@ def _path_input(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _join_member_dots(text: str) -> str:
+    """Remove whitespace around a dot that is followed by an identifier start."""
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != ".":
+            out.append(text[index])
+            index += 1
+            continue
+        after = index + 1
+        while after < len(text) and text[after].isspace():
+            after += 1
+        if after < len(text) and text[after] in _IDENT_START:
+            while out and out[-1].isspace():
+                out.pop()
+            out.append(".")
+            index = after
+        else:
+            out.append(".")
+            index += 1
+    return "".join(out)
+
+
 def _callee(evidence: str) -> str:
-    match = _CALLEE.search(re.sub(r"(?<!\s)\s*+\.\s*+(?=[A-Za-z_$])", ".", evidence))
+    match = _CALLEE.search(_join_member_dots(evidence))
     return match.group(1) if match else "the reported sink"
 
 

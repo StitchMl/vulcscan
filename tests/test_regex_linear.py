@@ -7,8 +7,8 @@ from vulcscan import javascript, lexical, names, patch_guidance, structured
 
 def test_js_headers_keep_captures() -> None:
     assert javascript._FUNCTION_DECLARATION.search("function* gen(a, b)").groups() == ("gen", "a, b")
-    assert javascript._ARROW_PARENS.search("handler: async (a, b): T =>").groups() == ("handler", "a, b")
-    assert javascript._ARROW_BARE.search("x = async y =>").groups() == ("x", "y")
+    assert javascript._arrow_header("handler: async (a, b): T =>") == javascript._ArrowHeader("handler", "a, b")
+    assert javascript._arrow_header("x = async y =>") == javascript._ArrowHeader("x", "y")
 
 
 def test_cors_origin_option_and_set_is_origin_allowed() -> None:
@@ -41,7 +41,7 @@ def test_long_whitespace_runs_stay_fast() -> None:
     start = time.perf_counter()
     blank = " " * 50000
     javascript._FUNCTION_DECLARATION.search("function" + blank)
-    javascript._ARROW_BARE.search("a" * 50000)
+    javascript._arrow_header("a" * 50000)
     patch_guidance._callee(blank)
     list(structured._CS_PARAMETERS.finditer("[FromQuery] " + blank + "a"))
     assert time.perf_counter() - start < 2

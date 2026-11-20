@@ -1,0 +1,64 @@
+name: Temporary cleanup of assistant-created branches
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/temporary-branch-cleanup.yml
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete only verified assistant-created branch refs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          targets = {
+                    "audit/sonar-after-merge-20261120": "063f02abd5efa5e7b087e3d89fa68e21337295d4",
+                    "audit/sonar-pr47-check-20261120": "7af344131ec937e8a59056ea7e777ad7a7c9501f",
+                    "audit/sonar-pr48-20261120": "be6f86c3b7f5bfe66a8668ddd93be2222b6213ea",
+                    "feat/selected-file-audit-metadata-20261120": "ededfedfc7db28a7bac72dc3c1563b01d5133235",
+                    "fix/explicit-files-processed-verification-20261120": "5e86c0ab952cf660af72231eb91c562abad1069f",
+                    "fix/files-selection-fail-closed": "9080b54f3afa246fa1f7e6036dc2b528bf378f0a",
+                    "fix/selected-files-exclusion-consistency-20261120": "cdd1fef635eb27bd6ee2c2c92bf274649361b86b",
+                    "fix/sonar-cli-cognitive-complexity-20261120": "36129554ec5e3c6cb1ab1765daa067f40ee2d999",
+                    "fix/sonar-overall-issues-batch": "006d2317e47fcf5fd2309cbd5b7416ae4a221af8",
+                    "fix/sonar-s5443-elf-path-classification": "9080b54f3afa246fa1f7e6036dc2b528bf378f0a",
+                    "fix/strict-file-selection-regression-20261120": "bc92b1a3259074c0fe3d1ce42089d81d126afbfe",
+                    "test/parallel-offline-scan-invariants-20261120": "17016a6e3350ec5ed4ca88db3a118f4fbb3b523c"
+          }
+          api = "https://api.github.com/repos/" + os.environ["REPOSITORY"] + "/git/refs/heads/"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          for branch, expected_sha in targets.items():
+              assert branch != "main"
+              url = api + quote(branch, safe="/")
+              try:
+                  with urlopen(Request(url, headers=headers), timeout=20) as response:
+                      current = json.load(response)["object"]["sha"]
+                  if current != expected_sha:
+                      print("SKIP_CHANGED", branch, current)
+                      continue
+                  with urlopen(Request(url, headers=headers, method="DELETE"), timeout=20) as response:
+                      response.read()
+                  print("DELETED", branch)
+              except HTTPError as exc:
+                  if exc.code == 404:
+                      print("ALREADY_MISSING", branch)
+                  else:
+                      print("ERROR", branch, exc.code)
+                      raise
+          PY

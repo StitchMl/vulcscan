@@ -76,13 +76,17 @@ def analyze_binary(relative: str, data: bytes) -> list[Finding]:
     return findings
 
 
+_PE_BINARY = "PE binary"
+_ELF_BINARY = "ELF binary"
+
+
 def _dangerous_symbols(data: bytes, kind: str) -> list[tuple[str, str]]:
     parsed_imports = None
-    if kind == "PE binary":
+    if kind == _PE_BINARY:
         parsed_imports = pe_imported_symbols(data)
-    elif kind == "ELF binary":
+    elif kind == _ELF_BINARY:
         parsed_imports = elf_imported_symbols(data)
-    prefix = "PE" if kind == "PE binary" else "ELF binary"
+    prefix = "PE" if kind == _PE_BINARY else _ELF_BINARY
     hits: list[tuple[str, str]] = []
     for needle, label in _DANGEROUS:
         if parsed_imports is not None:
@@ -95,9 +99,9 @@ def _dangerous_symbols(data: bytes, kind: str) -> list[tuple[str, str]]:
 
 def binary_kind(data: bytes) -> str:
     if data.startswith(b"MZ"):
-        return "PE binary"
+        return _PE_BINARY
     if data.startswith(b"\x7fELF"):
-        return "ELF binary"
+        return _ELF_BINARY
     if data.startswith(b"\x00asm"):
         return "WebAssembly"
     if data.startswith(b"\xca\xfe\xba\xbe"):

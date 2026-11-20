@@ -5,8 +5,21 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Iterator
 
-_COMPONENT = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[\d_]|\b)|[A-Z]?[a-z]+|\d+")
+_UPPER_RUN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[\d_]|\b)")
+_WORD_OR_DIGITS = re.compile(r"[A-Z]?[a-z]+|\d+")
+
+
+def _component_matches(chunk: str) -> Iterator[str]:
+    position = 0
+    while position < len(chunk):
+        match = _UPPER_RUN.match(chunk, position) or _WORD_OR_DIGITS.match(chunk, position)
+        if match is None:
+            position += 1
+        else:
+            yield match.group(0)
+            position = match.end()
 
 _CREDENTIAL_LAST = {"password", "passwd", "pwd", "passphrase", "secret", "token", "apikey", "credentials", "credential"}
 _KEY_QUALIFIERS = {"api", "secret", "private", "access", "auth", "signing", "encryption", "master", "client", "app"}
@@ -27,7 +40,7 @@ def components(identifier: str) -> list[str]:
     """Split ``apiKey``/``API_KEY``/``api-key`` into lowercase words."""
     words: list[str] = []
     for chunk in re.split(r"[^A-Za-z0-9]+", identifier):
-        words.extend(match.group(0).lower() for match in _COMPONENT.finditer(chunk))
+        words.extend(word.lower() for word in _component_matches(chunk))
     return words
 
 

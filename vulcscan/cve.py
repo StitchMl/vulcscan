@@ -14,7 +14,6 @@ import os
 import tempfile
 import re
 import socket
-import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -65,8 +64,8 @@ def _default_opener() -> Callable[..., Any]:
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _RejectRedirect(),
-        # create_default_context() enables certificate and hostname verification.
-        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        # Default HTTPSHandler context enables certificate and hostname verification.
+        urllib.request.HTTPSHandler(),
     )
     return opener.open
 

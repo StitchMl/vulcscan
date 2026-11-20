@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from typing import cast
+from collections.abc import Iterator
+from typing import Any, Protocol, cast
 
 from .dataflow import (
     ALL_SINKS,
@@ -69,6 +70,49 @@ class Sink:
     multi_argument_safe: bool = False
 
 
+class _Finder(Protocol):
+    def finditer(self, text: str, /) -> Iterator[Any]: ...
+
+
+_SHELL_READ = re.compile(r"\bread\b")
+_SHELL_READ_OPTION = re.compile(r"\s++-(?:[A-Za-z]{0,8}[dinNptu]\s++\S++|\w++)")
+_SHELL_READ_TARGET = re.compile(r"\s++([A-Za-z_]\w*)")
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadMatch:
+    first: int
+    last: int
+    target: str
+
+    def start(self) -> int:
+        return self.first
+
+    def end(self) -> int:
+        return self.last
+
+    def group(self, index: int) -> str:
+        return self.target
+
+
+class _ShellRead:
+    """``read [options] NAME``: skips option flags (with their arguments), then captures the variable."""
+
+    @staticmethod
+    def finditer(text: str) -> Iterator[_ReadMatch]:
+        position = 0
+        while (keyword := _SHELL_READ.search(text, position)) is not None:
+            position = keyword.end()
+            while (option := _SHELL_READ_OPTION.match(text, position)) is not None:
+                position = option.end()
+            target = _SHELL_READ_TARGET.match(text, position)
+            if target is None:
+                position = keyword.end()
+                continue
+            position = target.end()
+            yield _ReadMatch(keyword.start(), position, target.group(1))
+
+
 @dataclass(frozen=True, slots=True)
 class Catalog:
     prefix: str
@@ -79,7 +123,7 @@ class Catalog:
     assignment: re.Pattern[str]
     sanitizers: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = ()
     normalizers: re.Pattern[str] | None = None
-    inputs: tuple[tuple[re.Pattern[str], int, str], ...] = ()  # statements that fill a variable
+    inputs: tuple[tuple[_Finder, int, str], ...] = ()  # statements that fill a variable
     parameters: re.Pattern[str] | None = None  # framework-bound handler parameters
     interpolation: re.Pattern[str] | None = None
     function_header: re.Pattern[str] | None = None
@@ -124,7 +168,7 @@ _CS_PARSE_METHODS = r"\b(?:int|long|short|double|float|decimal|bool|Guid)\s*\.\s
 _CS_CONVERT_METHODS = r"\bConvert\s*\.\s*To(?:Int\d+|Double|Decimal|Boolean)\s*\("
 _CS_NUMERIC_PARSE = re.compile(f"{_CS_PARSE_METHODS}|{_CS_CONVERT_METHODS}")
 _CS_PARAMETERS = re.compile(
-    r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*\))?\]\s*[\w<>\[\],.? ]+?\s++(\w++)\s*+(?=[,)=])"
+    r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*+\))?+\](?:\s*+[\w<>\[\],.?]++(?:[ ]++[\w<>\[\],.?]++)*?\s++|[^\S ]*+[ ]\s++)(\w++)\s*+(?=[,)=])"
 )
 _GO_EXTRA_NAMES = r"(?:\s*,\s*[A-Za-z_]\w*)*"
 _GO_TYPE = r"(?:\s+[A-Za-z_][\w.\[\]*]*)?"
@@ -202,7 +246,7 @@ CATALOGS: dict[str, Catalog] = {
         normalizers=re.compile(r"(?<![\w>$])realpath\s*\("),
         parameters=None,
         interpolation=re.compile(r"\$\{?([A-Za-z_]\w*)"),
-        function_header=re.compile(r"\bfunction\s+(?:&\s*)?\w*\s*\("),
+        function_header=re.compile(r"\bfunction\s++(?:&\s*+)?\w*+\s*+\("),
         concat=".",
     ),
     "Java": Catalog(
@@ -388,7 +432,7 @@ CATALOGS: dict[str, Catalog] = {
         "dollar",
         False,
         _SHELL_ASSIGNMENT,
-        inputs=((re.compile(r"\bread\b(?:\s++-[A-Za-z]{0,8}[dinNptu]\s++\S++|\s++-\w++)*+\s++([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),
+        inputs=((_ShellRead(), LOCAL, "line read from stdin"),),
     ),
     "PowerShell": Catalog(
         "PS",

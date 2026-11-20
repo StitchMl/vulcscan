@@ -125,11 +125,25 @@ _JAVA_XML_HARDENING = re.compile(
 
 _CORS_ALLOWED_PATTERNS = r"""\ballowedOriginPatterns\s*\(\s*"\*"\s*\)"""
 _CORS_ALLOW_FUNC = r"""\bAllowOriginFunc\s*:\s*func\s*\([^)]*\)\s*bool\s*\{\s*return\s+true"""
+_CORS_CALL = re.compile(r"\bcors\s*+\(\s*+\{([^}]*+)\}")
+_CORS_ORIGIN_VALUE = re.compile(r"\borigin\s*+:\s*+(?:true|\(?+[\w\s,]*+(?:\)\s*+)?=>\s*+true)")
+
+
+class _CorsOriginOption:
+    """Finds ``cors({ origin: true })`` style calls: a ``cors(`` object literal whose body sets origin to a catch-all."""
+
+    @staticmethod
+    def finditer(text: str) -> Iterator[re.Match[str]]:
+        for call in _CORS_CALL.finditer(text):
+            if _CORS_ORIGIN_VALUE.search(text, call.start(1), call.end(1)):
+                yield call
+
+
 _CORS_REFLECT = (
-    re.compile(r"\bcors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:true|\(?[\w\s,]*(?:\)\s*)?=>\s*true)[^}]*\}", re.DOTALL),
+    _CorsOriginOption(),
     re.compile(r"""Access-Control-Allow-Origin['"]?\s*,\s*(?:req|request)\s*\.\s*(?:headers\s*\.\s*origin|header\s*\(\s*['"]origin)""", re.IGNORECASE),
     re.compile(r"""header\s*\(\s*['"]Access-Control-Allow-Origin:\s*['"]\s*\.\s*\$_SERVER\s*\[\s*['"]HTTP_ORIGIN""", re.IGNORECASE),
-    re.compile(r"\bSetIsOriginAllowed\s*\(\s*\(?\s*(?:\w+\s*)?(?:\)\s*)?=>\s*true\s*\)"),
+    re.compile(r"\bSetIsOriginAllowed\s*+\(\s*+(?:\(\s*+)?(?:\w++\s*+)?(?:\)\s*+)?=>\s*+true\s*+\)"),
     re.compile(_CORS_ALLOWED_PATTERNS + "|" + _CORS_ALLOW_FUNC),
 )
 _CORS_CREDENTIALS = re.compile(
@@ -903,11 +917,17 @@ def _php_request_security(text: str, add: Callable[..., None]) -> None:
         add("SESSION-FIXATION-001", line, column, "authenticated session assignment", evidence)
 
 
+_SQL_INSERT = re.compile(r"(?is)\bINSERT\s++INTO\s++([a-z_]\w*+)\s*+\((?P<columns>[^)]*+)\)\s*+VALUES\s*+(?P<values>[^;]++);")
+_PASSWORD_COLUMN = re.compile(r"\b(?:password|passwd|pwd)\b", re.IGNORECASE)
+
+
 def _sql_cleartext_password(text: str, add: Callable[..., None]) -> None:
-    pattern = re.compile(
-        r"(?is)\bINSERT\s+INTO\s+([a-z_]\w*)\s*\((?P<columns>(?=[^)]*\b(?:password|passwd|pwd)\b)[^)]*)\)\s*VALUES\s*(?P<values>[^;]+);"
-    )
-    for match in pattern.finditer(text):
+    position = 0
+    while (match := _SQL_INSERT.search(text, position)) is not None:
+        if _PASSWORD_COLUMN.search(match.group("columns")) is None:
+            position = match.start() + 1
+            continue
+        position = match.end()
         values = match.group("values")
         if re.search(r"(?i)\b(?:MD5|SHA1|SHA2|CRYPT|PASSWORD_HASH|BCRYPT|ARGON2)\s*\(", values):
             continue

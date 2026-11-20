@@ -352,7 +352,8 @@ def _literal_base(literal: str) -> str | None:
     if drive is None and not literal.startswith("/"):
         return None
     cut = max(literal.rfind("/"), literal.rfind("\\"))
-    return literal[: cut + 1] if cut >= (3 if drive else 1) else None
+    minimum = 3 if drive else 1
+    return literal[: cut + 1] if cut >= minimum else None
 
 
 def _path_bases(text: str) -> list[str]:
@@ -386,7 +387,7 @@ def _path_input(text: str) -> str | None:
 
 
 def _callee(evidence: str) -> str:
-    match = _CALLEE.search(re.sub(r"\s*\.\s*(?=[A-Za-z_$])", ".", evidence))
+    match = _CALLEE.search(re.sub(r"(?<!\s)\s*+\.\s*+(?=[A-Za-z_$])", ".", evidence))
     return match.group(1) if match else "the reported sink"
 
 

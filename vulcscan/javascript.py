@@ -114,9 +114,9 @@ _IMPORT_NAMESPACE = r"(?:\*\s*as\s+(" + _JS_NAME + r")\s*)?"
 _IMPORT_NAMED = r"(?:\{([^}]*)\}\s*)?"
 _IMPORT_SOURCE = r"""from\s*['"](?:node:)?([\w@/.-]+)['"]"""
 _IMPORT_STATEMENT = re.compile(r"import\s+" + _IMPORT_DEFAULT + _IMPORT_NAMESPACE + _IMPORT_NAMED + _IMPORT_SOURCE)
-_FUNCTION_DECLARATION = re.compile(r"\bfunction\b(?:\s*\*)?\s*([\w$]*)\s*\(([^)]*)\)\s*(?::[^{]*)?$")
-_ARROW_PARENS = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?\(([^()]*)\)\s*(?::[^=]*)?=>\s*$")
-_ARROW_BARE = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?([\w$]+)\s*=>\s*$")
+_FUNCTION_DECLARATION = re.compile(r"\bfunction\b\s*+(?:\*\s*+)?([\w$]*+)\s*+\(([^)]*+)\)\s*+(?::[^{]*+)?$")
+_ARROW_PARENS = re.compile(r"(?:(?<![\w$])([\w$]++)\s*+[=:]\s*+)?(?:async\s++)?\(([^()]*+)\)\s*+(?::[^=]*+)?=>\s*+$")
+_ARROW_BARE = re.compile(r"(?:(?<![\w$])([\w$]++)\s*+[=:]\s*+)?(?:async\s++)?(?<![\w$])([\w$]++)\s*+=>\s*+$")
 _METHOD_MODIFIERS = r"(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
 _METHOD_HEADER = re.compile(r"\s*" + _METHOD_MODIFIERS + r"([\w$]+)\s*(?:<[^>]*>\s*)?\(([^)]*)\)\s*(?::[^{]*)?$")
 _CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}

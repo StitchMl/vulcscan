@@ -50,7 +50,7 @@ def _closing_brace(mask: str, opening: int) -> int | None:
     return None
 
 
-def _controller_class(visible: str, mask: str, candidate: re.Match[str]) -> tuple[int, int, str, bool] | None:
+def _controller_class(mask: str, candidate: re.Match[str]) -> tuple[int, int, str, bool] | None:
     annotations = candidate.group("annotations")
     if not _CONTROLLER_ANNOTATION.search(annotations):
         return None
@@ -115,7 +115,7 @@ def spring_routes(path: str, source: str) -> list[dict[str, Any]]:
     mask = code_mask(source, C_STYLE)
     classes = []
     for candidate in _CLASS.finditer(visible):
-        info = _controller_class(visible, mask, candidate)
+        info = _controller_class(mask, candidate)
         if info is not None:
             classes.append(info)
     if not classes:

@@ -99,3 +99,60 @@ def test_missing_imported_view_module_never_claims_known_handler(tmp_path: Path)
 
 def test_invalid_python_source_is_ignored(tmp_path: Path) -> None:
     assert _routes(tmp_path, "urlpatterns = [path('oops', \n") == []
+
+
+def test_django_login_required_wrapper_preserves_remote_taint(tmp_path: Path) -> None:
+    _routes(
+        tmp_path,
+        "from django.urls import path\n"
+        "from django.contrib.auth.decorators import login_required\n"
+        "from . import views\n"
+        "urlpatterns = [path('run/<str:command>/', login_required(views.run))]\n",
+        "import subprocess\n"
+        "def run(request, command):\n"
+        "    subprocess.run(command, shell=True)\n",
+    )
+    result = scan_path(tmp_path, cve=False)
+    remote = [
+        finding for finding in result.findings
+        if finding.rule_id == "PY-CMD-001" and finding.source is not None
+    ]
+    assert len(remote) == 1
+    assert remote[0].source.file == "views.py"
+    assert remote[0].location.file == "views.py"
+
+
+def test_django_nested_known_wrappers_preserve_remote_taint(tmp_path: Path) -> None:
+    _routes(
+        tmp_path,
+        "from django.urls import path\n"
+        "from django.contrib.auth.decorators import login_required\n"
+        "from django.contrib.admin.views.decorators import staff_member_required\n"
+        "from . import views\n"
+        "urlpatterns = [path('run/<command>/', staff_member_required(login_required(views.run)))]\n",
+        "import subprocess\n"
+        "def run(request, command):\n"
+        "    subprocess.run(command, shell=True)\n",
+    )
+    result = scan_path(tmp_path, cve=False)
+    assert len([
+        finding for finding in result.findings
+        if finding.rule_id == "PY-CMD-001" and finding.source is not None
+    ]) == 1
+
+
+def test_django_unknown_url_wrapper_does_not_infer_request_flow(tmp_path: Path) -> None:
+    _routes(
+        tmp_path,
+        "from django.urls import path\n"
+        "from . import views\n"
+        "urlpatterns = [path('run/<command>/', custom_wrapper(views.run))]\n",
+        "import subprocess\n"
+        "def run(request, command):\n"
+        "    subprocess.run(command, shell=True)\n",
+    )
+    result = scan_path(tmp_path, cve=False)
+    assert not [
+        finding for finding in result.findings
+        if finding.rule_id == "PY-CMD-001" and finding.source is not None
+    ]

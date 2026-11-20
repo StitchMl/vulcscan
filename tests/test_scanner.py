@@ -145,6 +145,45 @@ def test_unselected_oversized_file_remains_silently_skipped(tmp_path: Path) -> N
     assert result.metadata["files_analyzed"] == 0
 
 
+def test_python_constructed_instance_method_traces_remote_input(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "from flask import request\n"
+        "import subprocess\n"
+        "class Runner:\n"
+        "    def launch(self, command):\n"
+        "        subprocess.run(command, shell=True)\n"
+        "def handler():\n"
+        "    service = Runner()\n"
+        "    service.launch(request.args['cmd'])\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path)
+    found = [finding for finding in result.findings if finding.rule_id == "PY-CMD-001"]
+    assert len(found) == 1
+    assert found[0].source is not None
+    assert found[0].source.file == "app.py"
+    assert found[0].location.file == "app.py"
+
+
+def test_python_reassigned_instance_is_not_inferred_as_known_class(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "from flask import request\n"
+        "import subprocess\n"
+        "class Runner:\n"
+        "    def launch(self, command):\n"
+        "        subprocess.run(command, shell=True)\n"
+        "def handler():\n"
+        "    service = Runner()\n"
+        "    service = object()\n"
+        "    service.launch(request.args['cmd'])\n",
+        encoding="utf-8",
+    )
+
+    result = _scan(tmp_path)
+    assert not [finding for finding in result.findings if finding.rule_id == "PY-CMD-001"]
+
+
 def test_crlf_keeps_source_line_numbers(tmp_path: Path) -> None:
     source = (
         "from flask import request\r\n"

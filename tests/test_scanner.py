@@ -226,6 +226,23 @@ def test_parallel_selected_offline_scan_does_not_modify_sources(tmp_path: Path) 
     assert all(path.read_text(encoding="utf-8") == source for path in paths)
 
 
+def test_selected_file_metadata_is_sorted_and_present_only_for_targeted_scans(
+    tmp_path: Path,
+) -> None:
+    for filename in ("z.py", "a.py"):
+        (tmp_path / filename).write_text("value = 1\n", encoding="utf-8")
+    selected = frozenset({"z.py", "a.py"})
+    targeted = _scan(tmp_path, workers=4, only_files=selected)
+    full = _scan(tmp_path, workers=4)
+
+    assert targeted.metadata["selected_files"] == ["a.py", "z.py"]
+    assert targeted.metadata["files_analyzed"] == 2
+    assert "selected_files" not in full.metadata
+    assert [finding.as_dict() for finding in targeted.findings] == [
+        finding.as_dict() for finding in full.findings
+    ]
+
+
 def test_offline_mode_performs_no_network_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

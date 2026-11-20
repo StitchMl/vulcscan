@@ -148,3 +148,52 @@ def test_one_hop_imported_fetch_sink_uses_remote_source(tmp_path: Path) -> None:
     ]
     assert found
     assert found[0].location.file == "routes.js"
+
+
+def test_two_hop_relay_preserves_remote_source_and_original_sink(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { forward } from './controller.js';\n"
+        "function handler(req) { forward(req.query.cmd); }\n")
+    _write(tmp_path, "controller.js",
+        "import { unsafe } from './service.js';\n"
+        "export function forward(value) { unsafe(value); }\n")
+    _write(tmp_path, "service.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+
+    findings = _cmd_findings(tmp_path, sourced=True)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.location.file == "routes.js"
+    assert finding.source is not None
+    assert finding.source.file == "routes.js"
+    assert any(loc.file == "service.js" for loc in finding.related_locations)
+
+
+def test_two_hop_relay_rejects_transforms_and_longer_chains(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { forward } from './controller.js';\n"
+        "function handler(req) { forward(req.query.cmd); }\n")
+    _write(tmp_path, "controller.js",
+        "import { unsafe } from './service.js';\n"
+        "export function forward(value) { unsafe(String(value)); }\n")
+    _write(tmp_path, "service.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+    assert not _cmd_findings(tmp_path, sourced=True)
+
+
+def test_two_hop_relay_does_not_resolve_ambiguous_module(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { forward } from './controller';\n"
+        "function handler(req) { forward(req.query.cmd); }\n")
+    _write(tmp_path, "controller.js",
+        "import { unsafe } from './service.js';\n"
+        "export function forward(value) { unsafe(value); }\n")
+    _write(tmp_path, "controller.ts",
+        "import { unsafe } from './service.js';\n"
+        "export function forward(value) { unsafe(value); }\n")
+    _write(tmp_path, "service.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+    assert not _cmd_findings(tmp_path, sourced=True)

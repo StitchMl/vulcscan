@@ -235,6 +235,7 @@ def _scan_code(language: str, text: str, example: bool, runtime_data: bool, add:
     if language == "PHP":
         _php_twig_ssti(text, add)
         _php_type_juggling(text, add)
+        _php_unscoped_eloquent_id(text, add)
         _php_xss(text, add)
         _database_race(text, add)
         _php_request_security(text, add)
@@ -373,6 +374,35 @@ def _dynamic_expression_evaluation(language: str, text: str, add: Callable[..., 
     for match in re.finditer(r"\.\s*Compile\s*\(\s*(?P<value>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\)", text):
         line = text.count("\n", 0, match.start()) + 1
         add("GO-CODE-001", line, 1, "CEL expression compilation", match.group(0), Confidence.MEDIUM)
+
+
+_PHP_ELOQUENT_HTTP_ID = re.compile(
+    r"(?P<model>\b[A-Z][A-Za-z_]\w*)\s*::\s*find(?:OrFail)?\s*\(\s*"
+    r"\$_(?:GET|POST|REQUEST)\s*\[\s*['\"]"
+    r"(?P<key>[A-Za-z_]\w*)['\"]\s*\]\s*\)"
+)
+_PHP_OWNER_GUARD = re.compile(
+    r"(?i)\b(?:owner_id|user_id|tenant_id|account_id|principal_id)\b"
+    r"|\bauthorize\s*\(|\bGate\s*::\s*authorize\s*\("
+)
+
+
+def _php_unscoped_eloquent_id(text: str, add: Callable[..., None]) -> None:
+    """Flag only direct HTTP resource IDs used in unscoped Eloquent lookups."""
+    code = blank_comments(text, comment_style("PHP"))
+    for match in _PHP_ELOQUENT_HTTP_ID.finditer(code):
+        key = match.group("key").lower()
+        if key not in {"id", "pk", "uuid"} and not key.endswith(("_id", "_uuid")):
+            continue
+        # Explicit ownership handling is outside this narrow heuristic.
+        if _PHP_OWNER_GUARD.search(code):
+            continue
+        line = code.count("\n", 0, match.start()) + 1
+        add(
+            "AUTHZ-SCOPE-001", line, 1,
+            f"Eloquent {match.group('model')}::find request identifier",
+            match.group(0), Confidence.MEDIUM,
+        )
 
 
 def _unscoped_resource_routes(language: str, text: str, add: Callable[..., None]) -> None:

@@ -262,12 +262,12 @@ def test_offline_mode_performs_no_network_access(
 def test_selected_offline_scan_never_executes_target_python(tmp_path: Path) -> None:
     marker = tmp_path / "execution-marker.txt"
     source = (
-        "from pathlib import Path\\n"
-        f"Path({str(marker)!r}).write_text('target executed')\\n"
-        "from flask import request\\n"
-        "import subprocess\\n"
-        "command = request.args['command']\\n"
-        "subprocess.run(command, shell=True)\\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('target executed')\n"
+        "from flask import request\n"
+        "import subprocess\n"
+        "command = request.args['command']\n"
+        "subprocess.run(command, shell=True)\n"
     )
     files = ("one.py", "two.py")
     for filename in files:

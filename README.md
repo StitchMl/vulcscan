@@ -119,10 +119,10 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 
 ## Known limitations
 
-- Python cross-module flows need a direct call to an imported function. Within one module, a method call on an explicitly constructed local instance (`service = LocalClass(); service.run(value)`) is now resolved only when the variable has exactly one direct assignment before the call. Dynamic dispatch, rebound instances, decorators that wrap handlers, `getattr` and callbacks are not followed.
+- Python cross-module flows need a direct call to an imported function. Within one module, a method call on an explicitly constructed local instance (`service = LocalClass(); service.run(value)`) is now resolved only when the variable has exactly one direct assignment before the call. Dynamic dispatch, rebound instances, arbitrary decorators, `getattr` and callbacks are not followed.
 - JavaScript/TypeScript can trace limited direct local imports and up to four imported call edges for unchanged-argument sink relays; higher-order functions, dynamic imports, and object properties set elsewhere remain unresolved.
 - PHP, Java, C#, Go, Ruby, C/C++, Shell, PowerShell and Batch have no type information or inter-procedural analysis.
-- Django literal `path`/`re_path` declarations are linked to imported function views; dynamic URL configuration and class-based `as_view()` dispatch are not resolved.
+- Django literal `path`/`re_path` declarations are linked to imported function views, including up to three explicit imported `login_required` / `staff_member_required` wrappers. Unknown wrappers, dynamic URL configuration and class-based `as_view()` dispatch are not resolved for parameter-to-sink flow.
 - Python argument injection into recognized fixed programs can be reported for direct HTTP input (see `PY-ARG-001`), but complex argument construction and program-dependent option semantics remain out of scope.
 - Binary analysis is header, symbol and printable-string based. It does not replace disassembly, control-flow analysis, fuzzing or memory-safety instrumentation.
 - Without `--update-cve`, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.

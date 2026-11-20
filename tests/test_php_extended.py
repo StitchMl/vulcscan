@@ -142,3 +142,34 @@ def test_sql_cleartext_password_seed() -> None:
 def test_php_remote_include_configuration() -> None:
     ids = {item.rule_id for item in lexical_findings("php.ini", "php.ini", "Configuration", "allow_url_include = On\n")}
     assert "PHP-URL-INCLUDE-001" in ids
+
+
+def test_php_eloquent_direct_http_identifier_without_scope_is_authz_finding() -> None:
+    source = "<?php $record = Document::find($_GET['document_id']); echo json_encode($record);"
+    findings = lexical_findings("view.php", "view.php", "PHP", source)
+    matched = [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+    assert len(matched) == 1
+    assert matched[0].cwe == "CWE-639"
+    assert "Document::find" in matched[0].sink
+
+
+def test_php_eloquent_non_identifier_parameter_not_authz_finding() -> None:
+    source = "<?php $records = Document::find($_GET['search']);"
+    findings = lexical_findings("search.php", "search.php", "PHP", source)
+    assert not [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+
+
+def test_php_eloquent_explicit_owner_check_remains_unflagged() -> None:
+    source = (
+        "<?php $record = Document::findOrFail($_GET['document_id']);\n"
+        "if ($record->owner_id !== auth()->id()) { abort(403); }\n"
+        "echo json_encode($record);\n"
+    )
+    findings = lexical_findings("view.php", "view.php", "PHP", source)
+    assert not [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+
+
+def test_php_eloquent_literal_identifier_not_http_source() -> None:
+    source = "<?php $record = Document::find(123); echo json_encode($record);"
+    findings = lexical_findings("view.php", "view.php", "PHP", source)
+    assert not [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]

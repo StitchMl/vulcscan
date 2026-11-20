@@ -129,7 +129,8 @@ def test_real_yaml_fix_is_syntactic_and_clean_on_targeted_rescan(tmp_path: Path)
     ]
     assert eligible
     patch = eligible[0]
-    assert patch.current is not None and patch.suggested is not None
+    assert patch.current is not None
+    assert patch.suggested is not None
 
     diff = render_unified_diff(before, tmp_path)
     assert "+    return yaml.safe_load(request.args['payload'])" in diff

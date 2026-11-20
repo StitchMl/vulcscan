@@ -65,6 +65,22 @@ def _finding(path: str, source: str, sink_start: int, source_start: int, label: 
     )
 
 
+def _thymeleaf_findings(path: str, source: str, visible: str, mask: str) -> list[Finding]:
+    if not _RESOLVER.search(mask):
+        return []
+    result = []
+    for call in _THYMELEAF.finditer(visible):
+        if mask[call.start()].isspace():
+            continue
+        from_http = _http_origin(visible, call.group("value"), call.start("value"))
+        if from_http is not None:
+            result.append(_finding(
+                path, source, call.start(), from_http,
+                "Thymeleaf string template source",
+            ))
+    return result
+
+
 def analyze_java_template_source(path: str, source: str) -> list[Finding]:
     visible = blank_comments(source, C_STYLE)
     mask = code_mask(source, C_STYLE)
@@ -84,14 +100,5 @@ def analyze_java_template_source(path: str, source: str) -> list[Finding]:
                 "FreeMarker StringReader template source",
             ))
 
-    if _RESOLVER.search(mask):
-        for call in _THYMELEAF.finditer(visible):
-            if mask[call.start()].isspace():
-                continue
-            from_http = _http_origin(visible, call.group("value"), call.start("value"))
-            if from_http is not None:
-                result.append(_finding(
-                    path, source, call.start(), from_http,
-                    "Thymeleaf string template source",
-                ))
+    result.extend(_thymeleaf_findings(path, source, visible, mask))
     return result

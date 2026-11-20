@@ -10,7 +10,7 @@ from typing import Any
 from . import __version__
 from .models import ScanConfig, Severity
 from .report import render_json, render_text, render_unified_diff, write_report
-from .scanner import scan
+from .scanner import RepositoryDiscovery, scan
 
 _SIZE_UNITS = {
     "": 1,
@@ -306,6 +306,22 @@ def _selected_files_or_error(
     return selected, None
 
 
+
+def _ensure_selected_files_included(config: ScanConfig) -> None:
+    """Avoid successful empty rescans when an explicit file is excluded."""
+    if config.only_files is None:
+        return
+    discovery = RepositoryDiscovery(config)
+    for relative in sorted(config.only_files):
+        parts = relative.split("/")
+        excluded_parent = any(
+            discovery._excluded_directory(part, "/".join(parts[:index + 1]))
+            for index, part in enumerate(parts[:-1])
+        )
+        if excluded_parent or discovery._excluded_file(relative):
+            raise ValueError(f"--files selection is excluded by scan options: {relative}")
+
+
 def _write_outputs(
     result: Any, root: Path, severity: Any, content: str, output: Path | None, diff_path: Path | None
 ) -> None:
@@ -373,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cve_cache=args.cve_cache.expanduser() if args.cve_cache else None,
     )
     try:
+        _ensure_selected_files_included(config)
         result = scan(config)
     except KeyboardInterrupt:
         _error("scan interrupted")

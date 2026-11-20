@@ -173,6 +173,20 @@ def test_severity_filter_uses_threshold() -> None:
     ]
 
 
+def test_text_report_shows_selected_file_scope_without_changing_full_scans() -> None:
+    report = _result([])
+    original = render_text(report, color=False)
+    assert "Selected files:" not in original
+
+    report.metadata["selected_files"] = ["src/a.py", "src/sub/b.py"]
+    targeted = render_text(report, color=False)
+    assert "Selected files: 2" in targeted
+    assert "  - src/a.py" in targeted
+    assert "  - src/sub/b.py" in targeted
+    assert targeted.index("  - src/a.py") < targeted.index("  - src/sub/b.py")
+    assert "Selected files: 2" not in original
+
+
 def test_text_report_contains_evidence_patch_and_summary() -> None:
     result = _result(
         [

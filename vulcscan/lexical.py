@@ -387,6 +387,20 @@ _PHP_OWNER_GUARD = re.compile(
 )
 
 
+_PHP_FUNCTION_BOUNDARY = re.compile(r"\bfunction\s+[A-Za-z_]\w*\s*\(")
+
+
+def _php_handler_scope(code: str, lookup_offset: int) -> str:
+    """Limit owner-check evidence to the function holding the lookup."""
+    declarations = list(_PHP_FUNCTION_BOUNDARY.finditer(code))
+    earlier = [match.start() for match in declarations if match.start() <= lookup_offset]
+    if not earlier:
+        return code[:declarations[0].start()] if declarations else code
+    start = earlier[-1]
+    later = [match.start() for match in declarations if match.start() > lookup_offset]
+    return code[start:later[0]] if later else code[start:]
+
+
 def _php_unscoped_eloquent_id(text: str, add: Callable[..., None]) -> None:
     """Flag only direct HTTP resource IDs used in unscoped Eloquent lookups."""
     code = blank_comments(text, comment_style("PHP"))
@@ -394,8 +408,8 @@ def _php_unscoped_eloquent_id(text: str, add: Callable[..., None]) -> None:
         key = match.group("key").lower()
         if key not in {"id", "pk", "uuid"} and not key.endswith(("_id", "_uuid")):
             continue
-        # Explicit ownership handling is outside this narrow heuristic.
-        if _PHP_OWNER_GUARD.search(code):
+        # A guard in another handler must not hide an unscoped lookup.
+        if _PHP_OWNER_GUARD.search(_php_handler_scope(code, match.start())):
             continue
         line = code.count("\n", 0, match.start()) + 1
         add(

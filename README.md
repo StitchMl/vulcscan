@@ -85,7 +85,7 @@ Sanitizers are recognized by behavior, never by function name: numeric conversio
 
 ### Rules
 
-Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `-XSS-001` (CWE-79 for Python, JavaScript/TypeScript, Java, C#, Go and Ruby), `PY-SSTI-001` (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
+Source-to-sink: `<LANG>-CMD-001` (CWE-78), `-SQL-001` (CWE-89), `-CODE-001` (CWE-94), `-PATH-001` (CWE-22, includes upload `save()` with an unsanitized name), `-DESER-001` (CWE-502), `-SSRF-001` (CWE-918), `-XSS-001` (CWE-79 for Python, JavaScript/TypeScript, Java, C#, Go and Ruby), template-source injection rules for Python, JavaScript/TypeScript, PHP and Java (CWE-1336), `PY-XXE-001` (CWE-611), `OPEN-REDIRECT-001` (CWE-601). Prefixes: `PY`, `JS`, `PHP`, `JAVA`, `CS`, `GO`, `RB`, `C`, `SH`, `PS`, `BAT`. SQL injection tests cover vulnerable flows in Python, JavaScript/TypeScript, PHP, Java, C#, Go, Ruby, C/C++ and PowerShell, plus safe parameterized Python and JavaScript queries.
 
 Pattern and configuration rules: `SECRET-001` hardcoded credential (CWE-798), `PRIVATE-KEY-001` (CWE-321), `TLS-VERIFY-001` (CWE-295), `JWT-VERIFY-001` (CWE-347), `WEAK-HASH-001` password digest (CWE-916), `WEAK-CIPHER-001` DES/3DES/RC4/ECB (CWE-327), `UNAUTH-ENCRYPTION-001` malleable encryption without integrity (CWE-353), `WEAK-RANDOM-001` (CWE-338), `AUTHZ-SCOPE-001` object lookup without principal scope (CWE-639), `ORM-EMPTY-AUTH-001` empty ORM authorization result used as identity (CWE-863), `TEMPFILE-001` (CWE-377), `FILE-PERM-001` world-writable (CWE-732), `DEBUG-001` (CWE-489), `CORS-001` credentialed origin reflection (CWE-942), `XXE-001` (CWE-611), `PHP-XSS-001` and `SVG-ACTIVE-001` (CWE-79), `UPLOAD-MIME-001` (CWE-434), `CSRF-001` (CWE-352), `SESSION-FIXATION-001` (CWE-384), `PHP-URL-INCLUDE-001` (CWE-98), `CLEARTEXT-PASSWORD-001` (CWE-256), `DB-RACE-001` (CWE-362), `DOCKER-ROOT-001` and `K8S-PRIV-001` (CWE-250). Binary rules cover risky APIs (`BINARY-DANGEROUS-001`, CWE-676), missing exploit mitigations (`BINARY-HARDENING-001`, CWE-693) and embedded credentials (`BINARY-SECRET-001`, CWE-798).
 
@@ -281,6 +281,10 @@ For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefi
 ### PHP Twig template-source injection
 
 `PHP-SSTI-001` (CWE-1336) identifies direct HTTP GET/POST/REQUEST values, or simple variable aliases assigned from them, passed to `$twig->createTemplate(...)` for compilation as Twig template source. It deliberately does not flag rendering a fixed template with request fields supplied as context. Long call chains, custom engines and unknown transforms are not inferred. Findings are MEDIUM-confidence review-only guidance and do not execute PHP or apply patches.
+
+### Java template-source injection
+
+`JAVA-SSTI-001` (CWE-1336) traces direct servlet request parameters, including one local alias, into FreeMarker `Template` construction through `StringReader` or into Thymeleaf processing when a `StringTemplateResolver` is present. Request values used only as context for a fixed server-owned template are not reported. Findings retain HTTP SOURCE evidence for `--remote-only`, are MEDIUM-confidence and review-only, and never execute the target application.
 
 ### C/C++ memcpy with externally controlled lengths
 

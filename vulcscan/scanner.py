@@ -7,28 +7,29 @@ import os
 import platform
 import stat
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 from .attack_surface import map_attack_surface
 from .binary import analyze_binary, binary_kind, looks_like_binary
 from .dependencies import is_manifest_path, scan_dependencies
+from .go_zip_slip import analyze_go_zip_slip
 from .guidance import enrich_finding
+from .java_template_source import analyze_java_template_source
+from .java_zip_slip import analyze_java_zip_slip
 from .javascript import analyze_javascript
 from .js_interproc import imported_sink_map
 from .js_timing import analyze_javascript_timing
-from .java_zip_slip import analyze_java_zip_slip
-from .go_zip_slip import analyze_go_zip_slip
 from .lexical import lexical_findings
-from .remote import has_remote_source
 from .models import SEVERITY_RANK, ScanConfig, ScanError, ScanResult
 from .python_analysis import PythonProject
 from .python_argument_injection import analyze_argument_injection
+from .python_route_authz import analyze_route_authz
 from .python_tar_extraction import analyze_tar_extraction
 from .python_timing import analyze_timing_comparisons
-from .python_route_authz import analyze_route_authz
+from .remote import has_remote_source
 from .source import decode_source
 from .structured import CATALOGS, analyze_structured
 from .suppressions import is_suppressed, suppression_index
@@ -390,6 +391,7 @@ def _analyze_one_source(source: SourceFile, imported_sinks: dict):
         elif source.language in CATALOGS:
             found.extend(analyze_structured(source.relative, source.text, source.language))
         if source.language == "Java":
+            found.extend(analyze_java_template_source(source.relative, source.text))
             found.extend(analyze_java_zip_slip(source.relative, source.text))
         if source.language == "Go":
             found.extend(analyze_go_zip_slip(source.relative, source.text))

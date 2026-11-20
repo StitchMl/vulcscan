@@ -259,6 +259,29 @@ def test_offline_mode_performs_no_network_access(
     assert result.dependency_vulnerabilities == []
 
 
+def test_selected_offline_scan_never_executes_target_python(tmp_path: Path) -> None:
+    marker = tmp_path / "execution-marker.txt"
+    source = (
+        "from pathlib import Path\\n"
+        f"Path({str(marker)!r}).write_text('target executed')\\n"
+        "from flask import request\\n"
+        "import subprocess\\n"
+        "command = request.args['command']\\n"
+        "subprocess.run(command, shell=True)\\n"
+    )
+    files = ("one.py", "two.py")
+    for filename in files:
+        (tmp_path / filename).write_text(source, encoding="utf-8")
+
+    result = _scan(tmp_path, cve=False, workers=4, only_files=frozenset(files))
+
+    assert not marker.exists()
+    assert result.metadata["files_analyzed"] == 2
+    assert result.metadata["network_access"] == "DISABLED"
+    assert any(finding.rule_id == "PY-CMD-001" for finding in result.findings)
+    assert all((tmp_path / filename).read_text(encoding="utf-8") == source for filename in files)
+
+
 def test_symlink_outside_root_is_not_followed(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     outside = tmp_path / "outside"

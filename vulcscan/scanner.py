@@ -323,6 +323,12 @@ def _validate_selected_files(
         raise ValueError(f"--files selection was not processed: {', '.join(skipped)}")
 
 
+
+def _record_selected_files(config: ScanConfig, result: ScanResult) -> None:
+    if config.only_files is not None:
+        result.metadata["selected_files"] = sorted(config.only_files)
+
+
 def scan(config: ScanConfig) -> ScanResult:
     started = time.perf_counter()
     root = config.root.resolve()
@@ -345,8 +351,7 @@ def scan(config: ScanConfig) -> ScanResult:
         },
         errors=list(discovery.errors),
     )
-    if config.only_files is not None:
-        result.metadata["selected_files"] = sorted(config.only_files)
+    _record_selected_files(config, result)
     if not 1 <= config.workers <= 8:
         raise ValueError("workers must be between 1 and 8")
     _analyze_files(files, result, config.workers)

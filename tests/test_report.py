@@ -514,6 +514,41 @@ def test_cli_files_real_scan_preserves_sources_and_reports_findings(tmp_path: Pa
     assert source.read_text(encoding="utf-8") == original
 
 
+@pytest.mark.parametrize(
+    ("selected", "options"),
+    [
+        ("src/app.py", ("--exclude", "src/**")),
+        ("tests/test_app.py", ("--exclude-tests",)),
+        ("node_modules/app.js", ()),
+    ],
+)
+def test_cli_files_rejects_excluded_source(
+    tmp_path: Path, monkeypatch, capsys, selected: str, options: tuple[str, ...]
+) -> None:
+    path = tmp_path.joinpath(*selected.split("/"))
+    path.parent.mkdir(parents=True)
+    path.write_text("value = 1\n", encoding="utf-8")
+
+    def unexpected_scan(config):
+        pytest.fail("excluded explicit file must not start a scan")
+
+    monkeypatch.setattr(cli, "scan", unexpected_scan)
+    status = cli.main([str(tmp_path), "--offline", "--no-cve", "--files", selected, *options])
+    assert status == 2
+    assert "excluded by scan options" in capsys.readouterr().err
+
+
+def test_cli_files_unexcluded_selected_source_still_scans(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    status = cli.main([
+        str(tmp_path), "--offline", "--no-cve", "--format", "json",
+        "--files", "app.py", "--exclude", "tests/**",
+    ])
+    assert status == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["metadata"]["files_analyzed"] == 1
+
+
 def test_python_diff_skips_syntax_breakage(tmp_path: Path) -> None:
     source = tmp_path / "src" / "app.py"
     source.parent.mkdir()

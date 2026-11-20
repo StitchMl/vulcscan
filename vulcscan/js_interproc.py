@@ -32,6 +32,10 @@ _DIRECT_CALL = re.compile(
     r"^\s*(?:return\s+)?(?:await\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*"
     r"\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$"
 )
+_RELAY_CALL = re.compile(
+    r"^\\s*(?:return\\s+)?(?:await\\s+)?([A-Za-z_$][\\w$]*)\\s*"
+    r"\\(\\s*([A-Za-z_$][\\w$]*(?:\\s*,\\s*[A-Za-z_$][\\w$]*)*)\\s*\\)\\s*;?\\s*$"
+)
 _REQUIRE = re.compile(
     r"""\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['"](?:node:)?(child_process|fs|fs/promises)['"]\s*\)"""
 )
@@ -197,13 +201,19 @@ def _relay_summaries(
         end = _matching_brace(mask, match.end() - 1)
         if end < 0:
             continue
-        call = _DIRECT_CALL.fullmatch(clean[match.end():end])
-        if call is None or call.group(1) not in imports or call.group(2) not in args:
+        call = _RELAY_CALL.fullmatch(clean[match.end():end])
+        if call is None or call.group(1) not in imports:
             continue
         sink = _alias_summary(path, clean, call.group(1), modules, direct)
-        if sink is not None and sink.parameter_index == 0:
+        if sink is None:
+            continue
+        arguments = [part.strip() for part in call.group(2).split(",")]
+        if sink.parameter_index >= len(arguments):
+            continue
+        tainted = arguments[sink.parameter_index]
+        if tainted in args:
             relays[name] = ImportedSink(
-                sink.rule_id, args.index(call.group(2)), sink.file, sink.line, sink.sink
+                sink.rule_id, args.index(tainted), sink.file, sink.line, sink.sink
             )
     return {name: sink for name, sink in relays.items() if occurrences[name] == 1}
 

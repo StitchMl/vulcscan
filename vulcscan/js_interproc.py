@@ -33,8 +33,8 @@ _DIRECT_CALL = re.compile(
     r"\(\s*([A-Za-z_$][\w$]*)\s*\)\s*;?\s*$"
 )
 _RELAY_CALL = re.compile(
-    r"^\\s*(?:return\\s+)?(?:await\\s+)?([A-Za-z_$][\\w$]*)\\s*"
-    r"\\(\\s*([A-Za-z_$][\\w$]*(?:\\s*,\\s*[A-Za-z_$][\\w$]*)*)\\s*\\)\\s*;?\\s*$"
+    r"^\s*(?:return\s+)?(?:await\s+)?([A-Za-z_$][\w$]*)\s*"
+    r"\(\s*([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\s*\)\s*;?\s*$"
 )
 _REQUIRE = re.compile(
     r"""\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['"](?:node:)?(child_process|fs|fs/promises)['"]\s*\)"""

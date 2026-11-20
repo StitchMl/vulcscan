@@ -144,3 +144,47 @@ def test_real_yaml_fix_is_syntactic_and_clean_on_targeted_rescan(tmp_path: Path)
     assert after.metadata["files_analyzed"] == 1
 
 
+
+
+def test_existing_unimported_module_reference_cannot_authorize_new_patch(tmp_path: Path) -> None:
+    original = "old = hmac.compare_digest(a, b)\nvalue = 1\n"
+    source = tmp_path / "app.py"
+    source.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(2, current="value = 1", suggested="value = hmac.compare_digest(x, y)")
+        ]),
+        tmp_path,
+    )
+    assert diff == ""
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_existing_import_allows_additional_module_reference(tmp_path: Path) -> None:
+    original = "import hmac\nold = hmac.compare_digest(a, b)\nvalue = 1\n"
+    source = tmp_path / "app.py"
+    source.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(3, current="value = 1", suggested="value = hmac.compare_digest(x, y)")
+        ]),
+        tmp_path,
+    )
+    assert "+value = hmac.compare_digest(x, y)" in diff
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_missing_module_reference_does_not_hide_independent_safe_edit(tmp_path: Path) -> None:
+    original = "old = hmac.compare_digest(a, b)\nvalue = 1\nother = 2\n"
+    source = tmp_path / "app.py"
+    source.write_text(original, encoding="utf-8")
+    diff = render_unified_diff(
+        ScanResult(metadata={}, findings=[
+            _finding(2, current="value = 1", suggested="value = hmac.compare_digest(x, y)"),
+            _finding(3, current="other = 2", suggested="other = 3"),
+        ]),
+        tmp_path,
+    )
+    assert "+other = 3" in diff
+    assert "+value = hmac.compare_digest(x, y)" not in diff
+    assert source.read_text(encoding="utf-8") == original

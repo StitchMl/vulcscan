@@ -1,0 +1,47 @@
+name: Temporary exact main SonarCloud audit
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/temporary-sonar-roadmap-authz.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check exact main revision, quality gate, zero OPEN issues
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+          base = "https://sonarcloud.io/api/"
+          def get(path, params):
+              with urlopen(Request(base + path + "?" + urlencode(params),
+                                   headers={"Accept": "application/json"}), timeout=25) as r:
+                  return json.load(r)
+          expected = os.environ["EXPECTED_SHA"]
+          for attempt in range(32):
+              records = get("project_analyses/search", {"project":"StitchMl_vulcscan","branch":"main","ps":1}).get("analyses", [])
+              last = records[0].get("revision") if records else None
+              print("ANALYZED", last, "EXPECTED", expected, flush=True)
+              if last == expected:
+                  break
+              time.sleep(10)
+          else:
+              raise SystemExit("Analysis has not reached exact main revision")
+          gate = get("qualitygates/project_status", {"projectKey":"StitchMl_vulcscan","branch":"main"}).get("projectStatus",{}).get("status")
+          result = get("issues/search", {"componentKeys":"StitchMl_vulcscan","branch":"main","issueStatuses":"OPEN,CONFIRMED","ps":30})
+          count = result.get("paging",{}).get("total", result.get("total"))
+          print("QUALITY_GATE", gate, flush=True)
+          print("OPEN_ISSUES", count, flush=True)
+          print("ISSUE_DETAILS", json.dumps([{"rule":x.get("rule"),"message":x.get("message"),"component":x.get("component")} for x in result.get("issues",[])]), flush=True)
+          if gate != "OK" or count != 0:
+              raise SystemExit("SonarCloud not green")
+          PY

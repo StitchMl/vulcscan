@@ -200,6 +200,10 @@ Directly imported, locally exported named functions whose **entire body** is one
 
 A JavaScript or TypeScript finding may be suppressed with an exact-rule `// vulcscan:ignore JS-CMD-001` comment. A trailing comment affects only its own physical line; a standalone line comment affects only the next physical line. Comments inside strings, template literals, regular expressions, or `/* ... */` blocks are ignored; wildcard rules and global file suppressions are not supported. This feature is opt-in through the source comment and preserves the existing Python `# vulcscan:ignore RULE-ID` behavior. Suppress only verified false positives.
 
+### Conservative PHP Eloquent IDOR heuristic
+
+For direct Laravel-style `Model::find($_GET['document_id'])` / `findOrFail` lookups, VulcScan raises a review-only `AUTHZ-SCOPE-001` warning when the request key is an ID/UUID and no explicit ownership or authorization marker appears in the file. A file containing owner or tenant scope checks is left unflagged to avoid guessing whether a resource is exposed. This does not establish a bypass, resolve indirect assignments or cross-file policies, or prove that a returned record reaches an HTTP response. Use manual authorization tests to confirm access controls.
+
 ### PHP authentication comparisons and token signatures
 
 The static rule `PHP-TYPE-JUGGLING-001` detects selected PHP `==`/`!=` comparisons between authentication-related variables and explicitly tracked request superglobal values. It recommends strict typed comparisons or `hash_equals`/`password_verify` as appropriate and never generates an automatic patch. Detection is intentionally conservative and does not prove a bypass. Secret signature matching now recognizes common `sk-proj-`, `sk-ant-`, `hf_`, `npm_` and `pypi-` prefixes without exposing the complete value in reports. These are string signatures, not proof that a credential is active; example files remain excluded from known-token alerts.

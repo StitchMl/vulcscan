@@ -14,10 +14,10 @@ from vulcscan.scanner import scan_path
 
 
 def _simulate_process(command: str | list[str], *, shell: bool = False) -> str:
-    """Simulate a simple echo command without starting a subprocess."""
+    """Simulate a fixed git command without starting a subprocess."""
     argv = shlex.split(command) if shell else command
-    assert argv[0] == "echo"
-    return " ".join(argv[1:])
+    assert argv[:3] == ["git", "status", "--"]
+    return " ".join(argv[3:])
 
 
 def test_generated_command_patch_preserves_benign_endpoint_contract(tmp_path: Path) -> None:
@@ -42,21 +42,21 @@ def test_generated_command_patch_preserves_benign_endpoint_contract(tmp_path: Pa
     ]
     assert len(patches) == 1
     patch = patches[0]
-    assert patch.suggested == 'subprocess.run(["echo", request.args[\'name\']])'
+    assert patch.suggested == 'subprocess.run(["git", "status", "--", request.args[\'path\']])'
 
     diff = render_unified_diff(result, tmp_path)
-    assert '+    return subprocess.run(["echo", request.args[\'name\']])' in diff
+    assert '+    return subprocess.run(["git", "status", "--", request.args[\'path\']])' in diff
     assert target.read_text(encoding="utf-8") == original
     updated = original.replace(patch.current, patch.suggested, 1)
     ast.parse(updated)
 
     for value in ("ready", "healthy", "ok"):
-        old_response = _simulate_process(f"echo {value}", shell=True)
-        new_response = _simulate_process(["echo", value])
+        old_response = _simulate_process(f"git status -- {value}", shell=True)
+        new_response = _simulate_process(["git", "status", "--", value])
         assert new_response == old_response
 
     injection = "ready; echo UNSAFE"
-    literal_response = _simulate_process(["echo", injection])
+    literal_response = _simulate_process(["git", "status", "--", injection])
     assert literal_response == injection
 
     target.write_text(updated, encoding="utf-8")

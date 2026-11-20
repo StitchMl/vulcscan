@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import ast
 import shlex
+
+import pytest
 from pathlib import Path
 
 from vulcscan.report import render_unified_diff
@@ -63,3 +65,25 @@ def test_generated_command_patch_preserves_benign_endpoint_contract(tmp_path: Pa
     scanned = scan_path(tmp_path, cve=False, only_files=frozenset({"app.py"}))
     assert not [finding for finding in scanned.findings if finding.rule_id == "PY-CMD-001"]
     assert scanned.metadata["files_analyzed"] == 1
+
+
+@pytest.mark.parametrize("program", ["echo", "cd", "sh", "bash", "cmd", "powershell"])
+def test_shell_builtins_and_interpreters_remain_review_only(
+    tmp_path: Path, program: str
+) -> None:
+    target = tmp_path / "app.py"
+    source = (
+        "import subprocess\n"
+        "from flask import request\n"
+        "def endpoint():\n"
+        f"    return subprocess.run(f\"{program} {{request.args['name']}}\", shell=True)\n"
+    )
+    target.write_text(source, encoding="utf-8")
+    scanned = scan_path(tmp_path, cve=False)
+    matches = [f for f in scanned.findings if f.rule_id == "PY-CMD-001" and f.source is not None]
+    assert matches
+    suggestions = [r for f in matches for r in f.remediations if r.preferred]
+    assert suggestions
+    assert all(not remediation.machine_applicable for remediation in suggestions)
+    assert render_unified_diff(scanned, tmp_path) == ""
+    assert target.read_text(encoding="utf-8") == source

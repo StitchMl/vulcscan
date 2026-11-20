@@ -119,7 +119,7 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 
 ## Known limitations
 
-- Python cross-module flows need a direct call to an imported function; dynamic dispatch, decorators that wrap handlers, `getattr` and callbacks are not followed.
+- Python cross-module flows need a direct call to an imported function. Within one module, a method call on an explicitly constructed local instance (`service = LocalClass(); service.run(value)`) is now resolved only when the variable has exactly one direct assignment before the call. Dynamic dispatch, rebound instances, decorators that wrap handlers, `getattr` and callbacks are not followed.
 - JavaScript/TypeScript analysis stays within one file and does not follow higher-order functions or object properties set elsewhere.
 - PHP, Java, C#, Go, Ruby, C/C++, Shell, PowerShell and Batch have no type information or inter-procedural analysis.
 - Django literal `path`/`re_path` declarations are linked to imported function views; dynamic URL configuration and class-based `as_view()` dispatch are not resolved.

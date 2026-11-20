@@ -178,6 +178,32 @@ def _alias_summary(
     return summaries[destination].get(exported)
 
 
+def _relay_from_call(
+    path: str,
+    clean: str,
+    body: str,
+    parameters: list[str],
+    imports: set[str],
+    modules: dict[str, Any],
+    summaries: dict[str, dict[str, ImportedSink]],
+) -> ImportedSink | None:
+    call = _RELAY_CALL.fullmatch(body)
+    if call is None or call.group(1) not in imports:
+        return None
+    sink = _alias_summary(path, clean, call.group(1), modules, summaries)
+    if sink is None:
+        return None
+    arguments = [part.strip() for part in call.group(2).split(",")]
+    if sink.parameter_index >= len(arguments):
+        return None
+    tainted = arguments[sink.parameter_index]
+    if tainted not in parameters:
+        return None
+    return ImportedSink(
+        sink.rule_id, parameters.index(tainted), sink.file, sink.line, sink.sink
+    )
+
+
 def _relay_summaries(
     path: str,
     source: str,
@@ -201,20 +227,11 @@ def _relay_summaries(
         end = _matching_brace(mask, match.end() - 1)
         if end < 0:
             continue
-        call = _RELAY_CALL.fullmatch(clean[match.end():end])
-        if call is None or call.group(1) not in imports:
-            continue
-        sink = _alias_summary(path, clean, call.group(1), modules, direct)
-        if sink is None:
-            continue
-        arguments = [part.strip() for part in call.group(2).split(",")]
-        if sink.parameter_index >= len(arguments):
-            continue
-        tainted = arguments[sink.parameter_index]
-        if tainted in args:
-            relays[name] = ImportedSink(
-                sink.rule_id, args.index(tainted), sink.file, sink.line, sink.sink
-            )
+        summary = _relay_from_call(
+            path, clean, clean[match.end():end], args, imports, modules, direct
+        )
+        if summary is not None:
+            relays[name] = summary
     return {name: sink for name, sink in relays.items() if occurrences[name] == 1}
 
 

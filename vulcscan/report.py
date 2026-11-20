@@ -461,16 +461,18 @@ def _safe_python_patch(original: str, patched: str) -> bool:
     except (SyntaxError, ValueError):
         return False
 
-    def module_refs(tree: ast.AST) -> set[str]:
-        return {
+    def module_refs(tree: ast.AST) -> Counter[str]:
+        return Counter(
             node.value.id
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
             and node.value.id in _PATCH_MODULES
-        }
+        )
 
-    introduced = module_refs(after) - module_refs(before)
+    # Count occurrences: an existing unresolved reference must not authorize
+    # additional calls to the same unimported module.
+    introduced = set(module_refs(after) - module_refs(before))
     if not introduced:
         return True
     imported: set[str] = set()

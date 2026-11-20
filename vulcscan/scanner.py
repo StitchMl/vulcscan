@@ -345,6 +345,8 @@ def scan(config: ScanConfig) -> ScanResult:
         },
         errors=list(discovery.errors),
     )
+    if config.only_files is not None:
+        result.metadata["selected_files"] = sorted(config.only_files)
     if not 1 <= config.workers <= 8:
         raise ValueError("workers must be between 1 and 8")
     _analyze_files(files, result, config.workers)

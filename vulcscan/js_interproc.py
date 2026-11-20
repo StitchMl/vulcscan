@@ -1,4 +1,4 @@
-"""Bounded one- and two-hop summaries for imported JavaScript/TypeScript sinks.
+"""Bounded multi-hop summaries for imported JavaScript/TypeScript sinks.
 
 Recognize only exported functions whose entire body is one direct sink call of
 an unchanged parameter. This intentionally omits transforms, guards, branches,
@@ -180,7 +180,7 @@ def _relay_summaries(
     modules: dict[str, Any],
     direct: dict[str, dict[str, ImportedSink]],
 ) -> dict[str, ImportedSink]:
-    """Summarize one unchanged-argument relay to a directly imported sink."""
+    """Summarize an unchanged-argument relay to a previously verified sink."""
     clean = blank_comments(source, JS_STYLE)
     mask = code_mask(source, JS_STYLE)
     imports = _import_aliases(clean)
@@ -209,14 +209,17 @@ def _relay_summaries(
 
 
 def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
-    """Map caller file -> imported alias -> strict one-hop sink summary."""
+    """Map caller file -> alias -> strictly bounded imported sink summary."""
     modules = {item.relative: item for item in files if item.language in {"JavaScript", "TypeScript"}}
     summaries = {path: _summaries(path, item.text) for path, item in modules.items()}
-    relays = {
-        path: _relay_summaries(path, item.text, modules, summaries)
-        for path, item in modules.items()
-    }
-    summaries = {path: {**summaries[path], **relays[path]} for path in modules}
+    # Extend summaries at most three relay layers beyond direct sinks.
+    # Fixed rounds keep analysis bounded even when modules import cyclically.
+    for _ in range(3):
+        relays = {
+            path: _relay_summaries(path, item.text, modules, summaries)
+            for path, item in modules.items()
+        }
+        summaries = {path: {**summaries[path], **relays[path]} for path in modules}
     result: dict[str, dict[str, ImportedSink]] = {}
     for path, item in modules.items():
         clean = blank_comments(item.text, JS_STYLE)

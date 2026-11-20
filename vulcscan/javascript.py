@@ -116,7 +116,6 @@ _IMPORT_SOURCE = r"""from\s*['"](?:node:)?([\w@/.-]+)['"]"""
 _IMPORT_STATEMENT = re.compile(r"import\s+" + _IMPORT_DEFAULT + _IMPORT_NAMESPACE + _IMPORT_NAMED + _IMPORT_SOURCE)
 _FUNCTION_DECLARATION = re.compile(r"\bfunction\b\s*+(?:\*\s*+)?([\w$]*+)\s*+\(([^)]*+)\)\s*+(?::[^{]*+)?$")
 _ARROW_PARENS_CORE = re.compile(r"\(([^()]*+)\)\s*+(?::[^=]*+)?=>\s*+$")
-_ARROW_BARE_CORE = re.compile(r"(?<![\w$])([\w$]++)\s*+=>\s*+$")
 _METHOD_MODIFIERS = r"(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
 _METHOD_HEADER = re.compile(r"\s*" + _METHOD_MODIFIERS + r"([\w$]+)\s*(?:<[^>]*>\s*)?\(([^)]*)\)\s*(?::[^{]*)?$")
 _CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
@@ -202,6 +201,22 @@ def _is_name_char(char: str) -> bool:
     return char.isalnum() or char in "_$"
 
 
+def _bare_arrow(header: str) -> tuple[int, str] | None:
+    """Locate `name =>` at the end of a header without a backtracking regex."""
+    end = len(header)
+    while end > 0 and header[end - 1].isspace():
+        end -= 1
+    if not header.startswith("=>", end - 2) or end < 2:
+        return None
+    end -= 2
+    while end > 0 and header[end - 1].isspace():
+        end -= 1
+    start = end
+    while start > 0 and _is_name_char(header[start - 1]):
+        start -= 1
+    return (start, header[start:end]) if start < end else None
+
+
 def _arrow_name(header: str, core_start: int) -> str | None:
     """Name bound by ``name =``/``name:`` (optionally followed by ``async``) just before an arrow function."""
     end = core_start
@@ -226,9 +241,9 @@ def _arrow_header(header: str) -> _ArrowHeader | None:
     parens = _ARROW_PARENS_CORE.search(header)
     if parens is not None:
         return _ArrowHeader(_arrow_name(header, parens.start()), parens.group(1))
-    bare = _ARROW_BARE_CORE.search(header)
+    bare = _bare_arrow(header)
     if bare is not None:
-        return _ArrowHeader(_arrow_name(header, bare.start()), bare.group(1))
+        return _ArrowHeader(_arrow_name(header, bare[0]), bare[1])
     return None
 
 

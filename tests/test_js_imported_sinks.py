@@ -197,3 +197,44 @@ def test_two_hop_relay_does_not_resolve_ambiguous_module(tmp_path: Path) -> None
         "const cp = require('child_process');\n"
         "export function unsafe(value) { cp.exec(value); }\n")
     assert not _cmd_findings(tmp_path, sourced=True)
+
+
+def test_imported_sink_does_not_treat_shadowed_fetch_parameter_as_ssrf(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { unsafe } from './service.js';\n"
+        "function handler(req) { unsafe(req.query.target); }\n")
+    _write(tmp_path, "service.js",
+        "export function unsafe(fetch) { fetch(fetch); }\n")
+    findings = [
+        finding for finding in scan_path(tmp_path, cve=False).findings
+        if finding.rule_id == "JS-SSRF-001" and finding.source is not None
+    ]
+    assert not findings
+
+
+def test_imported_sink_does_not_treat_shadowed_exec_parameter_as_command_sink(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { unsafe } from './service.js';\n"
+        "function handler(req) { unsafe(req.query.command); }\n")
+    _write(tmp_path, "service.js",
+        "const { exec } = require('child_process');\n"
+        "export function unsafe(exec) { exec(exec); }\n")
+    assert not _cmd_findings(tmp_path, sourced=True)
+
+
+def test_actual_fetch_sink_still_traces_request_across_two_hops(tmp_path: Path) -> None:
+    _write(tmp_path, "routes.js",
+        "import { forward } from './controller.js';\n"
+        "function handler(req) { forward(req.query.target); }\n")
+    _write(tmp_path, "controller.js",
+        "import { openUrl } from './service.js';\n"
+        "export function forward(value) { openUrl(value); }\n")
+    _write(tmp_path, "service.js",
+        "export function openUrl(value) { fetch(value); }\n")
+    findings = [
+        finding for finding in scan_path(tmp_path, cve=False).findings
+        if finding.rule_id == "JS-SSRF-001" and finding.source is not None
+    ]
+    assert len(findings) == 1
+    assert findings[0].location.file == "routes.js"
+    assert any(loc.file == "service.js" for loc in findings[0].related_locations)

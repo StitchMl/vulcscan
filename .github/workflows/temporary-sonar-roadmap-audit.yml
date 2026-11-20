@@ -1,4 +1,5 @@
 name: Temporary exact-main SonarCloud roadmap audit
+# Recheck after S9073 and S3776 corrections
 on:
   push:
     branches: [main]

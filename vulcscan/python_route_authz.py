@@ -1,4 +1,4 @@
-"""Bounded Flask/FastAPI object-level authorization scope heuristic.
+"""Bounded Python web object-level authorization scope heuristic.
 
 Identify an HTTP path identifier flowing directly into an ORM primary-key
 lookup when the handler lacks a recognizable owner/tenant/ACL constraint.
@@ -17,6 +17,7 @@ _PATH_PARAM = re.compile(r"\{([A-Za-z_]\w*)\}|<(?:(?:int|uuid|string|path):)?([A
 _ID_NAME = re.compile(r"(?i)(?:^id$|(?:^|_)(?:id|pk|uuid)$|(?:Id|Pk|UUID)$)")
 _SAFE_KEY = re.compile(r"(?i)(?:owner|tenant|principal|permission|authorize|acl|can_access|scope)")
 _QUERY_GET = frozenset({"get", "get_or_404", "get_or_none", "get_by_id"})
+_DJANGO_LOOKUPS = frozenset({"get_object_or_404", "get_object_or_404_async"})
 
 
 def _location(path: str, node: ast.AST) -> Location:
@@ -50,6 +51,29 @@ def _lookup(node: ast.AST, parameter: str) -> bool:
     if call.endswith(".session") and node.func.attr == "get":
         args = args[1:]
     return bool(args and isinstance(args[0], ast.Name) and args[0].id == parameter)
+
+
+def _django_lookup(node: ast.AST, parameter: str) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    name = ast.unparse(node.func).rsplit(".", 1)[-1]
+    if name in _DJANGO_LOOKUPS:
+        return any(
+            keyword.arg in {"id", "pk", "uuid"}
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == parameter
+            for keyword in node.keywords
+        )
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "get":
+        return False
+    if not ast.unparse(node.func.value).endswith(".objects"):
+        return False
+    return any(
+        keyword.arg in {"id", "pk", "uuid"}
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == parameter
+        for keyword in node.keywords
+    )
 
 
 def _guard_node(node: ast.AST) -> bool:
@@ -132,6 +156,27 @@ def _function_findings(
     return findings
 
 
+def _django_findings(
+    path: str, source: str, function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[Finding]:
+    parameters = [
+        arg.arg for arg in (
+            *function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs
+        )
+    ]
+    if "request" not in parameters[:2] or _scoped(function):
+        return []
+    result = []
+    for name in parameters:
+        if not _ID_NAME.search(name):
+            continue
+        result.extend(
+            _make_finding(path, source, name, "ANY", "Django view", function, call)
+            for call in ast.walk(function) if _django_lookup(call, name)
+        )
+    return result
+
+
 def analyze_route_authz(path: str, source: str) -> list[Finding]:
     try:
         tree = ast.parse(source, filename=path)
@@ -141,4 +186,6 @@ def analyze_route_authz(path: str, source: str) -> list[Finding]:
     for function in ast.walk(tree):
         if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
             findings.extend(_function_findings(path, source, function))
+            if path.replace("\\", "/").endswith("views.py"):
+                findings.extend(_django_findings(path, source, function))
     return findings

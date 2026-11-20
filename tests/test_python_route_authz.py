@@ -91,3 +91,45 @@ def test_parameter_not_used_in_database_query(tmp_path: Path) -> None:
 
 def test_invalid_python_never_executes(tmp_path: Path) -> None:
     assert not _authz(tmp_path, "@app.get('/users/{user_id}')\ndef user(:\n")
+
+
+def test_django_view_primary_key_lookup(tmp_path: Path) -> None:
+    found = _authz(tmp_path,
+        "from django.shortcuts import get_object_or_404\n"
+        "def document(request, document_id):\n"
+        "    return get_object_or_404(Document, pk=document_id)\n",
+        remote_only=True,
+    )
+    assert len(found) == 1
+    assert found[0].source is not None
+    assert found[0].source.line == 2
+    assert found[0].location.line == 3
+
+
+def test_django_class_view_objects_get(tmp_path: Path) -> None:
+    found = _authz(tmp_path,
+        "class DocumentView:\n"
+        "    def get(self, request, pk):\n"
+        "        return Document.objects.get(pk=pk)\n",
+    )
+    assert len(found) == 1
+
+
+def test_django_owner_check_prevents_alert(tmp_path: Path) -> None:
+    found = _authz(tmp_path,
+        "from django.shortcuts import get_object_or_404\n"
+        "def document(request, document_id):\n"
+        "    document = get_object_or_404(Document, pk=document_id)\n"
+        "    if document.owner_id != request.user.id:\n"
+        "        raise PermissionDenied\n"
+        "    return document\n",
+    )
+    assert not found
+
+
+def test_non_view_helper_is_not_treated_as_django_endpoint(tmp_path: Path) -> None:
+    found = _authz(tmp_path,
+        "def load_document(document_id):\n"
+        "    return Document.objects.get(pk=document_id)\n",
+    )
+    assert not found

@@ -272,7 +272,7 @@ For structurally valid ELF32 and ELF64 section tables, VulcScan now reads undefi
 
 ### Flask/FastAPI object authorization scope
 
-`AUTHZ-SCOPE-001` now includes a bounded Python AST heuristic for Flask/FastAPI routes with path identifiers such as `/users/<int:user_id>` and `/accounts/{account_id}` used directly in `Model.query.get(id)`, `get_or_404`, or `db.session.get(Model, id)` calls. A recognizable owner/tenant filter or explicit authorization/ownership check in the same handler makes the analyzer abstain. Authentication decorators alone do not prove object-level authorization. Findings retain an HTTP route SOURCE and ORM SINK, including compatibility with `--remote-only`; they are MEDIUM-confidence and review-only, not proof of IDOR exploitation.
+`AUTHZ-SCOPE-001` now includes a bounded Python AST heuristic for Flask/FastAPI routes with path identifiers such as `/users/<int:user_id>` and `/accounts/{account_id}` used directly in `Model.query.get(id)`, `get_or_404`, or `db.session.get(Model, id)` calls. Django `views.py` handlers with a `request` argument are also checked when an identifier parameter is passed directly to `get_object_or_404(..., pk=id)` or `Model.objects.get(pk=id)`. A recognizable owner/tenant filter or explicit authorization/ownership check in the same handler makes the analyzer abstain. Authentication decorators alone do not prove object-level authorization. Findings retain an HTTP SOURCE and ORM SINK, including compatibility with `--remote-only`; they are MEDIUM-confidence and review-only, not proof of IDOR exploitation.
 
 ### Node.js server-side template injection
 

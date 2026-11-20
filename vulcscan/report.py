@@ -475,10 +475,14 @@ def _safe_python_patch(original: str, patched: str) -> bool:
     introduced = set(module_refs(after) - module_refs(before))
     if not introduced:
         return True
-    imported: set[str] = set()
-    for node in ast.walk(after):
-        if isinstance(node, ast.Import):
-            imported.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+    # Only unconditional module-level imports are guaranteed to be visible
+    # everywhere a generated replacement may refer to the module.
+    imported = {
+        alias.asname or alias.name.split(".")[0]
+        for node in after.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
     return introduced <= imported
 
 

@@ -280,6 +280,19 @@ def _select_files(files: Sequence[str]) -> tuple[frozenset[str] | None, str | No
     return frozenset(selected), None
 
 
+
+def _invalid_selected_file(root: Path, selected: frozenset[str] | None) -> str | None:
+    """Reject missing, non-regular, or symlinked selected paths before scanning."""
+    for relative in sorted(selected or ()):
+        path = root.joinpath(*relative.split("/"))
+        try:
+            if path.resolve(strict=True) != path or not path.is_file():
+                return relative
+        except (OSError, RuntimeError):
+            return relative
+    return None
+
+
 def _write_outputs(
     result: Any, root: Path, severity: Any, content: str, output: Path | None, diff_path: Path | None
 ) -> None:
@@ -325,6 +338,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     only_files, rejected = _select_files(args.files)
     if rejected is not None:
         _error(f"--files requires repository-relative file paths: {rejected}")
+        return 2
+    invalid_file = _invalid_selected_file(root, only_files)
+    if invalid_file is not None:
+        _error(f"--files path is not a regular file within the repository: {invalid_file}")
         return 2
 
     config = ScanConfig(

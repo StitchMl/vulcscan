@@ -238,3 +238,50 @@ def test_actual_fetch_sink_still_traces_request_across_two_hops(tmp_path: Path) 
     assert len(findings) == 1
     assert findings[0].location.file == "routes.js"
     assert any(loc.file == "service.js" for loc in findings[0].related_locations)
+
+
+def test_four_hop_import_chain_traces_original_sink(tmp_path: Path) -> None:
+    _write(tmp_path, "route.js",
+        "import { first } from './first.js';\n"
+        "function handler(req) { first(req.query.cmd); }\n")
+    _write(tmp_path, "first.js",
+        "import { second } from './second.js';\n"
+        "export function first(value) { second(value); }\n")
+    _write(tmp_path, "second.js",
+        "import { third } from './third.js';\n"
+        "export function second(value) { third(value); }\n")
+    _write(tmp_path, "third.js",
+        "import { unsafe } from './sink.js';\n"
+        "export function third(value) { unsafe(value); }\n")
+    _write(tmp_path, "sink.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+    findings = _cmd_findings(tmp_path, sourced=True)
+
+    assert len(findings) == 1
+    assert findings[0].location.file == "route.js"
+    assert findings[0].source is not None
+    assert findings[0].source.file == "route.js"
+    assert any(location.file == "sink.js" for location in findings[0].related_locations)
+
+
+def test_import_chain_beyond_four_hops_is_not_guessed(tmp_path: Path) -> None:
+    _write(tmp_path, "route.js",
+        "import { entry } from './entry.js';\n"
+        "function handler(req) { entry(req.query.cmd); }\n")
+    _write(tmp_path, "entry.js",
+        "import { first } from './first.js';\n"
+        "export function entry(value) { first(value); }\n")
+    _write(tmp_path, "first.js",
+        "import { second } from './second.js';\n"
+        "export function first(value) { second(value); }\n")
+    _write(tmp_path, "second.js",
+        "import { third } from './third.js';\n"
+        "export function second(value) { third(value); }\n")
+    _write(tmp_path, "third.js",
+        "import { unsafe } from './sink.js';\n"
+        "export function third(value) { unsafe(value); }\n")
+    _write(tmp_path, "sink.js",
+        "const cp = require('child_process');\n"
+        "export function unsafe(value) { cp.exec(value); }\n")
+    assert not _cmd_findings(tmp_path, sourced=True)

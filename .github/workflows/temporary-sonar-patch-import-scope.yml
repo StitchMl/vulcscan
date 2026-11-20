@@ -1,4 +1,5 @@
 name: Temporary SonarCloud exact-main patch safety audit
+# Revalidate scoped imports and review-only shell commands
 on:
   push:
     branches: [main]

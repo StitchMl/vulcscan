@@ -169,16 +169,8 @@ def _code_block(label: str, code: str, width: int, color: bool, style: str) -> l
     return lines
 
 
-def _render_finding(number: int, finding: Finding, patch_preview: bool, color: bool, width: int) -> list[str]:
-    padded_severity = f"{finding.severity.value:<8}"
-    lines = [
-        f"{_paint(f'F-{number:03d}', 'bold', color)}  {_severity(padded_severity, color)} "
-        f"{_paint(finding.name, 'bold', color)}  {_paint(finding.cwe, 'dim', color)}",
-    ]
-    lines.extend(_wrapped(_where(finding.location), width, first="       ", rest="       "))
-    lines.extend((f"       Confidence {finding.confidence.value}  |  Rule {finding.rule_id}", ""))
-    sink_line = f"{finding.evidence[:240]}  @ {finding.location.file}:{finding.location.line}"
-    lines.append(_section("TRACE", color))
+def _trace_lines(finding: Finding, sink_line: str, width: int) -> list[str]:
+    lines: list[str] = []
     if finding.source is not None:
         source_step = next((step for step in finding.flow if step.kind == "SOURCE"), None)
         code = source_step.code[:80] if source_step else ""
@@ -192,28 +184,49 @@ def _render_finding(number: int, finding: Finding, patch_preview: bool, color: b
         lines.extend(_wrapped(f"CODE    {sink_line}", width, first="    ", rest="            "))
     for location in finding.related_locations[:3]:
         lines.extend(_wrapped(f"RELATED {_where(location)}", width, first="    ", rest="            "))
+    return lines
+
+
+def _fix_lines(finding: Finding, patch_preview: bool, color: bool, width: int) -> list[str]:
+    lines: list[str] = []
+    preferred = next((item for item in finding.remediations if item.preferred), None)
+    if preferred is None:
+        return lines
+    mode = "exact" if preferred.machine_applicable else "review"
+    lines.extend(("", _section("FIX", color, f"confidence {preferred.patch_confidence.value} | risk {preferred.patch_risk} | {mode}")))
+    lines.extend(_wrapped(preferred.title, width))
+    lines.extend(_wrapped(preferred.guidance, width))
+    if patch_preview and preferred.suggested:
+        if preferred.current:
+            lines.extend(_code_block("CURRENT", preferred.current, width, color, "red"))
+        lines.extend(_code_block("SUGGESTED", preferred.suggested, width, color, "green"))
+    if patch_preview:
+        alternatives = [item for item in finding.remediations if not item.preferred][:2]
+        if alternatives:
+            lines.append(f"    {_paint('ALTERNATIVES', 'dim', color)}")
+            for alternative in alternatives:
+                lines.extend(_wrapped(alternative.title, width, first="      - ", rest="        "))
+    return lines
+
+
+def _render_finding(number: int, finding: Finding, patch_preview: bool, color: bool, width: int) -> list[str]:
+    padded_severity = f"{finding.severity.value:<8}"
+    lines = [
+        f"{_paint(f'F-{number:03d}', 'bold', color)}  {_severity(padded_severity, color)} "
+        f"{_paint(finding.name, 'bold', color)}  {_paint(finding.cwe, 'dim', color)}",
+    ]
+    lines.extend(_wrapped(_where(finding.location), width, first="       ", rest="       "))
+    lines.extend((f"       Confidence {finding.confidence.value}  |  Rule {finding.rule_id}", ""))
+    sink_line = f"{finding.evidence[:240]}  @ {finding.location.file}:{finding.location.line}"
+    lines.append(_section("TRACE", color))
+    lines.extend(_trace_lines(finding, sink_line, width))
     lines.extend(("", _section("RISK", color)))
     lines.extend(_wrapped(finding.reason, width))
     if finding.test_vectors:
         lines.extend(("", _section("VERIFY", color, f"{min(3, len(finding.test_vectors))} probes")))
         for index, vector in enumerate(finding.test_vectors[:3], 1):
             lines.extend(_vector_lines(index, vector, width, color))
-    preferred = next((item for item in finding.remediations if item.preferred), None)
-    if preferred is not None:
-        mode = "exact" if preferred.machine_applicable else "review"
-        lines.extend(("", _section("FIX", color, f"confidence {preferred.patch_confidence.value} | risk {preferred.patch_risk} | {mode}")))
-        lines.extend(_wrapped(preferred.title, width))
-        lines.extend(_wrapped(preferred.guidance, width))
-        if patch_preview and preferred.suggested:
-            if preferred.current:
-                lines.extend(_code_block("CURRENT", preferred.current, width, color, "red"))
-            lines.extend(_code_block("SUGGESTED", preferred.suggested, width, color, "green"))
-        if patch_preview:
-            alternatives = [item for item in finding.remediations if not item.preferred][:2]
-            if alternatives:
-                lines.append(f"    {_paint('ALTERNATIVES', 'dim', color)}")
-                for alternative in alternatives:
-                    lines.extend(_wrapped(alternative.title, width, first="      - ", rest="        "))
+    lines.extend(_fix_lines(finding, patch_preview, color, width))
     reference = f"https://cwe.mitre.org/data/definitions/{finding.cwe.removeprefix('CWE-')}.html"
     lines.extend(("", _section("REFERENCE", color)))
     lines.extend(_wrapped(reference, width))
@@ -311,6 +324,18 @@ def _render_attack_surface(routes: list[dict[str, Any]], width: int, color: bool
     return [*lines, ""]
 
 
+def _warning_lines(result: ScanResult, color: bool) -> list[str]:
+    errors = sorted(result.errors, key=lambda e: (e.file.casefold(), e.phase, e.message))
+    lines = [_paint(f"SCAN WARNINGS ({len(errors)}) - not vulnerabilities; these files were not fully analyzed", "yellow", color), "-" * 66]
+    for error in errors[:10]:
+        prefix = f"{error.file}: " if error.file else ""
+        lines.append(f"  - {prefix}{error.phase}: {error.message[:160]}")
+    if len(errors) > 10:
+        lines.append(f"  - ... {len(errors) - 10} more (see --format json)")
+    lines.append("")
+    return lines
+
+
 def render_text(
     result: ScanResult,
     minimum_severity: Severity | None = None,
@@ -352,23 +377,20 @@ def render_text(
         for number, item in enumerate(vulnerabilities, 1):
             lines.extend(_render_vulnerability(number, item, color))
     if result.errors:
-        errors = sorted(result.errors, key=lambda e: (e.file.casefold(), e.phase, e.message))
-        lines.extend((_paint(f"SCAN WARNINGS ({len(errors)}) - not vulnerabilities; these files were not fully analyzed", "yellow", color), "-" * 66))
-        for error in errors[:10]:
-            prefix = f"{error.file}: " if error.file else ""
-            lines.append(f"  - {prefix}{error.phase}: {error.message[:160]}")
-        if len(errors) > 10:
-            lines.append(f"  - ... {len(errors) - 10} more (see --format json)")
-        lines.append("")
+        lines.extend(_warning_lines(result, color))
     lines.append("-" * 66)
     if findings or vulnerabilities:
-        lines.append(f"Scan complete: {len(findings)} findings ({_counts_line(findings, color)}), {high_confidence} high-confidence")
-        lines.append(f"{len(vulnerabilities)} vulnerable dependency versions, {metadata.get('files_analyzed', 0)} files scanned in {duration_text}")
-        lines.append("Priority: review CRITICAL/HIGH findings with HIGH confidence first.")
+        lines.extend((
+            f"Scan complete: {len(findings)} findings ({_counts_line(findings, color)}), {high_confidence} high-confidence",
+            f"{len(vulnerabilities)} vulnerable dependency versions, {metadata.get('files_analyzed', 0)} files scanned in {duration_text}",
+            "Priority: review CRITICAL/HIGH findings with HIGH confidence first.",
+        ))
     else:
-        lines.append("No findings detected by the enabled VulcScan rules.")
-        lines.append(f"{metadata.get('files_analyzed', 0)} files scanned, {len(result.errors)} scan warnings.")
-        lines.append("This is not proof that the code is secure: static rules cover known patterns only.")
+        lines.extend((
+            "No findings detected by the enabled VulcScan rules.",
+            f"{metadata.get('files_analyzed', 0)} files scanned, {len(result.errors)} scan warnings.",
+            "This is not proof that the code is secure: static rules cover known patterns only.",
+        ))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -446,15 +468,9 @@ def _safe_python_patch(original: str, patched: str) -> bool:
     return introduced <= imported
 
 
-def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: Severity | None = None) -> str:
-    """Build a unified diff of machine-applicable fixes without touching files.
-
-    A fix is used only when its ``current`` text occurs exactly once in the
-    lines of the patch location; anything else is skipped.
-    """
-    root_path = Path(root).resolve()
+def _group_edits(findings: list[Finding], root_path: Path) -> dict[tuple[Path, str], list[tuple[int, int, str, str]]]:
     grouped: dict[tuple[Path, str], list[tuple[int, int, str, str]]] = {}
-    for finding in _sorted_findings(result, minimum_severity):
+    for finding in findings:
         remediation = next((item for item in finding.remediations if item.machine_applicable and item.current and item.suggested is not None), None)
         if remediation is None:
             continue
@@ -465,6 +481,33 @@ def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: 
         grouped.setdefault(target, []).append(
             (location.line, location.end_line or location.line, remediation.current or "", remediation.suggested or "")
         )
+    return grouped
+
+
+def _patched_text(path: Path, original: str, edits: list[tuple[int, int, str, str]]) -> str:
+    if path.suffix.casefold() not in {".py", ".pyw"}:
+        return _apply_edits(original, edits)
+    # A malformed proposal must not discard unrelated, valid fixes.
+    # Validate each accepted candidate against the complete file.
+    accepted: list[tuple[int, int, str, str]] = []
+    patched = original
+    for edit in edits:
+        candidate = _apply_edits(original, [*accepted, edit])
+        if candidate == patched or not _safe_python_patch(original, candidate):
+            continue
+        accepted.append(edit)
+        patched = candidate
+    return patched
+
+
+def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: Severity | None = None) -> str:
+    """Build a unified diff of machine-applicable fixes without touching files.
+
+    A fix is used only when its ``current`` text occurs exactly once in the
+    lines of the patch location; anything else is skipped.
+    """
+    root_path = Path(root).resolve()
+    grouped = _group_edits(_sorted_findings(result, minimum_severity), root_path)
     chunks: list[str] = []
     for (path, relative), edits in sorted(grouped.items(), key=lambda pair: pair[0][1]):
         try:
@@ -472,19 +515,7 @@ def render_unified_diff(result: ScanResult, root: Path | str, minimum_severity: 
             original = data.decode("utf-8-sig") if not data.startswith(b"\xef\xbb\xbf") else data[3:].decode("utf-8")
         except (OSError, UnicodeError):
             continue
-        if path.suffix.casefold() in {".py", ".pyw"}:
-            # A malformed proposal must not discard unrelated, valid fixes.
-            # Validate each accepted candidate against the complete file.
-            accepted: list[tuple[int, int, str, str]] = []
-            patched = original
-            for edit in edits:
-                candidate = _apply_edits(original, [*accepted, edit])
-                if candidate == patched or not _safe_python_patch(original, candidate):
-                    continue
-                accepted.append(edit)
-                patched = candidate
-        else:
-            patched = _apply_edits(original, edits)
+        patched = _patched_text(path, original, edits)
         if patched == original:
             continue
         chunks.extend(

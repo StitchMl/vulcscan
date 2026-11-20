@@ -429,6 +429,37 @@ def analyze_python(relative_path: str, text: str) -> tuple[list[Finding], str | 
     return findings, error
 
 
+def _single_name_assignment(statement: ast.stmt) -> tuple[str, ast.expr] | None:
+    """``(name, value)`` for ``name = value`` and ``name: T = value``; None otherwise."""
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or statement.value is None:
+        return None
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        return None
+    return targets[0].id, statement.value
+
+
+def _django_route_string(module: Module, node: ast.AST) -> str | None:
+    """The literal route of a ``path``/``re_path``/``url`` call; None for other nodes."""
+    if not isinstance(node, ast.Call) or len(node.args) < 2:
+        return None
+    route_name = _canonical(module, node.func).rsplit(".", 1)[-1]
+    route = node.args[0]
+    if route_name not in {"path", "re_path", "url"} or not (isinstance(route, ast.Constant) and isinstance(route.value, str)):
+        return None
+    return route.value
+
+
+def _django_route_parameters(route: str) -> dict[str, bool]:
+    """Map URL parameter names to whether a converter already restricts them."""
+    parameters: dict[str, bool] = {}
+    for converter, name in re.findall(r"<(?:(\w+):)?([A-Za-z_]\w*)>", route):
+        parameters[name] = converter in {"int", "uuid", "slug"}
+    for name in re.findall(r"\(\?P<([A-Za-z_]\w*)>", route):
+        parameters[name] = False
+    return parameters
+
+
 class PythonProject:
     def __init__(self, sources: Iterable[tuple[str, str]]) -> None:
         self.modules: list[Module] = []
@@ -492,15 +523,13 @@ class PythonProject:
         walker = _Walker(self, module, None, None)
         environment: dict[str, Value] = {}
         for statement in _module_statements(module.tree):
-            if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or statement.value is None:
+            assigned = _single_name_assignment(statement)
+            if assigned is None:
                 continue
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-                continue
-            name = targets[0].id
+            name, expression = assigned
             if counts.get(name) != 1 or name in declared_global:
                 continue
-            value = walker.expression(statement.value, environment)
+            value = walker.expression(expression, environment)
             if not value.tainted:
                 environment[name] = value
         module.constants = environment
@@ -548,23 +577,14 @@ class PythonProject:
         """
         for route_module in self.modules:
             for node in ast.walk(route_module.tree):
-                if not isinstance(node, ast.Call) or len(node.args) < 2:
-                    continue
-                route_name = _canonical(route_module, node.func).rsplit(".", 1)[-1]
-                route = node.args[0]
-                if route_name not in {"path", "re_path", "url"} or not (
-                    isinstance(route, ast.Constant) and isinstance(route.value, str)
-                ):
+                route = _django_route_string(route_module, node)
+                if route is None:
                     continue
                 resolved = self.resolve(route_module, None, node.args[1])
                 if resolved is None:
                     continue
                 target_module, target, _ = resolved
-                parameters: dict[str, bool] = {}
-                for converter, name in re.findall(r"<(?:(\w+):)?([A-Za-z_]\w*)>", route.value):
-                    parameters[name] = converter in {"int", "uuid", "slug"}
-                for name in re.findall(r"\(\?P<([A-Za-z_]\w*)>", route.value):
-                    parameters[name] = False
+                parameters = _django_route_parameters(route)
                 if parameters:
                     key = (target_module.relative, target.qualname)
                     self.django_routes.setdefault(key, {}).update(parameters)
@@ -576,30 +596,36 @@ class PythonProject:
         the receiver as the first argument (``self.method()``).
         """
         if isinstance(func, ast.Name):
-            if function is not None:
-                nested = module.functions.get(f"{function.qualname}.{func.id}")
-                if nested is not None:
-                    return module, nested, False
-            local = module.functions.get(func.id)
-            if local is not None and local.class_name is None:
-                return module, local, False
-            target = module.imports.get(func.id)
-            return self._resolve_dotted(target, bound=False) if target else None
-        if not isinstance(func, ast.Attribute):
+            return self._resolve_name(module, function, func)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            return self._resolve_attribute(module, function, func, func.value)
+        return None
+
+    def _resolve_name(self, module: Module, function: FunctionInfo | None, func: ast.Name) -> tuple[Module, FunctionInfo, bool] | None:
+        if function is not None:
+            nested = module.functions.get(f"{function.qualname}.{func.id}")
+            if nested is not None:
+                return module, nested, False
+        local = module.functions.get(func.id)
+        if local is not None and local.class_name is None:
+            return module, local, False
+        target = module.imports.get(func.id)
+        return self._resolve_dotted(target, bound=False) if target else None
+
+    def _resolve_attribute(
+        self, module: Module, function: FunctionInfo | None, func: ast.Attribute, base: ast.Name
+    ) -> tuple[Module, FunctionInfo, bool] | None:
+        if base.id in {"self", "cls"} and function is not None and function.class_name:
+            method = module.functions.get(f"{function.class_name}.{func.attr}")
+            if method is not None:
+                return module, method, method.receives_instance
             return None
-        base = func.value
-        if isinstance(base, ast.Name):
-            if base.id in {"self", "cls"} and function is not None and function.class_name:
-                method = module.functions.get(f"{function.class_name}.{func.attr}")
-                if method is not None:
-                    return module, method, method.receives_instance
-                return None
-            if base.id in module.classes:
-                method = module.functions.get(f"{base.id}.{func.attr}")
-                return (module, method, False) if method is not None else None
-            target = module.imports.get(base.id)
-            if target:
-                return self._resolve_dotted(f"{target}.{func.attr}", bound=False)
+        if base.id in module.classes:
+            method = module.functions.get(f"{base.id}.{func.attr}")
+            return (module, method, False) if method is not None else None
+        target = module.imports.get(base.id)
+        if target:
+            return self._resolve_dotted(f"{target}.{func.attr}", bound=False)
         return None
 
     def _resolve_dotted(self, dotted: str, *, bound: bool) -> tuple[Module, FunctionInfo, bool] | None:
@@ -620,6 +646,138 @@ class PythonProject:
             return exact
         suffix = "." + dotted
         return [module for name, items in self._by_name.items() if name.endswith(suffix) for module in items]
+
+
+_Guards = tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]
+
+
+def _by_polarity(sanitized: list[tuple[str, frozenset[str]]], positive: bool) -> _Guards:
+    """Sanitizations apply when the test is true (positive) or when it is false."""
+    return (sanitized, []) if positive else ([], sanitized)
+
+
+def _special_call_value(
+    node: ast.Call,
+    name: str,
+    short: str,
+    receiver: Value,
+    arguments: list[Value],
+    keywords: dict[str, Value],
+) -> Value | None:
+    """Value of calls with dedicated semantics (sanitizers, path helpers, regex, urlparse)."""
+    if name in _SANITIZERS:
+        return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
+    if name in _NORMALIZERS:
+        return sanitize(merge(*arguments), {NORMALIZED})
+    if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX):
+        value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
+        if short in {"resolve", "absolute"}:
+            return sanitize(value, {NORMALIZED})
+        return replace_value(value, sanitized=value.sanitized - {NORMALIZED})
+    if name in {_REGEX_COMPILE, "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
+        return Value(literal=(_REGEX_COMPILE, arguments[0].literal))
+    if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
+        parsed = merge(*arguments)
+        first = _dotted(node.args[0])
+        return replace_value(parsed, derived_from=(*parsed.derived_from, *([first] if first else [])), literal=NOT_CONSTANT, prefix=None)
+    return None
+
+
+def _plain_call_value(
+    name: str,
+    short: str,
+    has_receiver: bool,
+    receiver: Value,
+    arguments: list[Value],
+    keywords: dict[str, Value],
+) -> Value:
+    """Value of a call to an unresolved function: string formatting or conservative merge."""
+    if short == "format" and receiver.constant and isinstance(receiver.literal, str):
+        return concatenate([receiver, *arguments, *keywords.values()])
+    if short == "join" and receiver.constant and isinstance(receiver.literal, str):
+        return concatenate([*arguments])
+    combined = merge(receiver, *arguments, *keywords.values())
+    pure = name in _PURE_FUNCTIONS or (short in _STRING_METHODS and has_receiver and not receiver.dynamic)
+    if pure and not combined.dynamic and not combined.tainted:
+        return replace_value(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
+    return replace_value(
+        combined,
+        dynamic=True,
+        origin=_origin(name),
+        literal=NOT_CONSTANT,
+        prefix=None,
+        composed=False,
+        sanitized=combined.sanitized - {NORMALIZED},
+    )
+
+
+def _call_source(name: str, parts: list[str]) -> tuple[int | None, str]:
+    if name in _LOCAL_CALLS:
+        return LOCAL, f"Interactive or stdin input from {name}()."
+    if name in _ENV_CALLS:
+        return ENVIRONMENT, f"Environment variable read by {name}()."
+    if parts[-1] in {"parse_args", "parse_known_args"}:
+        return LOCAL, "Command-line arguments parsed by argparse."
+    if parts[-1] in _TORNADO_INPUT and parts[0] == "self":
+        return REMOTE, f"HTTP input from {name}()."
+    return None, ""
+
+
+def _name_source(name: str, parts: list[str]) -> tuple[int | None, str, str | None]:
+    if name == "sys.argv" or name.startswith("sys.argv."):
+        return LOCAL, "Command-line argument from sys.argv.", None
+    if name == "sys.stdin":
+        return LOCAL, "Standard input.", None
+    if name == "os.environ" or name == "os.environb":
+        return ENVIRONMENT, "Environment variable from os.environ.", None
+    for index, part in enumerate(parts[:-1]):
+        attribute = parts[index + 1]
+        if (part == "request" or name.startswith("flask.request")) and attribute in _REQUEST_ATTRIBUTES:
+            description = f"HTTP {_REQUEST_ATTRIBUTES[attribute]} from {'.'.join(parts[: index + 2])}."
+            return REMOTE, description, "upload" if attribute in {"files", "FILES"} else None
+    return None, "", None
+
+
+_SinkHit = tuple[str, str, Value, Confidence, dict[str, bool]]
+
+_SQL_METHODS = frozenset({"execute", "executemany", "executescript", "query", "raw", "read_sql", "read_sql_query"})
+_HTML_RESPONSE_CALLS = frozenset({"flask.Response", "Response", "django.http.HttpResponse", "HttpResponse"})
+_HTML_OUTPUT_CALLS = _HTML_RESPONSE_CALLS | {
+    "flask.make_response",
+    "make_response",
+    "markupsafe.Markup",
+    "Markup",
+    "django.utils.safestring.mark_safe",
+    "mark_safe",
+}
+
+
+@dataclass(slots=True)
+class _SinkCall:
+    """A call expression with its evaluated receiver, arguments and keywords."""
+
+    node: ast.Call
+    name: str
+    short: str
+    receiver: Value
+    arguments: list[Value]
+    keywords: dict[str, Value]
+    env: dict[str, Value]
+
+    def argument(self, index: int, keyword: str | None = None) -> Value | None:
+        if keyword and keyword in self.keywords:
+            return self.keywords[keyword]
+        return self.arguments[index] if index < len(self.arguments) else None
+
+
+def _sql_evidence(statement: Value) -> bool:
+    if SQL_KEYWORDS.search(statement.text):
+        return True
+    return isinstance(statement.literal, str) and bool(SQL_KEYWORDS.search(statement.literal))
+
+
+def _is_database_receiver(receiver_name: str) -> bool:
+    return bool(_DB_RECEIVER.search(receiver_name)) or receiver_name.startswith(("pandas", "sqlite3", "psycopg"))
 
 
 class _Walker:
@@ -653,86 +811,107 @@ class _Walker:
         return env
 
     def statement(self, statement: ast.stmt, env: dict[str, Value]) -> dict[str, Value]:
-        if isinstance(statement, ast.Assign):
+        for kinds, handler in self._STATEMENT_HANDLERS:
+            if isinstance(statement, kinds):
+                return handler(self, statement, env)
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.expr):
+                self.expression(child, env)
+        return env
+
+    def _stmt_assign(self, statement: ast.Assign, env: dict[str, Value]) -> dict[str, Value]:
+        value = self.expression(statement.value, env)
+        for target in statement.targets:
+            self.bind(target, self._assigned(value, statement), env)
+        return env
+
+    def _stmt_annassign(self, statement: ast.AnnAssign, env: dict[str, Value]) -> dict[str, Value]:
+        if statement.value is not None:
             value = self.expression(statement.value, env)
-            for target in statement.targets:
-                self.bind(target, self._assigned(value, statement), env)
-        elif isinstance(statement, ast.AnnAssign):
-            if statement.value is not None:
-                value = self.expression(statement.value, env)
-                self.bind(statement.target, self._assigned(value, statement), env)
-        elif isinstance(statement, ast.AugAssign):
-            current = self.expression(statement.target, env)
-            added = self.expression(statement.value, env)
-            combined = concatenate([current, added]) if isinstance(statement.op, (ast.Add, ast.Mod)) else merge(current, added)
-            self.bind(statement.target, self._assigned(combined, statement), env)
-        elif isinstance(statement, ast.Expr):
-            self.expression(statement.value, env)
-            self._apply_raising_check(statement.value, env)
-        elif isinstance(statement, ast.Return):
-            value = self.expression(statement.value, env) if statement.value else Value()
-            if self.summary is not None:
-                previous = self.summary.returned
-                self.summary.returned = value if previous is None else merge(previous, value)
-        elif isinstance(statement, ast.If):
-            env = self._if(statement, env)
-        elif isinstance(statement, (ast.For, ast.AsyncFor)):
-            iterable = self.expression(statement.iter, env)
-            loop_env = dict(env)
-            for _ in range(2):
-                self.bind(statement.target, iterable, loop_env)
-                body_env = self.run(statement.body, loop_env)
-                loop_env = _merge_environments(loop_env, body_env)
-            env = self.run(statement.orelse, _merge_environments(env, loop_env))
-        elif isinstance(statement, ast.While):
-            self.expression(statement.test, env)
-            loop_env = dict(env)
-            for _ in range(2):
-                loop_env = _merge_environments(loop_env, self.run(statement.body, loop_env))
-            env = self.run(statement.orelse, _merge_environments(env, loop_env))
-        elif isinstance(statement, (ast.With, ast.AsyncWith)):
-            for item in statement.items:
-                value = self.expression(item.context_expr, env)
-                if item.optional_vars is not None:
-                    self.bind(item.optional_vars, value, env)
-            env = self.run(statement.body, env)
-        elif isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            body_env = self.run(statement.body, env)
-            handler_start = _merge_environments(env, body_env)
-            outcomes = [] if _terminates(statement.body) else [self.run(statement.orelse, body_env)]
-            for handler in statement.handlers:
-                handler_env = dict(handler_start)
-                if handler.name:
-                    handler_env[handler.name] = UNKNOWN
-                result = self.run(handler.body, handler_env)
-                if not _terminates(handler.body):
-                    outcomes.append(result)
-            env = _merge_all(outcomes) if outcomes else handler_start
-            env = self.run(statement.finalbody, env)
-        elif isinstance(statement, ast.Match):
-            subject = self.expression(statement.subject, env)
-            outcomes = []
-            for case in statement.cases:
-                case_env = dict(env)
-                for name in _pattern_names(case.pattern):
-                    case_env[name] = subject
-                result = self.run(case.body, case_env)
-                if not _terminates(case.body):
-                    outcomes.append(result)
-            env = _merge_all([env, *outcomes])
-        elif isinstance(statement, ast.Delete):
-            for target in statement.targets:
-                if isinstance(target, ast.Name):
-                    env.pop(target.id, None)
-        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            env.pop(statement.name, None)
-        elif isinstance(statement, (ast.Import, ast.ImportFrom)):
-            for alias in statement.names:
-                env.pop((alias.asname or alias.name).split(".")[0], None)
-        else:
-            for child in ast.iter_child_nodes(statement):
-                if isinstance(child, ast.expr):
-                    self.expression(child, env)
+            self.bind(statement.target, self._assigned(value, statement), env)
+        return env
+
+    def _stmt_augassign(self, statement: ast.AugAssign, env: dict[str, Value]) -> dict[str, Value]:
+        current = self.expression(statement.target, env)
+        added = self.expression(statement.value, env)
+        combined = concatenate([current, added]) if isinstance(statement.op, (ast.Add, ast.Mod)) else merge(current, added)
+        self.bind(statement.target, self._assigned(combined, statement), env)
+        return env
+
+    def _stmt_expr(self, statement: ast.Expr, env: dict[str, Value]) -> dict[str, Value]:
+        self.expression(statement.value, env)
+        self._apply_raising_check(statement.value, env)
+        return env
+
+    def _stmt_return(self, statement: ast.Return, env: dict[str, Value]) -> dict[str, Value]:
+        value = self.expression(statement.value, env) if statement.value else Value()
+        if self.summary is not None:
+            previous = self.summary.returned
+            self.summary.returned = value if previous is None else merge(previous, value)
+        return env
+
+    def _stmt_for(self, statement: ast.For | ast.AsyncFor, env: dict[str, Value]) -> dict[str, Value]:
+        iterable = self.expression(statement.iter, env)
+        loop_env = dict(env)
+        for _ in range(2):
+            self.bind(statement.target, iterable, loop_env)
+            body_env = self.run(statement.body, loop_env)
+            loop_env = _merge_environments(loop_env, body_env)
+        return self.run(statement.orelse, _merge_environments(env, loop_env))
+
+    def _stmt_while(self, statement: ast.While, env: dict[str, Value]) -> dict[str, Value]:
+        self.expression(statement.test, env)
+        loop_env = dict(env)
+        for _ in range(2):
+            loop_env = _merge_environments(loop_env, self.run(statement.body, loop_env))
+        return self.run(statement.orelse, _merge_environments(env, loop_env))
+
+    def _stmt_with(self, statement: ast.With | ast.AsyncWith, env: dict[str, Value]) -> dict[str, Value]:
+        for item in statement.items:
+            value = self.expression(item.context_expr, env)
+            if item.optional_vars is not None:
+                self.bind(item.optional_vars, value, env)
+        return self.run(statement.body, env)
+
+    def _stmt_try(self, statement: ast.Try, env: dict[str, Value]) -> dict[str, Value]:
+        body_env = self.run(statement.body, env)
+        handler_start = _merge_environments(env, body_env)
+        outcomes = [] if _terminates(statement.body) else [self.run(statement.orelse, body_env)]
+        for handler in statement.handlers:
+            handler_env = dict(handler_start)
+            if handler.name:
+                handler_env[handler.name] = UNKNOWN
+            result = self.run(handler.body, handler_env)
+            if not _terminates(handler.body):
+                outcomes.append(result)
+        env = _merge_all(outcomes) if outcomes else handler_start
+        return self.run(statement.finalbody, env)
+
+    def _stmt_match(self, statement: ast.Match, env: dict[str, Value]) -> dict[str, Value]:
+        subject = self.expression(statement.subject, env)
+        outcomes = []
+        for case in statement.cases:
+            case_env = dict(env)
+            for name in _pattern_names(case.pattern):
+                case_env[name] = subject
+            result = self.run(case.body, case_env)
+            if not _terminates(case.body):
+                outcomes.append(result)
+        return _merge_all([env, *outcomes])
+
+    def _stmt_delete(self, statement: ast.Delete, env: dict[str, Value]) -> dict[str, Value]:
+        for target in statement.targets:
+            if isinstance(target, ast.Name):
+                env.pop(target.id, None)
+        return env
+
+    def _stmt_definition(self, statement: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, env: dict[str, Value]) -> dict[str, Value]:
+        env.pop(statement.name, None)
+        return env
+
+    def _stmt_import(self, statement: ast.Import | ast.ImportFrom, env: dict[str, Value]) -> dict[str, Value]:
+        for alias in statement.names:
+            env.pop((alias.asname or alias.name).split(".")[0], None)
         return env
 
     def _if(self, statement: ast.If, env: dict[str, Value]) -> dict[str, Value]:
@@ -748,6 +927,23 @@ class _Walker:
         if not _terminates(statement.orelse):
             outcomes.append(else_result)
         return _merge_all(outcomes) if outcomes else _merge_environments(body_result, else_result)
+
+    _STATEMENT_HANDLERS = (
+        (ast.Assign, _stmt_assign),
+        (ast.AnnAssign, _stmt_annassign),
+        (ast.AugAssign, _stmt_augassign),
+        (ast.Expr, _stmt_expr),
+        (ast.Return, _stmt_return),
+        (ast.If, _if),
+        ((ast.For, ast.AsyncFor), _stmt_for),
+        (ast.While, _stmt_while),
+        ((ast.With, ast.AsyncWith), _stmt_with),
+        ((ast.Try, getattr(ast, "TryStar", ast.Try)), _stmt_try),
+        (ast.Match, _stmt_match),
+        (ast.Delete, _stmt_delete),
+        ((ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef), _stmt_definition),
+        ((ast.Import, ast.ImportFrom), _stmt_import),
+    )
 
     def _assigned(self, value: Value, node: ast.AST) -> Value:
         step = FlowStep("PROPAGATION", self.location(node), self.code(node), "Value is assigned.")
@@ -770,7 +966,7 @@ class _Walker:
 
     # Guards ---------------------------------------------------------------------
 
-    def _guard(self, test: ast.expr, env: dict[str, Value]) -> tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]:
+    def _guard(self, test: ast.expr, env: dict[str, Value]) -> _Guards:
         """Return sanitizations implied when ``test`` is true and when it is false."""
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
             when_true, when_false = self._guard(test.operand, env)
@@ -781,49 +977,74 @@ class _Walker:
                 return [item for part in parts for item in part[0]], []
             return [], [item for part in parts for item in part[1]]
         if isinstance(test, ast.Compare) and len(test.ops) == 1:
-            operator = test.ops[0]
-            left, right = test.left, test.comparators[0]
-            if isinstance(operator, (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None:
-                inner_true, inner_false = self._guard(left, env)
-                # "x is None" is true exactly when x is falsy for match objects.
-                return (inner_false, inner_true) if isinstance(operator, ast.Is) else (inner_true, inner_false)
-            if isinstance(operator, (ast.Eq, ast.NotEq)):
-                subject = left if isinstance(right, ast.Constant) else right if isinstance(left, ast.Constant) else None
-                other = right if subject is left else left
-                if subject is not None and isinstance(other, ast.Constant) and isinstance(other.value, str):
-                    sanitized = [(name, ALL_SINKS) for name in self._guarded_names(subject, env)]
-                    sanitized += self._host_guard(subject, env)
-                    return (sanitized, []) if isinstance(operator, ast.Eq) else ([], sanitized)
-            if isinstance(operator, (ast.In, ast.NotIn)):
-                names = self._guarded_names(left, env)
-                if names and self._is_allowlist(right, env):
-                    sanitized = [(name, ALL_SINKS) for name in names] + self._host_guard(left, env)
-                    return (sanitized, []) if isinstance(operator, ast.In) else ([], sanitized)
-                if isinstance(right, ast.Attribute) and right.attr == "parents":
-                    names = self._guarded_names(right.value, env)
-                    if names and NORMALIZED in self.expression(right.value, env).sanitized:
-                        sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
-                        return (sanitized, []) if isinstance(operator, ast.In) else ([], sanitized)
-            if isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left, right):
-                candidate = _commonpath_candidate(left)
-                if candidate is not None and NORMALIZED in self.expression(candidate, env).sanitized:
-                    names = self._guarded_names(candidate, env)
-                    sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
-                    return (sanitized, []) if isinstance(operator, ast.Eq) else ([], sanitized)
+            return self._guard_compare(test, env)
         if isinstance(test, ast.Call):
             return self._guard_call(test, env), []
         return [], []
 
+    def _guard_compare(self, test: ast.Compare, env: dict[str, Value]) -> _Guards:
+        for check in (self._guard_none, self._guard_literal, self._guard_membership, self._guard_commonpath):
+            result = check(test, env)
+            if result is not None:
+                return result
+        return [], []
+
+    def _guard_none(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
+        if not (isinstance(operator, (ast.Is, ast.IsNot)) and isinstance(right, ast.Constant) and right.value is None):
+            return None
+        inner_true, inner_false = self._guard(left, env)
+        # "x is None" is true exactly when x is falsy for match objects.
+        return (inner_false, inner_true) if isinstance(operator, ast.Is) else (inner_true, inner_false)
+
+    def _guard_literal(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
+        if not isinstance(operator, (ast.Eq, ast.NotEq)):
+            return None
+        subject = None
+        if isinstance(right, ast.Constant):
+            subject = left
+        elif isinstance(left, ast.Constant):
+            subject = right
+        other = right if subject is left else left
+        if subject is None or not (isinstance(other, ast.Constant) and isinstance(other.value, str)):
+            return None
+        sanitized = [(name, ALL_SINKS) for name in self._guarded_names(subject, env)]
+        sanitized += self._host_guard(subject, env)
+        return _by_polarity(sanitized, isinstance(operator, ast.Eq))
+
+    def _guard_membership(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left, right = test.ops[0], test.left, test.comparators[0]
+        if not isinstance(operator, (ast.In, ast.NotIn)):
+            return None
+        positive = isinstance(operator, ast.In)
+        names = self._guarded_names(left, env)
+        if names and self._is_allowlist(right, env):
+            sanitized = [(name, ALL_SINKS) for name in names] + self._host_guard(left, env)
+            return _by_polarity(sanitized, positive)
+        if isinstance(right, ast.Attribute) and right.attr == "parents":
+            names = self._guarded_names(right.value, env)
+            if names and NORMALIZED in self.expression(right.value, env).sanitized:
+                return _by_polarity([(name, frozenset({FILESYSTEM})) for name in names], positive)
+        return None
+
+    def _guard_commonpath(self, test: ast.Compare, env: dict[str, Value]) -> _Guards | None:
+        operator, left = test.ops[0], test.left
+        if not (isinstance(operator, (ast.Eq, ast.NotEq)) and _is_commonpath_check(left)):
+            return None
+        candidate = _commonpath_candidate(left)
+        if candidate is None or NORMALIZED not in self.expression(candidate, env).sanitized:
+            return None
+        names = self._guarded_names(candidate, env)
+        sanitized = [(name, frozenset({FILESYSTEM})) for name in names]
+        return _by_polarity(sanitized, isinstance(operator, ast.Eq))
+
     def _guard_call(self, call: ast.Call, env: dict[str, Value]) -> list[tuple[str, frozenset[str]]]:
         name = self.canonical(call.func)
         short = _short_name(call, name)
-        if isinstance(call.func, ast.Attribute) and short in _CHARACTER_PREDICATES and not call.args:
-            return [(item, ALL_SINKS) for item in self._guarded_names(call.func.value, env)]
-        if isinstance(call.func, ast.Attribute) and short in {"is_relative_to", "startswith"} and call.args:
-            receiver = call.func.value
-            if NORMALIZED in self.expression(receiver, env).sanitized:
-                return [(item, frozenset({FILESYSTEM})) for item in self._guarded_names(receiver, env)]
-            return []
+        method = self._guard_method_call(call, short, env)
+        if method is not None:
+            return method
         if name in _REDIRECT_GUARDS or short in {"url_has_allowed_host_and_scheme", "is_safe_url"}:
             target = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "url"), None)
             if target is not None:
@@ -835,6 +1056,18 @@ class _Walker:
             if categories:
                 return [(item, categories) for item in self._guarded_names(subject, env)]
         return []
+
+    def _guard_method_call(self, call: ast.Call, short: str, env: dict[str, Value]) -> list[tuple[str, frozenset[str]]] | None:
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        if short in _CHARACTER_PREDICATES and not call.args:
+            return [(item, ALL_SINKS) for item in self._guarded_names(call.func.value, env)]
+        if short in {"is_relative_to", "startswith"} and call.args:
+            receiver = call.func.value
+            if NORMALIZED in self.expression(receiver, env).sanitized:
+                return [(item, frozenset({FILESYSTEM})) for item in self._guarded_names(receiver, env)]
+            return []
+        return None
 
     def _regex_check(self, call: ast.Call, env: dict[str, Value]) -> tuple[str | None, ast.expr | None, bool]:
         name = self.canonical(call.func)
@@ -909,80 +1142,108 @@ class _Walker:
             return constant(node.value)
         if isinstance(node, ast.Name):
             return env.get(node.id, UNKNOWN)
-        if isinstance(node, ast.Attribute):
-            key = _strict_dotted(node)
-            if key and key in env:
-                return env[key]
-            base = self.expression(node.value, env)
-            if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith(_PATHLIB_MODULE_PREFIX):
-                return sanitize(replace_value(base, origin=None), {FILESYSTEM})
-            if base.constant:
-                return Value(dynamic=False) if not base.tainted else base
-            return replace_value(base, literal=NOT_CONSTANT, prefix=None, composed=False)
-        if isinstance(node, ast.Subscript):
-            container = self.expression(node.value, env)
-            index = self.expression(node.slice, env)
-            return replace_value(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
-        if isinstance(node, ast.Call):
-            return self._call(node, env)
-        if isinstance(node, ast.JoinedStr):
-            return concatenate([self.expression(value, env) for value in node.values])
-        if isinstance(node, ast.FormattedValue):
-            return self.expression(node.value, env)
-        if isinstance(node, ast.BinOp):
-            left = self.expression(node.left, env)
-            right = self.expression(node.right, env)
-            if isinstance(node.op, ast.Add):
-                return concatenate([left, right])
-            if isinstance(node.op, ast.Mod) and (isinstance(left.literal, str) or left.prefix is not None):
-                return concatenate([left, right])
-            if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith(_PATHLIB_MODULE_PREFIX):
-                joined = merge(left, right)
-                return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
-            merged = merge(left, right)
-            if left.constant and right.constant:
-                return merged
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            values = [self.expression(item, env) for item in node.elts]
-            merged = merge(*values) if values else Value()
-            if values and all(item.constant for item in values):
-                literal = tuple(item.literal for item in values)
-                return replace_value(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, ast.Dict):
-            values = [self.expression(item, env) for item in [*node.keys, *node.values] if item is not None]
-            merged = merge(*values) if values else Value()
-            keys = [self.expression(item, env) for item in node.keys if item is not None]
-            if keys and all(item.constant for item in keys) and len(keys) == len(node.keys):
-                return replace_value(merged, literal=tuple(item.literal for item in keys), prefix=None)
-            return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
-        if isinstance(node, ast.BoolOp):
-            return replace_value(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
-        if isinstance(node, ast.IfExp):
-            self.expression(node.test, env)
-            when_true, when_false = self._guard(node.test, env)
-            body = self.expression(node.body, self._apply_guard(dict(env), when_true))
-            orelse = self.expression(node.orelse, self._apply_guard(dict(env), when_false))
-            return merge(body, orelse)
-        if isinstance(node, ast.NamedExpr):
-            value = self.expression(node.value, env)
-            self.bind(node.target, value, env)
-            return value
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
-            return self._comprehension(node, env)
-        if isinstance(node, (ast.Compare, ast.UnaryOp)):
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.expr):
-                    self.expression(child, env)
-            return Value(dynamic=True, sanitized=ALL_SINKS)
         if isinstance(node, ast.Lambda):
             return UNKNOWN
-        if isinstance(node, (ast.Await, ast.Starred, ast.Yield, ast.YieldFrom)):
-            inner = getattr(node, "value", None)
-            return self.expression(inner, env) if inner is not None else UNKNOWN
+        for kinds, handler in self._EXPRESSION_HANDLERS:
+            if isinstance(node, kinds):
+                return handler(self, node, env)
         values = [self.expression(child, env) for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
         return merge(*values) if values else UNKNOWN
+
+    def _expr_attribute(self, node: ast.Attribute, env: dict[str, Value]) -> Value:
+        key = _strict_dotted(node)
+        if key and key in env:
+            return env[key]
+        base = self.expression(node.value, env)
+        if node.attr in {"name", "stem", "suffix"} and base.origin and base.origin.startswith(_PATHLIB_MODULE_PREFIX):
+            return sanitize(replace_value(base, origin=None), {FILESYSTEM})
+        if base.constant:
+            return Value(dynamic=False) if not base.tainted else base
+        return replace_value(base, literal=NOT_CONSTANT, prefix=None, composed=False)
+
+    def _expr_subscript(self, node: ast.Subscript, env: dict[str, Value]) -> Value:
+        container = self.expression(node.value, env)
+        index = self.expression(node.slice, env)
+        return replace_value(merge(container, index), literal=NOT_CONSTANT, prefix=None, origin=container.origin)
+
+    def _expr_joined(self, node: ast.JoinedStr, env: dict[str, Value]) -> Value:
+        return concatenate([self.expression(value, env) for value in node.values])
+
+    def _expr_formatted(self, node: ast.FormattedValue, env: dict[str, Value]) -> Value:
+        return self.expression(node.value, env)
+
+    def _expr_binop(self, node: ast.BinOp, env: dict[str, Value]) -> Value:
+        left = self.expression(node.left, env)
+        right = self.expression(node.right, env)
+        if isinstance(node.op, ast.Add):
+            return concatenate([left, right])
+        if isinstance(node.op, ast.Mod) and (isinstance(left.literal, str) or left.prefix is not None):
+            return concatenate([left, right])
+        if isinstance(node.op, ast.Div) and left.origin and left.origin.startswith(_PATHLIB_MODULE_PREFIX):
+            joined = merge(left, right)
+            return replace_value(joined, origin=left.origin, literal=NOT_CONSTANT, prefix=None, sanitized=joined.sanitized - {NORMALIZED})
+        merged = merge(left, right)
+        if left.constant and right.constant:
+            return merged
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_collection(self, node: ast.Tuple | ast.List | ast.Set, env: dict[str, Value]) -> Value:
+        values = [self.expression(item, env) for item in node.elts]
+        merged = merge(*values) if values else Value()
+        if values and all(item.constant for item in values):
+            literal = tuple(item.literal for item in values)
+            return replace_value(merged, literal=frozenset(literal) if isinstance(node, ast.Set) else literal)
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_dict(self, node: ast.Dict, env: dict[str, Value]) -> Value:
+        values = [self.expression(item, env) for item in [*node.keys, *node.values] if item is not None]
+        merged = merge(*values) if values else Value()
+        keys = [self.expression(item, env) for item in node.keys if item is not None]
+        if keys and all(item.constant for item in keys) and len(keys) == len(node.keys):
+            return replace_value(merged, literal=tuple(item.literal for item in keys), prefix=None)
+        return replace_value(merged, literal=NOT_CONSTANT, prefix=None)
+
+    def _expr_boolop(self, node: ast.BoolOp, env: dict[str, Value]) -> Value:
+        return replace_value(merge(*(self.expression(item, env) for item in node.values)), literal=NOT_CONSTANT)
+
+    def _expr_ifexp(self, node: ast.IfExp, env: dict[str, Value]) -> Value:
+        self.expression(node.test, env)
+        when_true, when_false = self._guard(node.test, env)
+        body = self.expression(node.body, self._apply_guard(dict(env), when_true))
+        orelse = self.expression(node.orelse, self._apply_guard(dict(env), when_false))
+        return merge(body, orelse)
+
+    def _expr_named(self, node: ast.NamedExpr, env: dict[str, Value]) -> Value:
+        value = self.expression(node.value, env)
+        self.bind(node.target, value, env)
+        return value
+
+    def _expr_opaque(self, node: ast.Compare | ast.UnaryOp, env: dict[str, Value]) -> Value:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                self.expression(child, env)
+        return Value(dynamic=True, sanitized=ALL_SINKS)
+
+    def _expr_wrapper(self, node: ast.Await | ast.Starred | ast.Yield | ast.YieldFrom, env: dict[str, Value]) -> Value:
+        inner = getattr(node, "value", None)
+        return self.expression(inner, env) if inner is not None else UNKNOWN
+
+    _EXPRESSION_HANDLERS = (
+        (ast.Attribute, _expr_attribute),
+        (ast.Subscript, _expr_subscript),
+        (ast.Call, lambda self, node, env: self._call(node, env)),
+        (ast.JoinedStr, _expr_joined),
+        (ast.FormattedValue, _expr_formatted),
+        (ast.BinOp, _expr_binop),
+        ((ast.Tuple, ast.List, ast.Set), _expr_collection),
+        (ast.Dict, _expr_dict),
+        (ast.BoolOp, _expr_boolop),
+        (ast.IfExp, _expr_ifexp),
+        (ast.NamedExpr, _expr_named),
+        ((ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp), lambda self, node, env: self._comprehension(node, env)),
+        ((ast.Compare, ast.UnaryOp), _expr_opaque),
+        ((ast.Await, ast.Starred, ast.Yield, ast.YieldFrom), _expr_wrapper),
+    )
 
     def _comprehension(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp, env: dict[str, Value]) -> Value:
         inner = dict(env)
@@ -1006,33 +1267,13 @@ class _Walker:
             return None
         name = _canonical_text(self.module, raw)
         parts = name.split(".")
-        trust = None
+        trust: int | None = None
         description = ""
         origin = None
         if isinstance(node, ast.Call):
-            if name in _LOCAL_CALLS:
-                trust, description = LOCAL, f"Interactive or stdin input from {name}()."
-            elif name in _ENV_CALLS:
-                trust, description = ENVIRONMENT, f"Environment variable read by {name}()."
-            elif parts[-1] in {"parse_args", "parse_known_args"}:
-                trust, description = LOCAL, "Command-line arguments parsed by argparse."
-            elif parts[-1] in _TORNADO_INPUT and parts[0] == "self":
-                trust, description = REMOTE, f"HTTP input from {name}()."
+            trust, description = _call_source(name, parts)
         if trust is None:
-            if name == "sys.argv" or name.startswith("sys.argv."):
-                trust, description = LOCAL, "Command-line argument from sys.argv."
-            elif name == "sys.stdin":
-                trust, description = LOCAL, "Standard input."
-            elif name == "os.environ" or name == "os.environb":
-                trust, description = ENVIRONMENT, "Environment variable from os.environ."
-            else:
-                for index, part in enumerate(parts[:-1]):
-                    attribute = parts[index + 1]
-                    if (part == "request" or name.startswith("flask.request")) and attribute in _REQUEST_ATTRIBUTES:
-                        trust = REMOTE
-                        description = f"HTTP {_REQUEST_ATTRIBUTES[attribute]} from {'.'.join(parts[: index + 2])}."
-                        origin = "upload" if attribute in {"files", "FILES"} else None
-                        break
+            trust, description, origin = _name_source(name, parts)
         if trust is None:
             return None
         # Only the outermost matching node becomes the SOURCE step; deeper
@@ -1044,9 +1285,7 @@ class _Walker:
         name = self.canonical(node.func)
         short = _short_name(node, name)
         receiver_node = node.func.value if isinstance(node.func, ast.Attribute) else None
-        receiver = self.expression(receiver_node, env) if receiver_node is not None else Value()
-        if receiver_node is not None and _is_module_reference(receiver_node, self.module, env):
-            receiver = Value()
+        receiver = self._call_receiver(receiver_node, env)
         arguments = [self.expression(item, env) for item in node.args]
         keywords = {item.arg: self.expression(item.value, env) for item in node.keywords if item.arg}
         for item in node.keywords:
@@ -1059,41 +1298,18 @@ class _Walker:
             self._call_summary_sinks(node, resolved, actuals)
         self._check_sinks(node, name, receiver, arguments, keywords, env)
 
-        if name in _SANITIZERS:
-            return sanitize(replace_value(merge(*arguments, *keywords.values()), origin=None, composed=False), _SANITIZERS[name])
-        if name in _NORMALIZERS:
-            return sanitize(merge(*arguments), {NORMALIZED})
-        if short in _PATH_RETURNING_METHODS and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX):
-            value = replace_value(merge(receiver, *arguments), origin=receiver.origin, literal=NOT_CONSTANT)
-            if short == "resolve" or short == "absolute":
-                value = sanitize(value, {NORMALIZED})
-            else:
-                value = replace_value(value, sanitized=value.sanitized - {NORMALIZED})
-            return value
-        if name in {_REGEX_COMPILE, "regex.compile"} and arguments and isinstance(arguments[0].literal, str):
-            return Value(literal=(_REGEX_COMPILE, arguments[0].literal))
-        if name in {"urllib.parse.urlparse", "urllib.parse.urlsplit"} and node.args:
-            parsed = merge(*arguments)
-            return replace_value(parsed, derived_from=(*parsed.derived_from, *([_dotted(node.args[0])] if _dotted(node.args[0]) else [])), literal=NOT_CONSTANT, prefix=None)
+        special = _special_call_value(node, name, short, receiver, arguments, keywords)
+        if special is not None:
+            return special
         if resolved is not None:
             return self._summary_return(resolved, actuals or {})
-        if short == "format" and receiver.constant and isinstance(receiver.literal, str):
-            return concatenate([receiver, *arguments, *keywords.values()])
-        if short == "join" and receiver.constant and isinstance(receiver.literal, str):
-            return concatenate([*arguments])
-        combined = merge(receiver, *arguments, *keywords.values())
-        pure = name in _PURE_FUNCTIONS or (short in _STRING_METHODS and receiver_node is not None and not receiver.dynamic)
-        if pure and not combined.dynamic and not combined.tainted:
-            return replace_value(combined, origin=_origin(name), literal=NOT_CONSTANT, prefix=None)
-        return replace_value(
-            combined,
-            dynamic=True,
-            origin=_origin(name),
-            literal=NOT_CONSTANT,
-            prefix=None,
-            composed=False,
-            sanitized=combined.sanitized - {NORMALIZED},
-        )
+        return _plain_call_value(name, short, receiver_node is not None, receiver, arguments, keywords)
+
+    def _call_receiver(self, receiver_node: ast.expr | None, env: dict[str, Value]) -> Value:
+        if receiver_node is None:
+            return Value()
+        receiver = self.expression(receiver_node, env)
+        return Value() if _is_module_reference(receiver_node, self.module, env) else receiver
 
     def _actuals(
         self,
@@ -1142,43 +1358,46 @@ class _Walker:
             f"Value is passed to {info.qualname}().",
         )
         for template in summary.sinks:
-            relevant = [actuals[index] for index in sorted(template.value.params) if index in actuals]
-            if not relevant:
-                continue
-            actual = merge(*relevant)
-            category = rule(template.rule_id).category
-            if category in template.value.sanitized:
-                continue
-            propagated = replace_value(
-                actual,
-                flow=unique_steps((*actual.flow, call_step, *template.value.flow)),
-                sanitized=actual.sanitized | template.value.sanitized,
-            )
-            if self.summary is not None:
-                if propagated.params:
-                    self._add_template(template.rule_id, template.node, template.sink, propagated, template.certainty, template.module, template.function, template.sql_evidence)
-                continue
-            if self.findings is None:
-                continue
-            confidence = judge(
-                category,
-                propagated,
-                certainty=template.certainty,
-                unknown_origin=True,
-                sql_evidence=template.sql_evidence or bool(SQL_KEYWORDS.search(actual.text)),
-            )
-            if confidence is None or not (propagated.sources or propagated.composed):
-                continue
-            self._report(
-                template.rule_id,
-                template.node,
-                template.sink,
-                propagated,
-                confidence,
-                module=template.module,
-                function=template.function,
-                related=[self.location(node)],
-            )
+            self._propagate_template(node, template, actuals, call_step)
+
+    def _propagate_template(self, node: ast.Call, template: SinkTemplate, actuals: dict[int, Value], call_step: FlowStep) -> None:
+        relevant = [actuals[index] for index in sorted(template.value.params) if index in actuals]
+        if not relevant:
+            return
+        actual = merge(*relevant)
+        category = rule(template.rule_id).category
+        if category in template.value.sanitized:
+            return
+        propagated = replace_value(
+            actual,
+            flow=unique_steps((*actual.flow, call_step, *template.value.flow)),
+            sanitized=actual.sanitized | template.value.sanitized,
+        )
+        if self.summary is not None:
+            if propagated.params:
+                self._add_template(template.rule_id, template.node, template.sink, propagated, template.certainty, template.module, template.function, template.sql_evidence)
+            return
+        if self.findings is None:
+            return
+        confidence = judge(
+            category,
+            propagated,
+            certainty=template.certainty,
+            unknown_origin=True,
+            sql_evidence=template.sql_evidence or bool(SQL_KEYWORDS.search(actual.text)),
+        )
+        if confidence is None or not (propagated.sources or propagated.composed):
+            return
+        self._report(
+            template.rule_id,
+            template.node,
+            template.sink,
+            propagated,
+            confidence,
+            module=template.module,
+            function=template.function,
+            related=[self.location(node)],
+        )
 
     # Sinks ------------------------------------------------------------------------
 
@@ -1194,155 +1413,196 @@ class _Walker:
         for rule_id, sink, value, certainty, options in self._sinks(node, name, receiver, arguments, keywords, env):
             self._sink_reached(node, rule_id, sink, value, certainty, **options)
 
-    def _sinks(self, node: ast.Call, name: str, receiver: Value, arguments: list[Value], keywords: dict[str, Value], env: dict[str, Value]):
-        short = _short_name(node, name)
+    def _sinks(
+        self,
+        node: ast.Call,
+        name: str,
+        receiver: Value,
+        arguments: list[Value],
+        keywords: dict[str, Value],
+        env: dict[str, Value],
+    ) -> list[_SinkHit]:
+        call = _SinkCall(node, name, _short_name(node, name), receiver, arguments, keywords, env)
+        for check in self._SINK_CHECKS:
+            hits = check(self, call)
+            if hits is not None:
+                return hits
+        return []
 
-        def argument(index: int, keyword: str | None = None) -> Value | None:
-            if keyword and keyword in keywords:
-                return keywords[keyword]
-            return arguments[index] if index < len(arguments) else None
+    # Each check returns None when the call is not its kind of sink; the first
+    # check that matches decides the sinks of the call.
 
-        # Command execution.
-        if name in _SHELL_STRING_CALLS:
-            command = argument(0, "cmd")
-            if command is not None:
-                yield "PY-CMD-001", name, command, Confidence.HIGH, {"unknown_origin": True}
-            return
-        if name in _SUBPROCESS_CALLS:
-            command = argument(0, "args")
-            if command is None:
-                return
-            shell = keywords.get("shell")
-            if shell is not None and shell.constant and shell.literal is True:
-                yield "PY-CMD-001", f"{name}(shell=True)", command, Confidence.HIGH, {"unknown_origin": True}
-            elif shell is not None and not shell.constant:
-                yield "PY-CMD-001", f"{name}(shell=<dynamic>)", command, Confidence.MEDIUM, {"unknown_origin": False}
-            else:
-                program = self._program_value(node.args[0] if node.args else None, command, env)
-                if program is not None:
-                    yield "PY-CMD-001", f"{name} program path", program, Confidence.HIGH, {"unknown_origin": False}
-            return
-        if name in _PROGRAM_CALLS:
-            program = argument(0)
-            if program is not None:
-                yield "PY-CMD-001", f"{name} program path", program, Confidence.HIGH, {"unknown_origin": False}
-            return
-        # Code execution.
-        if name in _CODE_CALLS:
-            code = argument(0)
-            if code is not None:
-                yield "PY-CODE-001", name, code, Confidence.HIGH, {"unknown_origin": True}
-            return
-        if name in {"compile", "builtins.compile"} and len(arguments) >= 3:
-            mode = argument(2, "mode")
-            if mode is not None and mode.literal in {"exec", "eval", "single"}:
-                yield "PY-CODE-001", name, arguments[0], Confidence.HIGH, {"unknown_origin": True}
-            return
-        # SQL.
-        if short in {"execute", "executemany", "executescript", "query", "raw", "read_sql", "read_sql_query"} and isinstance(node.func, ast.Attribute):
-            if node.args and _is_bound_orm_expression(node.args[0]):
-                return
-            statement = argument(0, "sql")
-            if statement is None:
-                statement = keywords.get("statement") or keywords.get("query")
-            if statement is None:
-                return
-            receiver_name = self.canonical(node.func.value)
-            evidence = bool(SQL_KEYWORDS.search(statement.text)) or (isinstance(statement.literal, str) and bool(SQL_KEYWORDS.search(statement.literal)))
-            database_receiver = bool(_DB_RECEIVER.search(receiver_name)) or receiver_name.startswith(("pandas", "sqlite3", "psycopg"))
-            if short in {"query"} and not evidence:
-                return
-            if short == "raw" and "objects" not in receiver_name:
-                return
-            certainty = Confidence.HIGH if evidence or database_receiver else Confidence.MEDIUM
-            has_bound_values = len(arguments) >= 2 and bool(
-                re.search(r"(?:\?|%s|\$\d+|:[A-Za-z_]\w*)", statement.text)
-            )
-            unknown_dml = bool(re.search(r"(?i)\b(?:select|insert|update|delete)\b", statement.text))
-            yield "PY-SQL-001", name, statement, certainty, {
-                "unknown_origin": unknown_dml and not has_bound_values,
-                "sql_evidence": evidence,
-            }
-            return
-        # Deserialization.
-        if name in _DESERIALIZERS:
-            data = argument(0)
-            if data is not None:
-                yield "PY-DESER-001", name, data, Confidence.HIGH, {}
-            return
-        if name in {"yaml.load", "yaml.load_all"} and arguments:
-            loader = next((item.value for item in node.keywords if item.arg in {"Loader", "loader"}), None)
-            if loader is None and len(node.args) >= 2:
-                loader = node.args[1]
-            loader_name = self.canonical(loader) if loader is not None else ""
-            if loader_name.endswith(_SAFE_YAML_LOADERS):
-                return
-            yield "PY-DESER-001", name, arguments[0], Confidence.HIGH, {}
-            return
-        if name == "numpy.load" and arguments:
-            allow = keywords.get("allow_pickle")
-            if allow is not None and allow.literal is True:
-                yield "PY-DESER-001", "numpy.load(allow_pickle=True)", arguments[0], Confidence.HIGH, {}
-            return
-        # Template injection.
-        if name in _TEMPLATE_CALLS or (short == "from_string" and isinstance(node.func, ast.Attribute)):
-            template = argument(0, "source") or keywords.get("text")
-            if template is not None:
-                yield "PY-SSTI-001", name, template, Confidence.HIGH, {}
-            return
-        # HTML output and explicit escaping bypasses.
-        if name in {
-            "flask.make_response",
-            "make_response",
-            "flask.Response",
-            "Response",
-            "django.http.HttpResponse",
-            "HttpResponse",
-            "markupsafe.Markup",
-            "Markup",
-            "django.utils.safestring.mark_safe",
-            "mark_safe",
-        }:
-            if name in {"flask.Response", "Response", "django.http.HttpResponse", "HttpResponse"} and _has_non_html_media_type(node):
-                return
-            body = argument(0, "response") or keywords.get("content")
-            if body is not None:
-                yield "PY-XSS-001", name, body, Confidence.HIGH, {}
-            return
-        # Redirects.
-        if name in _REDIRECT_CALLS:
-            target = argument(0, "location") or keywords.get("url") or keywords.get("redirect_to") or keywords.get("to")
-            if target is not None and not is_local_path(target.prefix):
-                yield "OPEN-REDIRECT-001", name, target, Confidence.HIGH, {}
-            return
-        # Outbound requests.
-        url_index = _HTTP_FUNCTIONS.get(name)
-        if url_index is None and short in _HTTP_CLIENT_METHODS and receiver.origin in _HTTP_CLIENT_ORIGINS:
-            url_index = _HTTP_CLIENT_METHODS[short]
-        if url_index is not None:
-            target = argument(url_index, "url")
-            if target is not None and not has_fixed_host(target.prefix):
-                yield "PY-SSRF-001", name, target, Confidence.HIGH, {}
-            return
-        # XML.
-        if name in _LXML_PARSE and arguments:
-            if not any(item.arg == "parser" for item in node.keywords) and len(node.args) < 2:
-                yield "PY-XXE-001", name, arguments[0], Confidence.MEDIUM, {}
-            return
-        # Filesystem.
-        if name in _PATH_CALLS:
-            paths = [value for value in (argument(0, "file"), argument(1, "dst") if name in _TWO_PATH_CALLS else None) if value is not None]
-            for path in paths:
-                yield "PY-PATH-001", name, path, Confidence.HIGH, {}
-            return
-        if isinstance(node.func, ast.Attribute):
-            if short in _PATH_METHODS_ANY_RECEIVER or (
-                short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX)
-            ):
-                yield "PY-PATH-001", f"Path.{short}", receiver, Confidence.HIGH, {}
-                return
-            if short == "save" and receiver.origin == "upload" and arguments:
-                yield "PY-PATH-001", "uploaded file save()", arguments[0], Confidence.HIGH, {}
+    def _check_shell_string(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _SHELL_STRING_CALLS:
+            return None
+        command = call.argument(0, "cmd")
+        return [] if command is None else [("PY-CMD-001", call.name, command, Confidence.HIGH, {"unknown_origin": True})]
+
+    def _check_subprocess(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _SUBPROCESS_CALLS:
+            return None
+        command = call.argument(0, "args")
+        if command is None:
+            return []
+        shell = call.keywords.get("shell")
+        if shell is not None and shell.constant and shell.literal is True:
+            return [("PY-CMD-001", f"{call.name}(shell=True)", command, Confidence.HIGH, {"unknown_origin": True})]
+        if shell is not None and not shell.constant:
+            return [("PY-CMD-001", f"{call.name}(shell=<dynamic>)", command, Confidence.MEDIUM, {"unknown_origin": False})]
+        program = self._program_value(call.node.args[0] if call.node.args else None, command, call.env)
+        if program is None:
+            return []
+        return [("PY-CMD-001", f"{call.name} program path", program, Confidence.HIGH, {"unknown_origin": False})]
+
+    def _check_program_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _PROGRAM_CALLS:
+            return None
+        program = call.argument(0)
+        if program is None:
+            return []
+        return [("PY-CMD-001", f"{call.name} program path", program, Confidence.HIGH, {"unknown_origin": False})]
+
+    def _check_code_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _CODE_CALLS:
+            return None
+        code = call.argument(0)
+        return [] if code is None else [("PY-CODE-001", call.name, code, Confidence.HIGH, {"unknown_origin": True})]
+
+    def _check_compile(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in {"compile", "builtins.compile"} or len(call.arguments) < 3:
+            return None
+        mode = call.argument(2, "mode")
+        if mode is not None and mode.literal in {"exec", "eval", "single"}:
+            return [("PY-CODE-001", call.name, call.arguments[0], Confidence.HIGH, {"unknown_origin": True})]
+        return []
+
+    def _check_sql(self, call: _SinkCall) -> list[_SinkHit] | None:
+        node, short, keywords = call.node, call.short, call.keywords
+        if short not in _SQL_METHODS or not isinstance(node.func, ast.Attribute):
+            return None
+        if node.args and _is_bound_orm_expression(node.args[0]):
+            return []
+        statement = call.argument(0, "sql")
+        if statement is None:
+            statement = keywords.get("statement") or keywords.get("query")
+        if statement is None:
+            return []
+        receiver_name = self.canonical(node.func.value)
+        evidence = _sql_evidence(statement)
+        if short == "query" and not evidence:
+            return []
+        if short == "raw" and "objects" not in receiver_name:
+            return []
+        certainty = Confidence.HIGH if evidence or _is_database_receiver(receiver_name) else Confidence.MEDIUM
+        has_bound_values = len(call.arguments) >= 2 and bool(re.search(r"(?:\?|%s|\$\d+|:[A-Za-z_]\w*)", statement.text))
+        unknown_dml = bool(re.search(r"(?i)\b(?:select|insert|update|delete)\b", statement.text))
+        options = {"unknown_origin": unknown_dml and not has_bound_values, "sql_evidence": evidence}
+        return [("PY-SQL-001", call.name, statement, certainty, options)]
+
+    def _check_deserializer(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _DESERIALIZERS:
+            return None
+        data = call.argument(0)
+        return [] if data is None else [("PY-DESER-001", call.name, data, Confidence.HIGH, {})]
+
+    def _check_yaml(self, call: _SinkCall) -> list[_SinkHit] | None:
+        node = call.node
+        if call.name not in {"yaml.load", "yaml.load_all"} or not call.arguments:
+            return None
+        loader = next((item.value for item in node.keywords if item.arg in {"Loader", "loader"}), None)
+        if loader is None and len(node.args) >= 2:
+            loader = node.args[1]
+        loader_name = self.canonical(loader) if loader is not None else ""
+        if loader_name.endswith(_SAFE_YAML_LOADERS):
+            return []
+        return [("PY-DESER-001", call.name, call.arguments[0], Confidence.HIGH, {})]
+
+    def _check_numpy_load(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name != "numpy.load" or not call.arguments:
+            return None
+        allow = call.keywords.get("allow_pickle")
+        if allow is not None and allow.literal is True:
+            return [("PY-DESER-001", "numpy.load(allow_pickle=True)", call.arguments[0], Confidence.HIGH, {})]
+        return []
+
+    def _check_template(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _TEMPLATE_CALLS and not (call.short == "from_string" and isinstance(call.node.func, ast.Attribute)):
+            return None
+        template = call.argument(0, "source") or call.keywords.get("text")
+        return [] if template is None else [("PY-SSTI-001", call.name, template, Confidence.HIGH, {})]
+
+    def _check_html(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _HTML_OUTPUT_CALLS:
+            return None
+        if call.name in _HTML_RESPONSE_CALLS and _has_non_html_media_type(call.node):
+            return []
+        body = call.argument(0, "response") or call.keywords.get("content")
+        return [] if body is None else [("PY-XSS-001", call.name, body, Confidence.HIGH, {})]
+
+    def _check_redirect(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _REDIRECT_CALLS:
+            return None
+        keywords = call.keywords
+        target = call.argument(0, "location") or keywords.get("url") or keywords.get("redirect_to") or keywords.get("to")
+        if target is not None and not is_local_path(target.prefix):
+            return [("OPEN-REDIRECT-001", call.name, target, Confidence.HIGH, {})]
+        return []
+
+    def _check_http(self, call: _SinkCall) -> list[_SinkHit] | None:
+        url_index = _HTTP_FUNCTIONS.get(call.name)
+        if url_index is None and call.short in _HTTP_CLIENT_METHODS and call.receiver.origin in _HTTP_CLIENT_ORIGINS:
+            url_index = _HTTP_CLIENT_METHODS[call.short]
+        if url_index is None:
+            return None
+        target = call.argument(url_index, "url")
+        if target is not None and not has_fixed_host(target.prefix):
+            return [("PY-SSRF-001", call.name, target, Confidence.HIGH, {})]
+        return []
+
+    def _check_xml(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _LXML_PARSE or not call.arguments:
+            return None
+        if not any(item.arg == "parser" for item in call.node.keywords) and len(call.node.args) < 2:
+            return [("PY-XXE-001", call.name, call.arguments[0], Confidence.MEDIUM, {})]
+        return []
+
+    def _check_path_call(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if call.name not in _PATH_CALLS:
+            return None
+        second = call.argument(1, "dst") if call.name in _TWO_PATH_CALLS else None
+        paths = [value for value in (call.argument(0, "file"), second) if value is not None]
+        return [("PY-PATH-001", call.name, path, Confidence.HIGH, {}) for path in paths]
+
+    def _check_path_method(self, call: _SinkCall) -> list[_SinkHit] | None:
+        if not isinstance(call.node.func, ast.Attribute):
+            return None
+        short, receiver = call.short, call.receiver
+        if short in _PATH_METHODS_ANY_RECEIVER or (
+            short in _PATH_METHODS_PATHLIB and receiver.origin and receiver.origin.startswith(_PATHLIB_MODULE_PREFIX)
+        ):
+            return [("PY-PATH-001", f"Path.{short}", receiver, Confidence.HIGH, {})]
+        if short == "save" and receiver.origin == "upload" and call.arguments:
+            return [("PY-PATH-001", "uploaded file save()", call.arguments[0], Confidence.HIGH, {})]
+        return []
+
+    _SINK_CHECKS = (
+        _check_shell_string,
+        _check_subprocess,
+        _check_program_call,
+        _check_code_call,
+        _check_compile,
+        _check_sql,
+        _check_deserializer,
+        _check_yaml,
+        _check_numpy_load,
+        _check_template,
+        _check_html,
+        _check_redirect,
+        _check_http,
+        _check_xml,
+        _check_path_call,
+        _check_path_method,
+    )
 
     def _program_value(self, node: ast.expr | None, value: Value, env: dict[str, Value]) -> Value | None:
         """Value that selects the executed program when no shell is used."""
@@ -1575,7 +1835,7 @@ def _has_multiline_flag(call: ast.Call) -> bool:
     return False
 
 
-def _is_commonpath_check(left: ast.expr, right: ast.expr) -> bool:
+def _is_commonpath_check(left: ast.expr) -> bool:
     return isinstance(left, ast.Call) and _dotted(left.func) in {"os.path.commonpath", "commonpath"}
 
 
@@ -1631,53 +1891,67 @@ def _module_name(relative: str) -> tuple[str, str]:
 def _collect_symbols(module: Module) -> None:
     for node in ast.walk(module.tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    module.imports[alias.asname] = alias.name
-                else:
-                    first = alias.name.split(".")[0]
-                    module.imports.setdefault(first, first)
+            _record_import(module, node)
         elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
-            if node.level:
-                package = module.package.split(".") if module.package else []
-                keep = len(package) - (node.level - 1)
-                if keep < 0:
-                    continue
-                base = ".".join([*package[:keep], *([base] if base else [])])
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                module.imports[alias.asname or alias.name] = f"{base}.{alias.name}".strip(".")
-
-    def add_function(node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str, class_name: str | None) -> None:
-        decorators = {_dotted(item.func if isinstance(item, ast.Call) else item) for item in node.decorator_list}
-        static = "staticmethod" in decorators
-        positional = [*node.args.posonlyargs, *node.args.args]
-        module.functions[qualname] = FunctionInfo(
-            qualname,
-            node,
-            class_name,
-            receives_instance=class_name is not None and not static,
-            params=tuple(item.arg for item in positional),
-            kwonly=tuple(item.arg for item in node.args.kwonlyargs),
-        )
-        for child in node.body:
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                add_function(child, f"{qualname}.{child.name}", None)
-
+            _record_import_from(module, node)
     for node in module.tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            add_function(node, node.name, None)
+            _add_function(module, node, node.name, None)
         elif isinstance(node, ast.ClassDef):
             module.classes.add(node.name)
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    add_function(child, f"{node.name}.{child.name}", node.name)
+                    _add_function(module, child, f"{node.name}.{child.name}", node.name)
 
 
-def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> list[tuple[ast.arg, bool]]:
-    """Return (parameter, sanitized) pairs for HTTP handler inputs."""
+def _record_import(module: Module, node: ast.Import) -> None:
+    for alias in node.names:
+        if alias.asname:
+            module.imports[alias.asname] = alias.name
+        else:
+            first = alias.name.split(".")[0]
+            module.imports.setdefault(first, first)
+
+
+def _record_import_from(module: Module, node: ast.ImportFrom) -> None:
+    base = node.module or ""
+    if node.level:
+        package = module.package.split(".") if module.package else []
+        keep = len(package) - (node.level - 1)
+        if keep < 0:
+            return
+        base = ".".join([*package[:keep], *([base] if base else [])])
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        module.imports[alias.asname or alias.name] = f"{base}.{alias.name}".strip(".")
+
+
+def _add_function(module: Module, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str, class_name: str | None) -> None:
+    decorators = {_dotted(item.func if isinstance(item, ast.Call) else item) for item in node.decorator_list}
+    static = "staticmethod" in decorators
+    positional = [*node.args.posonlyargs, *node.args.args]
+    module.functions[qualname] = FunctionInfo(
+        qualname,
+        node,
+        class_name,
+        receives_instance=class_name is not None and not static,
+        params=tuple(item.arg for item in positional),
+        kwonly=tuple(item.arg for item in node.args.kwonlyargs),
+    )
+    for child in node.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _add_function(module, child, f"{qualname}.{child.name}", None)
+
+
+def _first_string_argument(call: ast.Call | None) -> str | None:
+    if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    return None
+
+
+def _route_paths(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> tuple[bool, dict[str, bool], bool]:
+    """``(is_route, path parameter -> converter restricts it, flask_style)`` from the decorators."""
     route = False
     path_names: dict[str, bool] = {}
     flask_style = False
@@ -1687,16 +1961,18 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
         if name.rsplit(".", 1)[-1] not in _ROUTE_DECORATORS:
             continue
         route = True
-        if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
-            path = call.args[0].value
-            for converter, variable in re.findall(r"<(?:(\w+)(?:\([^)]*\))?:)?([A-Za-z_]\w*)>", path):
-                flask_style = True
-                path_names[variable] = converter in {"int", "float", "uuid"}
-            for variable, converter in re.findall(r"\{([A-Za-z_]\w*)(?::(\w+))?\}", path):
-                path_names.setdefault(variable, converter in {"int", "float", "uuid"})
-    if not route:
-        return []
-    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        path = _first_string_argument(call)
+        if path is None:
+            continue
+        for converter, variable in re.findall(r"<(?:(\w+)(?:\([^)]*\))?:)?([A-Za-z_]\w*)>", path):
+            flask_style = True
+            path_names[variable] = converter in {"int", "float", "uuid"}
+        for variable, converter in re.findall(r"\{([A-Za-z_]\w*)(?::(\w+))?\}", path):
+            path_names.setdefault(variable, converter in {"int", "float", "uuid"})
+    return route, path_names, flask_style
+
+
+def _parameter_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.expr]:
     defaults: dict[str, ast.expr] = {}
     positional = [*node.args.posonlyargs, *node.args.args]
     for argument, default in zip(positional[len(positional) - len(node.args.defaults):], node.args.defaults, strict=False):
@@ -1704,24 +1980,45 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
     for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=False):
         if default is not None:
             defaults[argument.arg] = default
+    return defaults
+
+
+def _route_input(
+    argument: ast.arg,
+    module: Module,
+    default: ast.expr | None,
+    path_names: dict[str, bool],
+    flask_style: bool,
+) -> tuple[ast.arg, bool] | None:
+    if argument.arg in _NON_INPUT_PARAMETERS:
+        return None
+    default_name = _canonical(module, default.func).rsplit(".", 1)[-1] if isinstance(default, ast.Call) else ""
+    if default_name in _INJECTED:
+        return None
+    annotation = _annotation_name(argument.annotation, module)
+    if annotation.rsplit(".", 1)[-1] in _NON_INPUT_ANNOTATIONS:
+        return None
+    if flask_style and argument.arg not in path_names:
+        return None
+    sanitized = path_names.get(argument.arg, False) or annotation in _SAFE_ANNOTATIONS or annotation.rsplit(".", 1)[-1] in _SAFE_ANNOTATIONS
+    if isinstance(argument.annotation, ast.Subscript) and _dotted(argument.annotation.value).endswith("Literal"):
+        sanitized = True
+    if default_name in _FASTAPI_INPUTS or not flask_style or argument.arg in path_names:
+        return argument, sanitized
+    return None
+
+
+def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) -> list[tuple[ast.arg, bool]]:
+    """Return (parameter, sanitized) pairs for HTTP handler inputs."""
+    route, path_names, flask_style = _route_paths(node, module)
+    if not route:
+        return []
+    defaults = _parameter_defaults(node)
     result: list[tuple[ast.arg, bool]] = []
-    for argument in arguments:
-        if argument.arg in _NON_INPUT_PARAMETERS:
-            continue
-        default = defaults.get(argument.arg)
-        default_name = _canonical(module, default.func).rsplit(".", 1)[-1] if isinstance(default, ast.Call) else ""
-        if default_name in _INJECTED:
-            continue
-        annotation = _annotation_name(argument.annotation, module)
-        if annotation.rsplit(".", 1)[-1] in _NON_INPUT_ANNOTATIONS:
-            continue
-        if flask_style and argument.arg not in path_names:
-            continue
-        sanitized = path_names.get(argument.arg, False) or annotation in _SAFE_ANNOTATIONS or annotation.rsplit(".", 1)[-1] in _SAFE_ANNOTATIONS
-        if isinstance(argument.annotation, ast.Subscript) and _dotted(argument.annotation.value).endswith("Literal"):
-            sanitized = True
-        if default_name in _FASTAPI_INPUTS or not flask_style or argument.arg in path_names:
-            result.append((argument, sanitized))
+    for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+        entry = _route_input(argument, module, defaults.get(argument.arg), path_names, flask_style)
+        if entry is not None:
+            result.append(entry)
     return result
 
 
@@ -1785,22 +2082,48 @@ _RANDOM_CALLS = {
 
 def _pattern_findings(module: Module) -> list[Finding]:
     """AST pattern rules that need no data flow."""
-    findings: list[Finding] = []
-    imports_flask = any(target.split(".")[0] == "flask" for target in module.imports.values())
-    module_assignments = {
-        target.id: statement
-        for statement in module.tree.body
-        if isinstance(statement, ast.Assign)
-        for target in statement.targets
-        if isinstance(target, ast.Name)
-    }
-    settings_module = bool({"INSTALLED_APPS", "ROOT_URLCONF", "MIDDLEWARE"} & module_assignments.keys())
+    return _PatternScan(module).run()
 
-    def add(rule_id: str, node: ast.AST, function: str | None, sink: str, evidence: str | None = None, suggestion=None) -> None:
+
+def _is_secret_pair(key: ast.expr | None, value: ast.expr) -> bool:
+    return (
+        isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and is_credential_name(key.value)
+        and isinstance(value, ast.Constant)
+        and isinstance(value.value, str)
+        and looks_like_secret(value.value, key.value)
+    )
+
+
+class _PatternScan:
+    """Walk one module and collect the findings of the AST pattern rules."""
+
+    def __init__(self, module: Module) -> None:
+        self.module = module
+        self.findings: list[Finding] = []
+        self.imports_flask = any(target.split(".")[0] == "flask" for target in module.imports.values())
+        self.assignments = {
+            target.id: statement
+            for statement in module.tree.body
+            if isinstance(statement, ast.Assign)
+            for target in statement.targets
+            if isinstance(target, ast.Name)
+        }
+        self.settings_module = bool({"INSTALLED_APPS", "ROOT_URLCONF", "MIDDLEWARE"} & self.assignments.keys())
+
+    def run(self) -> list[Finding]:
+        module_hashes: dict[str, str] = {}
+        for statement in self.module.tree.body:
+            self.visit(statement, None, module_hashes)
+        _settings_patterns(self.assignments, self.add)
+        return self.findings
+
+    def add(self, rule_id: str, node: ast.AST, function: str | None, sink: str, evidence: str | None = None, suggestion=None) -> None:
         definition = rule(rule_id)
-        location = _location(module, node, function)
-        code = evidence or _code(module, node)
-        findings.append(
+        location = _location(self.module, node, function)
+        code = evidence or _code(self.module, node)
+        self.findings.append(
             Finding(
                 rule_id=rule_id,
                 name=definition.name,
@@ -1817,46 +2140,43 @@ def _pattern_findings(module: Module) -> list[Finding]:
             )
         )
 
-    def visit(node: ast.AST, function: str | None, hash_objects: dict[str, str]) -> None:
+    def visit(self, node: ast.AST, function: str | None, hash_objects: dict[str, str]) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            qualname = node.name if function is None else f"{function}.{node.name}"
-            if is_random_sensitive_name(node.name):
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Return) and child.value is not None:
-                        call = _random_call(module, child.value)
-                        if call is not None:
-                            add("WEAK-RANDOM-001", call, qualname, _canonical(module, call.func), suggestion=patches.random_suggestion(module.text, call, _canonical(module, call.func)))
-            function_hashes: dict[str, str] = {}
-            for child in node.body:
-                visit(child, qualname, function_hashes)
+            self._visit_function(node, function)
             return
         if isinstance(node, ast.ClassDef):
             for child in node.body:
-                visit(child, node.name if function is None else f"{function}.{node.name}", {})
+                self.visit(child, node.name if function is None else f"{function}.{node.name}", {})
             return
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            _assignment_patterns(module, node, function, add, hash_objects, settings_module)
+            _assignment_patterns(self.module, node, function, self.add, hash_objects, self.settings_module)
         if isinstance(node, ast.Call):
-            _call_patterns(module, node, function, add, hash_objects, imports_flask)
+            _call_patterns(self.module, node, function, self.add, hash_objects, self.imports_flask)
         if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values, strict=False):
-                if (
-                    isinstance(key, ast.Constant)
-                    and isinstance(key.value, str)
-                    and is_credential_name(key.value)
-                    and isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                    and looks_like_secret(value.value, key.value)
-                ):
-                    add("SECRET-001", value, function, key.value, _redacted(module, value))
+            self._visit_dict(node, function)
         for child in ast.iter_child_nodes(node):
-            visit(child, function, hash_objects)
+            self.visit(child, function, hash_objects)
 
-    module_hashes: dict[str, str] = {}
-    for statement in module.tree.body:
-        visit(statement, None, module_hashes)
-    _settings_patterns(module_assignments, add)
-    return findings
+    def _visit_dict(self, node: ast.Dict, function: str | None) -> None:
+        for key, value in zip(node.keys, node.values, strict=False):
+            if _is_secret_pair(key, value):
+                self.add("SECRET-001", value, function, key.value, _redacted(self.module, value))
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, function: str | None) -> None:
+        qualname = node.name if function is None else f"{function}.{node.name}"
+        if is_random_sensitive_name(node.name):
+            self._random_returns(node, qualname)
+        function_hashes: dict[str, str] = {}
+        for child in node.body:
+            self.visit(child, qualname, function_hashes)
+
+    def _random_returns(self, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Return) and child.value is not None:
+                call = _random_call(self.module, child.value)
+                if call is not None:
+                    sink = _canonical(self.module, call.func)
+                    self.add("WEAK-RANDOM-001", call, qualname, sink, suggestion=patches.random_suggestion(self.module.text, call, sink))
 
 
 def _assignment_patterns(module: Module, node: ast.Assign | ast.AnnAssign, function: str | None, add, hash_objects: dict[str, str], settings_module: bool) -> None:
@@ -1868,60 +2188,117 @@ def _assignment_patterns(module: Module, node: ast.Assign | ast.AnnAssign, funct
         target_name = _target_name(target)
         if not target_name:
             continue
-        if isinstance(value, ast.Constant) and isinstance(value.value, str) and is_credential_name(target_name) and looks_like_secret(value.value, target_name):
-            add("SECRET-001", value, function, target_name, _redacted(module, node))
-        call = _random_call(module, value)
-        if call is not None and is_random_sensitive_name(target_name):
-            add("WEAK-RANDOM-001", call, function, _canonical(module, call.func), suggestion=patches.random_suggestion(module.text, call, _canonical(module, call.func)))
+        _secret_random_assignment(module, node, value, target_name, function, add)
         if isinstance(value, ast.Call) and _canonical(module, value.func) in _HASH_FUNCTIONS and isinstance(target, ast.Name):
             hash_objects[target.id] = _canonical(module, value.func)
         if isinstance(value, ast.Constant) and value.value is True:
-            if target_name in {"DEBUG"} and function is None and settings_module and isinstance(target, ast.Name):
-                add("DEBUG-001", node, function, "Django DEBUG setting", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-            elif isinstance(target, ast.Attribute) and target.attr == "debug" and _dotted(target.value) in {"app", "application"}:
-                add("DEBUG-001", node, function, "Flask debug attribute", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-            elif isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "DEBUG" and _dotted(target.value).endswith("config"):
-                add("DEBUG-001", node, function, "Flask DEBUG config", suggestion=patches.line_suggestion(module.text, node, "True", "False"))
-        if isinstance(value, ast.Constant) and value.value is False and isinstance(target, ast.Attribute) and target.attr == "check_hostname":
-            add("TLS-VERIFY-001", node, function, "ssl check_hostname=False")
-        if isinstance(target, ast.Attribute) and target.attr == "verify_mode" and _canonical(module, value).endswith("CERT_NONE"):
-            add("TLS-VERIFY-001", node, function, "ssl.CERT_NONE")
+            _debug_assignment(module, node, target, target_name, function, add, settings_module)
+        _tls_assignment(module, node, target, value, function, add)
+
+
+def _secret_random_assignment(module: Module, node: ast.AST, value: ast.expr, target_name: str, function: str | None, add) -> None:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str) and is_credential_name(target_name) and looks_like_secret(value.value, target_name):
+        add("SECRET-001", value, function, target_name, _redacted(module, node))
+    call = _random_call(module, value)
+    if call is not None and is_random_sensitive_name(target_name):
+        sink = _canonical(module, call.func)
+        add("WEAK-RANDOM-001", call, function, sink, suggestion=patches.random_suggestion(module.text, call, sink))
+
+
+def _debug_label(target: ast.expr, target_name: str, function: str | None, settings_module: bool) -> str | None:
+    if target_name in {"DEBUG"} and function is None and settings_module and isinstance(target, ast.Name):
+        return "Django DEBUG setting"
+    if isinstance(target, ast.Attribute) and target.attr == "debug" and _dotted(target.value) in {"app", "application"}:
+        return "Flask debug attribute"
+    if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "DEBUG" and _dotted(target.value).endswith("config"):
+        return "Flask DEBUG config"
+    return None
+
+
+def _debug_assignment(module: Module, node: ast.AST, target: ast.expr, target_name: str, function: str | None, add, settings_module: bool) -> None:
+    label = _debug_label(target, target_name, function, settings_module)
+    if label is not None:
+        add("DEBUG-001", node, function, label, suggestion=patches.line_suggestion(module.text, node, "True", "False"))
+
+
+def _tls_assignment(module: Module, node: ast.AST, target: ast.expr, value: ast.expr, function: str | None, add) -> None:
+    if isinstance(value, ast.Constant) and value.value is False and isinstance(target, ast.Attribute) and target.attr == "check_hostname":
+        add("TLS-VERIFY-001", node, function, "ssl check_hostname=False")
+    if isinstance(target, ast.Attribute) and target.attr == "verify_mode" and _canonical(module, value).endswith("CERT_NONE"):
+        add("TLS-VERIFY-001", node, function, "ssl.CERT_NONE")
 
 
 def _call_patterns(module: Module, node: ast.Call, function: str | None, add, hash_objects: dict[str, str], imports_flask: bool) -> None:
     name = _canonical(module, node.func)
     keywords = {item.arg: item.value for item in node.keywords if item.arg}
     if name.startswith("jwt.") or ".jwt." in name:
-        if name.endswith(".decode"):
-            if _is_false(keywords.get("verify")):
-                add("JWT-VERIFY-001", node, function, name)
-            options = keywords.get("options")
-            if isinstance(options, ast.Dict) and any(
-                isinstance(key, ast.Constant) and key.value == "verify_signature" and _is_false(value)
-                for key, value in zip(options.keys, options.values, strict=False)
-            ):
-                add("JWT-VERIFY-001", node, function, name)
-            algorithms = keywords.get("algorithms")
-            if algorithms is not None and any(
-                isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.casefold() == "none"
-                for item in ast.walk(algorithms)
-            ):
-                add("JWT-VERIFY-001", node, function, name)
+        _jwt_patterns(node, name, keywords, function, add)
     else:
-        verify = keywords.get("verify")
-        if _is_false(verify):
-            add("TLS-VERIFY-001", node, function, f"{name or 'call'}(verify=False)", suggestion=patches.keyword_suggestion(module.text, node, "verify", "False", "True"))
-        cert_reqs = keywords.get("cert_reqs")
-        if cert_reqs is not None and (_canonical(module, cert_reqs).endswith("CERT_NONE") or (isinstance(cert_reqs, ast.Constant) and cert_reqs.value == "CERT_NONE")):
-            add("TLS-VERIFY-001", node, function, f"{name}(cert_reqs=CERT_NONE)")
+        _tls_keyword_patterns(module, node, name, keywords, function, add)
     if name in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
         add("TLS-VERIFY-001", node, function, name)
     if name == "tempfile.mktemp":
         add("TEMPFILE-001", node, function, name)
-    if name in {"os.chmod", "os.fchmod", "os.lchmod"} or (isinstance(node.func, ast.Attribute) and node.func.attr == "chmod" and not name.startswith("os.")):
-        mode = keywords.get("mode") or (node.args[1] if name.startswith("os.") and len(node.args) >= 2 else node.args[0] if not name.startswith("os.") and node.args else None)
-        if isinstance(mode, ast.Constant) and isinstance(mode.value, int) and not isinstance(mode.value, bool) and mode.value & 0o002:
-            add("FILE-PERM-001", node, function, f"{name or 'chmod'}({oct(mode.value)})")
+    _file_permission_patterns(node, name, keywords, function, add)
+    _crypto_patterns(module, node, name, keywords, function, add, hash_objects)
+    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run" and _is_true(keywords.get("debug")):
+        add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
+    _xml_patterns(module, node, name, keywords, function, add)
+    for keyword in node.keywords:
+        if keyword.arg and is_credential_name(keyword.arg) and _is_secret_literal(keyword.value, keyword.arg):
+            add("SECRET-001", keyword.value, function, keyword.arg, _redacted(module, keyword))
+    _cors_patterns(node, name, keywords, function, add)
+
+
+def _is_secret_literal(value: ast.expr, name: str) -> bool:
+    return isinstance(value, ast.Constant) and isinstance(value.value, str) and looks_like_secret(value.value, name)
+
+
+def _jwt_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if not name.endswith(".decode"):
+        return
+    if _is_false(keywords.get("verify")):
+        add("JWT-VERIFY-001", node, function, name)
+    options = keywords.get("options")
+    if isinstance(options, ast.Dict) and any(
+        isinstance(key, ast.Constant) and key.value == "verify_signature" and _is_false(value)
+        for key, value in zip(options.keys, options.values, strict=False)
+    ):
+        add("JWT-VERIFY-001", node, function, name)
+    algorithms = keywords.get("algorithms")
+    if algorithms is not None and any(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.casefold() == "none"
+        for item in ast.walk(algorithms)
+    ):
+        add("JWT-VERIFY-001", node, function, name)
+
+
+def _tls_keyword_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if _is_false(keywords.get("verify")):
+        add("TLS-VERIFY-001", node, function, f"{name or 'call'}(verify=False)", suggestion=patches.keyword_suggestion(module.text, node, "verify", "False", "True"))
+    cert_reqs = keywords.get("cert_reqs")
+    if cert_reqs is not None and (_canonical(module, cert_reqs).endswith("CERT_NONE") or (isinstance(cert_reqs, ast.Constant) and cert_reqs.value == "CERT_NONE")):
+        add("TLS-VERIFY-001", node, function, f"{name}(cert_reqs=CERT_NONE)")
+
+
+def _chmod_mode(node: ast.Call, name: str, keywords: dict[str, ast.expr]) -> ast.expr | None:
+    mode = keywords.get("mode")
+    if mode is not None:
+        return mode
+    if name.startswith("os."):
+        return node.args[1] if len(node.args) >= 2 else None
+    return node.args[0] if node.args else None
+
+
+def _file_permission_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+    if not (name in {"os.chmod", "os.fchmod", "os.lchmod"} or (isinstance(node.func, ast.Attribute) and node.func.attr == "chmod" and not name.startswith("os."))):
+        return
+    mode = _chmod_mode(node, name, keywords)
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, int) and not isinstance(mode.value, bool) and mode.value & 0o002:
+        add("FILE-PERM-001", node, function, f"{name or 'chmod'}({oct(mode.value)})")
+
+
+def _crypto_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add, hash_objects: dict[str, str]) -> None:
     if name.endswith(_WEAK_CIPHER_CALLS):
         add("WEAK-CIPHER-001", node, function, name)
     elif name.endswith("AES.new") and any(_canonical(module, item).endswith("MODE_ECB") for item in [*node.args, *keywords.values()]):
@@ -1930,47 +2307,47 @@ def _call_patterns(module: Module, node: ast.Call, function: str | None, add, ha
         add("WEAK-HASH-001", node, function, name)
     elif isinstance(node.func, ast.Attribute) and node.func.attr == "update" and _dotted(node.func.value) in hash_objects and any(mentions_password(_dotted(item)) for argument in node.args for item in ast.walk(argument)):
         add("WEAK-HASH-001", node, function, hash_objects[_dotted(node.func.value)])
-    if imports_flask and isinstance(node.func, ast.Attribute) and node.func.attr == "run" and name != "asyncio.run" and _is_true(keywords.get("debug")):
-        add("DEBUG-001", node, function, "Flask app.run(debug=True)", suggestion=patches.keyword_suggestion(module.text, node, "debug", "True", "False"))
+
+
+def _xml_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
     if (name.endswith("lxml.etree.XMLParser") or name == "lxml.etree.XMLParser") and (_is_true(keywords.get("resolve_entities")) or (_is_true(keywords.get("load_dtd")) and not _is_false(keywords.get("resolve_entities")))):
         add("XXE-001", node, function, name)
     if isinstance(node.func, ast.Attribute) and node.func.attr == "setFeature" and len(node.args) == 2:
         feature = _canonical(module, node.args[0])
         if feature.endswith(("feature_external_ges", "feature_external_pes")) and _is_true(node.args[1]):
             add("XXE-001", node, function, feature)
-    for keyword in node.keywords:
-        if (
-            keyword.arg
-            and is_credential_name(keyword.arg)
-            and isinstance(keyword.value, ast.Constant)
-            and isinstance(keyword.value.value, str)
-            and looks_like_secret(keyword.value.value, keyword.arg)
-        ):
-            add("SECRET-001", keyword.value, function, keyword.arg, _redacted(module, keyword))
-    _cors_patterns(module, node, name, keywords, function, add)
 
 
-def _cors_patterns(module: Module, node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
+def _flask_cors_open(keywords: dict[str, ast.expr]) -> bool:
+    if not _is_true(keywords.get("supports_credentials")):
+        return False
+    resources = keywords.get("resources")
+    resource_origins: list[ast.expr] = []
+    if isinstance(resources, ast.Dict):
+        for value in resources.values:
+            if isinstance(value, ast.Dict):
+                resource_origins.extend(v for k, v in zip(value.keys, value.values, strict=False) if isinstance(k, ast.Constant) and k.value == "origins")
+    candidates = [item for item in (keywords.get("origins"), *resource_origins) if item is not None]
+    return not candidates or any(_is_wildcard(item) for item in candidates)
+
+
+def _cors_middleware_open(node: ast.Call, short: str, keywords: dict[str, ast.expr]) -> bool:
+    middleware = node.args[0] if node.args and short == "add_middleware" else None
+    if not ((middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware"):
+        return False
+    if not _is_true(keywords.get("allow_credentials")):
+        return False
+    regex = keywords.get("allow_origin_regex")
+    return _is_wildcard(keywords.get("allow_origins")) or (isinstance(regex, ast.Constant) and regex.value in {".*", "^.*$", ".+"})
+
+
+def _cors_patterns(node: ast.Call, name: str, keywords: dict[str, ast.expr], function: str | None, add) -> None:
     short = name.rsplit(".", 1)[-1]
     if short in {"CORS", "cross_origin"} and (name.startswith("flask_cors") or short == "CORS"):
-        if not _is_true(keywords.get("supports_credentials")):
-            return
-        origins = keywords.get("origins")
-        resources = keywords.get("resources")
-        resource_origins: list[ast.expr] = []
-        if isinstance(resources, ast.Dict):
-            for value in resources.values:
-                if isinstance(value, ast.Dict):
-                    resource_origins.extend(v for k, v in zip(value.keys, value.values, strict=False) if isinstance(k, ast.Constant) and k.value == "origins")
-        candidates = [item for item in (origins, *resource_origins) if item is not None]
-        if not candidates or any(_is_wildcard(item) for item in candidates):
+        if _flask_cors_open(keywords):
             add("CORS-001", node, function, f"{short}(supports_credentials=True) with any origin")
         return
-    middleware = node.args[0] if node.args and short == "add_middleware" else None
-    if ((middleware is not None and _dotted(middleware).endswith("CORSMiddleware")) or short == "CORSMiddleware") and _is_true(keywords.get("allow_credentials")) and (
-        _is_wildcard(keywords.get("allow_origins"))
-        or (isinstance(keywords.get("allow_origin_regex"), ast.Constant) and keywords["allow_origin_regex"].value in {".*", "^.*$", ".+"})
-    ):
+    if _cors_middleware_open(node, short, keywords):
         add("CORS-001", node, function, "CORSMiddleware(allow_origins=['*'], allow_credentials=True)")
 
 

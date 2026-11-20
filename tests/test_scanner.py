@@ -181,7 +181,7 @@ def test_python_reassigned_instance_is_not_inferred_as_known_class(tmp_path: Pat
     )
 
     result = _scan(tmp_path)
-    assert not [finding for finding in result.findings if finding.rule_id == "PY-CMD-001"]
+    assert not [finding.as_dict() for finding in result.findings if finding.rule_id == "PY-CMD-001"]
 
 
 def test_crlf_keeps_source_line_numbers(tmp_path: Path) -> None:

@@ -101,3 +101,54 @@ def test_dynamic_path_and_non_gin_code_ignored(tmp_path: Path) -> None:
         '}\n',
     )
     assert routes == []
+
+
+def test_gin_direct_path_id_gorm_lookup_without_owner_scope(tmp_path: Path) -> None:
+    code = (
+        'package main\n'
+        'import "github.com/gin-gonic/gin"\n'
+        'func showDoc(c *gin.Context) {\n'
+        '    documentID := c.Param("document_id")\n'
+        '    db.First(&doc, documentID)\n'
+        '    c.JSON(200, doc)\n'
+        '}\n'
+    )
+    (tmp_path / "server.go").write_text(code, encoding="utf-8")
+    findings = [f for f in scan_path(tmp_path, cve=False).findings
+                if f.rule_id == "AUTHZ-SCOPE-001"]
+    assert len(findings) == 1
+    assert findings[0].location.file == "server.go"
+    assert findings[0].location.line == 5
+
+
+def test_gin_scoped_gorm_lookup_does_not_report_idor(tmp_path: Path) -> None:
+    code = (
+        'package main\n'
+        'import "github.com/gin-gonic/gin"\n'
+        'func showDoc(c *gin.Context) {\n'
+        '    documentID := c.Param("document_id")\n'
+        '    db.Where("owner_id = ?", userID).First(&doc, documentID)\n'
+        '    c.JSON(200, doc)\n'
+        '}\n'
+    )
+    (tmp_path / "server.go").write_text(code, encoding="utf-8")
+    assert not [f for f in scan_path(tmp_path, cve=False).findings
+                if f.rule_id == "AUTHZ-SCOPE-001"]
+
+
+def test_gin_non_id_or_non_gin_context_does_not_report_idor(tmp_path: Path) -> None:
+    code = (
+        'package main\n'
+        'func search(c *gin.Context) {\n'
+        '    term := c.Param("search")\n'
+        '    db.First(&doc, term)\n'
+        '}\n'
+        'func internal(c *SomeContext) {\n'
+        '    documentID := c.Param("document_id")\n'
+        '    db.First(&doc, documentID)\n'
+        '}\n'
+    )
+    (tmp_path / "server.go").write_text(code, encoding="utf-8")
+    assert not [f for f in scan_path(tmp_path, cve=False).findings
+                if f.rule_id == "AUTHZ-SCOPE-001"]
+

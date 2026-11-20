@@ -173,3 +173,39 @@ def test_php_eloquent_literal_identifier_not_http_source() -> None:
     source = "<?php $record = Document::find(123); echo json_encode($record);"
     findings = lexical_findings("view.php", "view.php", "PHP", source)
     assert not [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+
+
+def test_php_owner_guard_in_other_function_does_not_hide_idor() -> None:
+    source = (
+        "<?php\n"
+        "function protectedView() {\n"
+        "    $doc = Document::find($_GET['document_id']);\n"
+        "    if ($doc->owner_id !== auth()->id()) { abort(403); }\n"
+        "    return $doc;\n"
+        "}\n"
+        "function publicView() {\n"
+        "    return Document::find($_GET['document_id']);\n"
+        "}\n"
+    )
+    findings = lexical_findings("views.php", "views.php", "PHP", source)
+    matched = [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+    assert len(matched) == 1
+    assert matched[0].location.line == 8
+
+
+def test_php_unrelated_owner_guard_does_not_hide_first_handler() -> None:
+    source = (
+        "<?php\n"
+        "function exposed() {\n"
+        "    return Document::findOrFail($_POST['doc_uuid']);\n"
+        "}\n"
+        "function protectedView() {\n"
+        "    $doc = Document::find($_GET['document_id']);\n"
+        "    if ($doc->owner_id !== auth()->id()) { abort(403); }\n"
+        "    return $doc;\n"
+        "}\n"
+    )
+    findings = lexical_findings("views.php", "views.php", "PHP", source)
+    matched = [finding for finding in findings if finding.rule_id == "AUTHZ-SCOPE-001"]
+    assert len(matched) == 1
+    assert matched[0].location.line == 3

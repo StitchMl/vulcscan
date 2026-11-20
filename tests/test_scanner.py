@@ -117,6 +117,32 @@ def test_binary_and_oversized_files_are_skipped(tmp_path: Path) -> None:
     assert result.metadata["files_skipped"] == 2
 
 
+
+
+def test_selected_oversized_source_fails_instead_of_empty_success(tmp_path: Path) -> None:
+    (tmp_path / "large.py").write_text("x = 1\n" * 100, encoding="utf-8")
+    with pytest.raises(ValueError, match="--files selection was not processed: large.py"):
+        _scan(tmp_path, only_files=frozenset({"large.py"}), max_file_size=16)
+
+
+def test_selected_unknown_extension_fails_instead_of_empty_success(tmp_path: Path) -> None:
+    (tmp_path / "notes.unknown").write_text("not scanner input\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="--files selection was not processed: notes.unknown"):
+        _scan(tmp_path, only_files=frozenset({"notes.unknown"}))
+
+
+def test_selected_valid_manifest_is_processed_without_source_language(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("example==1.2.3\n", encoding="utf-8")
+    result = _scan(tmp_path, only_files=frozenset({"requirements.txt"}))
+    assert any(dependency.name == "example" for dependency in result.dependencies)
+
+
+def test_unselected_oversized_file_remains_silently_skipped(tmp_path: Path) -> None:
+    (tmp_path / "large.py").write_text("x = 1\n" * 100, encoding="utf-8")
+    result = _scan(tmp_path, max_file_size=16)
+    assert result.metadata["files_analyzed"] == 0
+
+
 def test_crlf_keeps_source_line_numbers(tmp_path: Path) -> None:
     source = (
         "from flask import request\r\n"

@@ -1,4 +1,4 @@
-"""Bounded one-hop summaries for directly imported JavaScript/TypeScript sinks.
+"""Bounded one- and two-hop summaries for imported JavaScript/TypeScript sinks.
 
 Recognize only exported functions whose entire body is one direct sink call of
 an unchanged parameter. This intentionally omits transforms, guards, branches,
@@ -97,6 +97,20 @@ def _safe_sink_names(source: str) -> dict[str, tuple[str, str]]:
     return names
 
 
+def _direct_sink_uses_parameter(
+    direct: re.Match[str] | None,
+    names: dict[str, tuple[str, str]],
+    parameters: list[str],
+) -> bool:
+    """A parameter named like a sink shadows that sink in the wrapper body."""
+    return bool(
+        direct
+        and direct.group(1) in names
+        and direct.group(1) not in parameters
+        and direct.group(2) in parameters
+    )
+
+
 def _summaries(path: str, source: str) -> dict[str, ImportedSink]:
     text = blank_comments(source, JS_STYLE)
     mask = code_mask(source, JS_STYLE)
@@ -116,7 +130,7 @@ def _summaries(path: str, source: str) -> dict[str, ImportedSink]:
             continue
         body = text[match.end():end]
         direct = _DIRECT_CALL.fullmatch(body)
-        if not direct or direct.group(1) not in names or direct.group(2) not in names_list:
+        if not _direct_sink_uses_parameter(direct, names, names_list):
             continue
         rule, sink = names[direct.group(1)]
         result[function] = ImportedSink(rule, names_list.index(direct.group(2)), path, text.count("\n", 0, match.end()) + 1, sink)

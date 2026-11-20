@@ -102,11 +102,11 @@ def _semver_key(version: str):
 
 def _rubygems_key(version: str):
     text = version.strip()
-    if not re.fullmatch(r"[0-9]++(?:[.-]?[0-9A-Za-z]++)*+", text):
+    if not re.fullmatch(r"\d++(?:[.-]?[0-9A-Za-z]++)*+", text, re.ASCII):
         return None
     # Gem::Version: letter segments mark a prerelease and sort before numbers,
     # so 1.2.0.pre1 < 1.2.0 < 1.2.0.1.
-    segments = re.findall(r"[0-9]+|[A-Za-z]+", text)
+    segments = re.findall(r"\d+|[A-Za-z]+", text, re.ASCII)
     return tuple((1, int(segment), "") if segment.isdigit() else (0, 0, segment.casefold()) for segment in segments)
 
 

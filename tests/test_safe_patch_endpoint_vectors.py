@@ -98,9 +98,11 @@ def test_post_or_dynamic_path_does_not_generate_curl() -> None:
     finding = _route_finding("value = request.args.get('item')")
     for decorator in ("@app.post('/items')", "@app.get('/items/<item>')", "@app.get('/items/{item}')"):
         routes = _routes(decorator + "\ndef lookup():\n    return request.args.get('item')\n", finding)
-        assert routes and "verify_curl" not in routes[0]
+        assert routes
+        assert "verify_curl" not in routes[0]
 
 
 def test_no_source_trace_does_not_generate_guess() -> None:
     routes = _routes("@app.get('/items')\ndef lookup():\n    return 'ok'\n", _route_finding("value = os.getenv('ITEM')"))
-    assert routes and "verify_curl" not in routes[0]
+    assert routes
+    assert "verify_curl" not in routes[0]

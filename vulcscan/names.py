@@ -6,7 +6,7 @@ import math
 import re
 from collections import Counter
 
-_COMPONENT = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|\b|_)|[A-Z]?[a-z]+|\d+")
+_COMPONENT = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[\d_]|\b)|[A-Z]?[a-z]+|\d+")
 
 _CREDENTIAL_LAST = {"password", "passwd", "pwd", "passphrase", "secret", "token", "apikey", "credentials", "credential"}
 _KEY_QUALIFIERS = {"api", "secret", "private", "access", "auth", "signing", "encryption", "master", "client", "app"}

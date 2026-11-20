@@ -92,5 +92,7 @@ def test_remote_filter_excludes_local_findings(tmp_path: Path) -> None:
 def test_new_options_are_opt_in() -> None:
     default = build_parser().parse_args(["."])
     enabled = build_parser().parse_args([".", "--attack-surface", "--remote-only"])
-    assert default.attack_surface is False and default.remote_only is False
-    assert enabled.attack_surface is True and enabled.remote_only is True
+    assert default.attack_surface is False
+    assert default.remote_only is False
+    assert enabled.attack_surface is True
+    assert enabled.remote_only is True

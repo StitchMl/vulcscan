@@ -29,6 +29,32 @@ def _literal(node: ast.AST) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _route_methods(method: str, decorator: ast.Call) -> list[str]:
+    if method in _HTTP_METHODS:
+        return [method.upper()]
+    if method == "websocket":
+        return ["WEBSOCKET"]
+    methods = ["ANY"]
+    for keyword in decorator.keywords:
+        if keyword.arg == "methods" and isinstance(keyword.value, (ast.List, ast.Tuple)):
+            listed = [_literal(value) for value in keyword.value.elts]
+            if listed and all(listed):
+                methods = sorted({value.upper() for value in listed if value})
+    return methods
+
+
+def _decorator_route(decorator: ast.expr) -> tuple[list[str], str] | None:
+    if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+        return None
+    method = decorator.func.attr.lower()
+    if method not in _HTTP_METHODS | {"route", "api_route", "websocket"}:
+        return None
+    path = _literal(decorator.args[0]) if decorator.args else None
+    if path is None:
+        return None
+    return _route_methods(method, decorator), path
+
+
 def _python_routes(relative: str, source: str) -> list[dict[str, Any]]:
     try:
         tree = ast.parse(source)
@@ -44,25 +70,10 @@ def _python_routes(relative: str, source: str) -> list[dict[str, Any]]:
             for decorator in decorators
         )
         for decorator in decorators:
-            if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+            route = _decorator_route(decorator)
+            if route is None:
                 continue
-            method = decorator.func.attr.lower()
-            if method not in _HTTP_METHODS | {"route", "api_route", "websocket"}:
-                continue
-            path = _literal(decorator.args[0]) if decorator.args else None
-            if path is None:
-                continue
-            if method in _HTTP_METHODS:
-                methods = [method.upper()]
-            elif method == "websocket":
-                methods = ["WEBSOCKET"]
-            else:
-                methods = ["ANY"]
-                for keyword in decorator.keywords:
-                    if keyword.arg == "methods" and isinstance(keyword.value, (ast.List, ast.Tuple)):
-                        listed = [_literal(value) for value in keyword.value.elts]
-                        if listed and all(listed):
-                            methods = sorted({value.upper() for value in listed if value})
+            methods, path = route
             endpoints.append({
                 "method": methods,
                 "path": path,
@@ -103,12 +114,29 @@ _GIN_MIDDLEWARE_HANDLER = re.compile(
 )
 
 
-def _gin_routes(relative: str, source: str) -> list[dict[str, Any]]:
-    """Capture direct literal Gin registrations, not dynamic Group prefixes."""
-    if not (
+def _gin_handler_auth(tail: str) -> tuple[str | None, str]:
+    direct = _GIN_HANDLER.match(tail)
+    middleware = _GIN_MIDDLEWARE_HANDLER.match(tail)
+    handler_match = direct or middleware
+    handler = handler_match.group("handler") if handler_match else None
+    auth = "unknown"
+    if middleware and any(
+        token in middleware.group("middleware").casefold() for token in _AUTH_NAMES
+    ):
+        auth = "present"
+    return handler, auth
+
+
+def _is_gin_source(source: str) -> bool:
+    return bool(
         re.search(r"(?m)^[ \t]*import\b[\s\S]{0,2000}github\.com/gin-gonic/gin", source)
         or re.search(r"\bgin\s*\.\s*(?:Default|New)\s*\(", source)
-    ):
+    )
+
+
+def _gin_routes(relative: str, source: str) -> list[dict[str, Any]]:
+    """Capture direct literal Gin registrations, not dynamic Group prefixes."""
+    if not _is_gin_source(source):
         return []
     visible = blank_comments(source, C_STYLE)
     mask = code_mask(source, C_STYLE)
@@ -124,16 +152,7 @@ def _gin_routes(relative: str, source: str) -> list[dict[str, Any]]:
             # Gin.Handle(method, path, handler) has a different signature.
             continue
         tail = visible[match.end():match.end() + 200]
-        direct = _GIN_HANDLER.match(tail)
-        middleware = _GIN_MIDDLEWARE_HANDLER.match(tail)
-        handler = direct.group("handler") if direct else (
-            middleware.group("handler") if middleware else None
-        )
-        auth = "unknown"
-        if middleware and any(
-            token in middleware.group("middleware").casefold() for token in _AUTH_NAMES
-        ):
-            auth = "present"
+        handler, auth = _gin_handler_auth(tail)
         endpoints.append({
             "method": ["ANY" if method == "Any" else method],
             "path": path,
@@ -178,8 +197,7 @@ def _verification_curl(route: dict[str, Any], findings: list[Finding]) -> str | 
     return "curl --silent --show-error --max-time 5 " + shlex.quote(url)
 
 
-def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[str, Any]]:
-    """Return stable endpoint metadata, with conservative same-file finding references."""
+def _collect_routes(files: list[Any]) -> list[dict[str, Any]]:
     routes: list[dict[str, Any]] = []
     for source in files:
         if source.language == "Python":
@@ -196,23 +214,36 @@ def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[s
     for source in files:
         if source.language == "Python":
             routes.extend(django_routes(source.relative, source.text, available_python))
+    return routes
+
+
+def _resolve_route_handler(
+    route: dict[str, Any], modules: dict[str, Any]
+) -> tuple[str, str | None]:
+    handler_file = route.get("handler_file", route["file"])
+    handler_name = route["handler"]
+    if handler_file in modules and handler_name:
+        resolved = resolve_handler(
+            handler_file, modules[handler_file].text, handler_name, modules
+        )
+        if resolved is None:
+            handler_name = None
+        else:
+            handler_file, handler_name = resolved
+            if handler_file != route["file"]:
+                route["handler_file"] = handler_file
+    return handler_file, handler_name
+
+
+def map_attack_surface(files: list[Any], findings: list[Finding]) -> list[dict[str, Any]]:
+    """Return stable endpoint metadata, with conservative same-file finding references."""
+    routes = _collect_routes(files)
     modules = {
         source.relative: source for source in files
         if source.language in {"JavaScript", "TypeScript"}
     }
     for route in routes:
-        handler_file = route.get("handler_file", route["file"])
-        handler_name = route["handler"]
-        if handler_file in modules and handler_name:
-            resolved = resolve_handler(
-                handler_file, modules[handler_file].text, handler_name, modules
-            )
-            if resolved is None:
-                handler_name = None
-            else:
-                handler_file, handler_name = resolved
-                if handler_file != route["file"]:
-                    route["handler_file"] = handler_file
+        handler_file, handler_name = _resolve_route_handler(route, modules)
         matches = [
             finding for finding in findings
             if handler_name is not None

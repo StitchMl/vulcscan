@@ -162,20 +162,28 @@ class _Walker(ast.NodeVisitor):
         self.sources = saved
 
 
+def _import_entries(node: ast.stmt) -> dict[str, str]:
+    modules = {"subprocess", "asyncio"}
+    if isinstance(node, ast.Import):
+        return {item.asname or item.name: item.name for item in node.names if item.name in modules}
+    if isinstance(node, ast.ImportFrom) and node.module in modules:
+        return {item.asname or item.name: node.module + "." + item.name for item in node.names}
+    return {}
+
+
+def _process_imports(tree: ast.Module) -> dict[str, str]:
+    imports: dict[str, str] = {}
+    for node in tree.body:
+        imports.update(_import_entries(node))
+    return imports
+
+
 def analyze_argument_injection(relative: str, text: str) -> list[Finding]:
     try:
         tree = ast.parse(text, filename=relative)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
-    imports: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for item in node.names:
-                if item.name in {"subprocess", "asyncio"}:
-                    imports[item.asname or item.name] = item.name
-        elif isinstance(node, ast.ImportFrom) and node.module in {"subprocess", "asyncio"}:
-            for item in node.names:
-                imports[item.asname or item.name] = node.module + "." + item.name
+    imports = _process_imports(tree)
     walker = _Walker(relative, text, imports)
     walker.visit(tree)
     return walker.findings

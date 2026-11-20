@@ -46,44 +46,84 @@ def safe_for(pattern: str, fullmatch: bool) -> frozenset[str]:
     return frozenset(category for category, dangerous in _DANGEROUS.items() if not allowed & dangerous)
 
 
+def _escape_chars(body: str, index: int) -> set[str] | None:
+    """Characters matched by the backslash escape at ``index``; None when unsupported."""
+    if index + 1 >= len(body):
+        return None
+    escaped = body[index + 1]
+    if escaped in _ESCAPE_CLASSES:
+        return set(_ESCAPE_CLASSES[escaped])
+    if not escaped.isalnum():
+        return {escaped}
+    return None
+
+
+def _brace_quantifier_end(body: str, index: int) -> int | None:
+    end = body.find("}", index)
+    if end < 0 or not all(part.isdigit() or part == "" for part in body[index + 1 : end].split(",")):
+        return None
+    return end + 1
+
+
+def _expand_range(low: str, high: str) -> set[str] | None:
+    if ord(low) > ord(high) or ord(high) - ord(low) > 128:
+        return None
+    return {chr(code) for code in range(ord(low), ord(high) + 1)}
+
+
+def _allowed_step(body: str, index: int, allowed: set[str]) -> int | None:
+    """Consume one token at ``index``; return the next index, or None when unsupported."""
+    char = body[index]
+    if char == "[":
+        end, chars = _character_class(body, index)
+        if chars is None:
+            return None
+        allowed |= chars
+        return end
+    if char == "\\":
+        escaped_chars = _escape_chars(body, index)
+        if escaped_chars is None:
+            return None
+        allowed |= escaped_chars
+        return index + 2
+    if char in "+*?":
+        return index + 1
+    if char == "{":
+        return _brace_quantifier_end(body, index)
+    if char in ".()|^$":
+        return None
+    allowed.add(char)
+    return index + 1
+
+
 def _allowed_characters(body: str) -> set[str] | None:
     allowed: set[str] = set()
     index = 0
     while index < len(body):
-        char = body[index]
-        if char == "[":
-            end, chars = _character_class(body, index)
-            if chars is None:
-                return None
-            allowed |= chars
-            index = end
-            continue
-        if char == "\\":
-            if index + 1 >= len(body):
-                return None
-            escaped = body[index + 1]
-            if escaped in _ESCAPE_CLASSES:
-                allowed |= _ESCAPE_CLASSES[escaped]
-            elif not escaped.isalnum():
-                allowed.add(escaped)
-            else:
-                return None
-            index += 2
-            continue
-        if char in "+*?":
-            index += 1
-            continue
-        if char == "{":
-            end = body.find("}", index)
-            if end < 0 or not all(part.isdigit() or part == "" for part in body[index + 1 : end].split(",")):
-                return None
-            index = end + 1
-            continue
-        if char in ".()|^$":
+        following = _allowed_step(body, index, allowed)
+        if following is None:
             return None
-        allowed.add(char)
-        index += 1
+        index = following
     return allowed
+
+
+def _class_member(body: str, index: int, chars: set[str]) -> int | None:
+    """Consume one character-class member; return the next index, or None when unsupported."""
+    char = body[index]
+    if char == "\\":
+        escaped_chars = _escape_chars(body, index)
+        if escaped_chars is None:
+            return None
+        chars |= escaped_chars
+        return index + 2
+    if index + 2 < len(body) and body[index + 1] == "-" and body[index + 2] != "]":
+        span = _expand_range(char, body[index + 2])
+        if span is None:
+            return None
+        chars |= span
+        return index + 3
+    chars.add(char)
+    return index + 1
 
 
 def _character_class(body: str, start: int) -> tuple[int, set[str] | None]:
@@ -93,29 +133,11 @@ def _character_class(body: str, start: int) -> tuple[int, set[str] | None]:
     chars: set[str] = set()
     first = True
     while index < len(body):
-        char = body[index]
-        if char == "]" and not first:
+        if body[index] == "]" and not first:
             return index + 1, chars
         first = False
-        if char == "\\":
-            if index + 1 >= len(body):
-                return start, None
-            escaped = body[index + 1]
-            if escaped in _ESCAPE_CLASSES:
-                chars |= _ESCAPE_CLASSES[escaped]
-            elif not escaped.isalnum():
-                chars.add(escaped)
-            else:
-                return start, None
-            index += 2
-            continue
-        if index + 2 < len(body) and body[index + 1] == "-" and body[index + 2] != "]":
-            low, high = char, body[index + 2]
-            if ord(low) > ord(high) or ord(high) - ord(low) > 128:
-                return start, None
-            chars |= {chr(code) for code in range(ord(low), ord(high) + 1)}
-            index += 3
-            continue
-        chars.add(char)
-        index += 1
+        following = _class_member(body, index, chars)
+        if following is None:
+            return start, None
+        index = following
     return start, None

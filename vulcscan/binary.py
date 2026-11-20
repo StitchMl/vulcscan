@@ -29,7 +29,7 @@ _DANGEROUS = (
     (b"Runtime.exec", "Runtime.exec"),
 )
 _SECRET = re.compile(
-    rb"(?i)(?:api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*[\"']?([A-Za-z0-9_./+!@#$%^&*=-]{8,})"
+    rb"(?i)(?:api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*[\"']?([a-z0-9_./+!@#$%^&*=-]{8,})"
 )
 
 
@@ -64,17 +64,8 @@ def analyze_binary(relative: str, data: bytes) -> list[Finding]:
 
     # Prefer parsed import names over arbitrary embedded strings in valid PE
     # images. Keep legacy byte inspection for other/unsupported formats.
-    parsed_imports = (
-        pe_imported_symbols(data) if kind == "PE binary"
-        else elf_imported_symbols(data) if kind == "ELF binary"
-        else None
-    )
-    for needle, label in _DANGEROUS:
-        if parsed_imports is not None:
-            if label in parsed_imports:
-                add("BINARY-DANGEROUS-001", label, f"Imported {'PE' if kind == 'PE binary' else 'ELF binary'} symbol: {label}", Confidence.MEDIUM)
-        elif _symbol_present(data, needle):
-            add("BINARY-DANGEROUS-001", label, f"Imported or embedded symbol: {label}", Confidence.MEDIUM)
+    for label, evidence in _dangerous_symbols(data, kind):
+        add("BINARY-DANGEROUS-001", label, evidence, Confidence.MEDIUM)
 
     secret = _SECRET.search(data)
     if secret and secret.group(1) not in {b"password", b"changeme", b"example", b"placeholder"}:
@@ -83,6 +74,23 @@ def analyze_binary(relative: str, data: bytes) -> list[Finding]:
     for evidence in _hardening_issues(data):
         add("BINARY-HARDENING-001", "executable header", evidence, Confidence.HIGH)
     return findings
+
+
+def _dangerous_symbols(data: bytes, kind: str) -> list[tuple[str, str]]:
+    parsed_imports = None
+    if kind == "PE binary":
+        parsed_imports = pe_imported_symbols(data)
+    elif kind == "ELF binary":
+        parsed_imports = elf_imported_symbols(data)
+    prefix = "PE" if kind == "PE binary" else "ELF binary"
+    hits: list[tuple[str, str]] = []
+    for needle, label in _DANGEROUS:
+        if parsed_imports is not None:
+            if label in parsed_imports:
+                hits.append((label, f"Imported {prefix} symbol: {label}"))
+        elif _symbol_present(data, needle):
+            hits.append((label, f"Imported or embedded symbol: {label}"))
+    return hits
 
 
 def binary_kind(data: bytes) -> str:

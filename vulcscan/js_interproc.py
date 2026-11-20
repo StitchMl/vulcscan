@@ -55,26 +55,45 @@ def _matching_brace(mask: str, opening: int) -> int:
     return -1
 
 
-def _safe_sink_names(source: str) -> dict[str, tuple[str, str]]:
-    names: dict[str, tuple[str, str]] = {"eval": ("JS-CODE-001", "eval"), "fetch": ("JS-SSRF-001", "fetch")}
+def _required_module_sinks(source: str, names: dict[str, tuple[str, str]]) -> None:
     for match in _REQUIRE.finditer(source):
         alias, module = match.groups()
         kind = "child_process" if module == "child_process" else "fs"
         methods = {"exec": "JS-CMD-001", "execSync": "JS-CMD-001"} if kind == "child_process" else {"readFile": "JS-PATH-001", "readFileSync": "JS-PATH-001"}
         for method, rule in methods.items():
             names[alias + "." + method] = (rule, alias + "." + method)
+
+
+_IMPORT_ENTRY = re.compile(r"\s*([A-Za-z_$][\w$]*)(?:\s+as\s*([A-Za-z_$][\w$]*))?\s*")
+_REQUIRE_ENTRY = re.compile(r"\s*([A-Za-z_$][\w$]*)(?:\s+:\s*([A-Za-z_$][\w$]*))?\s*")
+
+
+def _module_sink_rule(module: str, exported: str) -> str | None:
+    if module == "child_process" and exported in {"exec", "execSync"}:
+        return "JS-CMD-001"
+    if module in {"fs", "fs/promises"} and exported in {"readFile", "readFileSync"}:
+        return "JS-PATH-001"
+    return None
+
+
+def _named_module_sinks(source: str, names: dict[str, tuple[str, str]]) -> None:
     for match in list(_NAMED_IMPORT.finditer(source)) + list(_NAMED_REQUIRE.finditer(source)):
         entries, module = match.groups()
-        separator = ":" if match.re is _NAMED_REQUIRE else "as"
+        entry_pattern = _REQUIRE_ENTRY if match.re is _NAMED_REQUIRE else _IMPORT_ENTRY
         for entry in entries.split(","):
-            parts = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)(?:\s+" + (r":" if separator == ":" else r"as") + r"\s*([A-Za-z_$][\w$]*))?\s*", entry)
+            parts = entry_pattern.fullmatch(entry)
             if not parts:
                 continue
             exported, local = parts.group(1), parts.group(2) or parts.group(1)
-            if module == "child_process" and exported in {"exec", "execSync"}:
-                names[local] = ("JS-CMD-001", exported)
-            elif module in {"fs", "fs/promises"} and exported in {"readFile", "readFileSync"}:
-                names[local] = ("JS-PATH-001", exported)
+            rule_id = _module_sink_rule(module, exported)
+            if rule_id is not None:
+                names[local] = (rule_id, exported)
+
+
+def _safe_sink_names(source: str) -> dict[str, tuple[str, str]]:
+    names: dict[str, tuple[str, str]] = {"eval": ("JS-CODE-001", "eval"), "fetch": ("JS-SSRF-001", "fetch")}
+    _required_module_sinks(source, names)
+    _named_module_sinks(source, names)
     return names
 
 
@@ -104,6 +123,43 @@ def _summaries(path: str, source: str) -> dict[str, ImportedSink]:
     return {name: summary for name, summary in result.items() if occurrences[name] == 1}
 
 
+def _import_aliases(clean: str) -> set[str]:
+    aliases: set[str] = set()
+    for matched in _IMPORTS.finditer(clean):
+        members = matched.group(1) or matched.group(2) or ""
+        for part in members.split(","):
+            symbol = re.search(r"([A-Za-z_$][\w$]*)\s*$", part)
+            if symbol:
+                aliases.add(symbol.group(1))
+    return aliases
+
+
+def _is_shadowed(clean: str, alias: str) -> bool:
+    # An imported identifier shadowed by a local declaration or function
+    # parameter cannot safely be treated as the imported binding.
+    escaped = re.escape(alias)
+    return bool(re.search(
+        rf"\b(?:function|class)\s+{escaped}\b|"
+        rf"\b(?:function|catch)\s*(?:[A-Za-z_$][\w$]*)?\s*\([^)]*\b{escaped}\b",
+        clean,
+    ))
+
+
+def _alias_summary(
+    path: str, clean: str, alias: str, modules: dict[str, Any], summaries: dict[str, dict[str, ImportedSink]]
+) -> ImportedSink | None:
+    if _is_shadowed(clean, alias):
+        return None
+    imported = _named_import(clean, alias)
+    if imported is None:
+        return None
+    specifier, exported = imported
+    destination = _module_path(path, specifier, set(modules))
+    if destination is None or destination == path:
+        return None
+    return summaries[destination].get(exported)
+
+
 def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
     """Map caller file -> imported alias -> strict one-hop sink summary."""
     modules = {item.relative: item for item in files if item.language in {"JavaScript", "TypeScript"}}
@@ -111,32 +167,9 @@ def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
     result: dict[str, dict[str, ImportedSink]] = {}
     for path, item in modules.items():
         clean = blank_comments(item.text, JS_STYLE)
-        aliases: set[str] = set()
-        for matched in _IMPORTS.finditer(clean):
-            members = matched.group(1) or matched.group(2) or ""
-            for part in members.split(","):
-                symbol = re.search(r"([A-Za-z_$][\w$]*)\s*$", part)
-                if symbol:
-                    aliases.add(symbol.group(1))
         targets: dict[str, ImportedSink] = {}
-        for alias in aliases:
-            # An imported identifier shadowed by a local declaration or function
-            # parameter cannot safely be treated as the imported binding.
-            escaped = re.escape(alias)
-            if re.search(
-                rf"\b(?:function|class)\s+{escaped}\b|"
-                rf"\b(?:function|catch)\s*(?:[A-Za-z_$][\w$]*)?\s*\([^)]*\b{escaped}\b",
-                clean,
-            ):
-                continue
-            imported = _named_import(clean, alias)
-            if imported is None:
-                continue
-            specifier, exported = imported
-            destination = _module_path(path, specifier, set(modules))
-            if destination is None or destination == path:
-                continue
-            summary = summaries[destination].get(exported)
+        for alias in _import_aliases(clean):
+            summary = _alias_summary(path, clean, alias, modules, summaries)
             if summary is not None:
                 targets[alias] = summary
         if targets:

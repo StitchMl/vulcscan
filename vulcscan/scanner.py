@@ -187,49 +187,61 @@ class RepositoryDiscovery:
         self.manifests: list[Path] = []
         self.binaries: list[BinaryFile] = []
 
+    def _list_directory(self, directory: Path, visited: set[tuple[int, int]]) -> list[os.DirEntry] | None:
+        """Sorted entries of an unvisited directory, or None to skip it."""
+        try:
+            directory_stat = directory.stat(follow_symlinks=False)
+            identity = (directory_stat.st_dev, directory_stat.st_ino)
+            if identity in visited and identity != (0, 0):
+                return None
+            visited.add(identity)
+            with os.scandir(directory) as iterator:
+                return sorted(iterator, key=lambda item: item.name.casefold())
+        except OSError as exc:
+            self.errors.append(self._error(directory, "discovery", exc))
+            return None
+
+    def _register_manifest(self, path: Path, relative: str, size: int) -> None:
+        if not is_manifest_path(relative):
+            return
+        if size <= MAX_MANIFEST_SIZE:
+            self.manifests.append(path)
+        else:
+            self.errors.append(ScanError(relative, "dependency-parse", f"manifest exceeds {MAX_MANIFEST_SIZE} bytes"))
+
+    def _visit_entry(self, entry: os.DirEntry, files: list[SourceFile], children: list[Path]) -> None:
+        path = Path(entry.path)
+        relative = self._relative(path)
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+            is_link = entry.is_symlink() or bool(getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT)
+            if entry.is_dir(follow_symlinks=False):
+                if not is_link and not self._excluded_directory(entry.name, relative):
+                    children.append(path)
+                return
+            if is_link or not entry.is_file(follow_symlinks=False):
+                return
+            if self._excluded_file(relative):
+                return
+            self.discovered += 1
+            self._register_manifest(path, relative, metadata.st_size)
+            source = self._read(path, relative, metadata.st_size)
+            if source is not None:
+                files.append(source)
+        except OSError as exc:
+            self.errors.append(self._error(path, "read", exc))
+
     def run(self) -> list[SourceFile]:
         files: list[SourceFile] = []
         stack = [self.root]
         visited: set[tuple[int, int]] = set()
         while stack:
-            directory = stack.pop()
-            try:
-                directory_stat = directory.stat(follow_symlinks=False)
-                identity = (directory_stat.st_dev, directory_stat.st_ino)
-                if identity in visited and identity != (0, 0):
-                    continue
-                visited.add(identity)
-                with os.scandir(directory) as iterator:
-                    entries = sorted(iterator, key=lambda item: item.name.casefold())
-            except OSError as exc:
-                self.errors.append(self._error(directory, "discovery", exc))
+            entries = self._list_directory(stack.pop(), visited)
+            if entries is None:
                 continue
             children: list[Path] = []
             for entry in entries:
-                path = Path(entry.path)
-                relative = self._relative(path)
-                try:
-                    metadata = entry.stat(follow_symlinks=False)
-                    is_link = entry.is_symlink() or bool(getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT)
-                    if entry.is_dir(follow_symlinks=False):
-                        if not is_link and not self._excluded_directory(entry.name, relative):
-                            children.append(path)
-                        continue
-                    if is_link or not entry.is_file(follow_symlinks=False):
-                        continue
-                    if self._excluded_file(relative):
-                        continue
-                    self.discovered += 1
-                    if is_manifest_path(relative):
-                        if metadata.st_size <= MAX_MANIFEST_SIZE:
-                            self.manifests.append(path)
-                        else:
-                            self.errors.append(ScanError(relative, "dependency-parse", f"manifest exceeds {MAX_MANIFEST_SIZE} bytes"))
-                    source = self._read(path, relative, metadata.st_size)
-                    if source is not None:
-                        files.append(source)
-                except OSError as exc:
-                    self.errors.append(self._error(path, "read", exc))
+                self._visit_entry(entry, files, children)
             stack.extend(reversed(children))
         files.sort(key=lambda item: item.relative.casefold())
         self.manifests.sort(key=lambda item: self._relative(item).casefold())
@@ -349,42 +361,51 @@ def scan(config: ScanConfig) -> ScanResult:
     return result
 
 
+def _analyze_python_sources(python_sources: list[tuple[str, str]], result: ScanResult) -> None:
+    project = PythonProject(python_sources)
+    result.findings.extend(project.analyze())
+    result.errors.extend(project.errors)
+    for relative, code in python_sources:
+        try:
+            result.findings.extend(analyze_argument_injection(relative, code))
+            result.findings.extend(analyze_tar_extraction(relative, code))
+            result.findings.extend(analyze_timing_comparisons(relative, code))
+            result.findings.extend(analyze_route_authz(relative, code))
+        except Exception as exc:
+            result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
+
+
+def _analyze_one_source(source: SourceFile, imported_sinks: dict):
+    if source.language in _CODE_ANALYSIS_SKIP:
+        return [], []
+    found = []
+    try:
+        found.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
+        if source.language in {"JavaScript", "TypeScript"}:
+            found.extend(analyze_javascript(
+                source.relative, source.text, source.language,
+                imported_sinks.get(source.relative),
+            ))
+            found.extend(analyze_javascript_timing(source.relative, source.text, source.language))
+        elif source.language in CATALOGS:
+            found.extend(analyze_structured(source.relative, source.text, source.language))
+        if source.language == "Java":
+            found.extend(analyze_java_zip_slip(source.relative, source.text))
+        if source.language == "Go":
+            found.extend(analyze_go_zip_slip(source.relative, source.text))
+        return found, []
+    except Exception as exc:
+        return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]
+
+
 def _analyze_files(files: list[SourceFile], result: ScanResult, workers: int = 1) -> None:
     imported_sinks = imported_sink_map(files)
     python_sources = [(item.relative, item.text) for item in files if item.language == "Python"]
     if python_sources:
-        project = PythonProject(python_sources)
-        result.findings.extend(project.analyze())
-        result.errors.extend(project.errors)
-        for relative, code in python_sources:
-            try:
-                result.findings.extend(analyze_argument_injection(relative, code))
-                result.findings.extend(analyze_tar_extraction(relative, code))
-                result.findings.extend(analyze_timing_comparisons(relative, code))
-                result.findings.extend(analyze_route_authz(relative, code))
-            except Exception as exc:
-                result.errors.append(ScanError(relative, "python-arguments", f"{exc.__class__.__name__}: {exc}"))
+        _analyze_python_sources(python_sources, result)
+
     def analyze_one(source: SourceFile):
-        if source.language in _CODE_ANALYSIS_SKIP:
-            return [], []
-        found = []
-        try:
-            found.extend(lexical_findings(source.path.name, source.relative, source.language, source.text))
-            if source.language in {"JavaScript", "TypeScript"}:
-                found.extend(analyze_javascript(
-                    source.relative, source.text, source.language,
-                    imported_sinks.get(source.relative),
-                ))
-                found.extend(analyze_javascript_timing(source.relative, source.text, source.language))
-            elif source.language in CATALOGS:
-                found.extend(analyze_structured(source.relative, source.text, source.language))
-            if source.language == "Java":
-                found.extend(analyze_java_zip_slip(source.relative, source.text))
-            if source.language == "Go":
-                found.extend(analyze_go_zip_slip(source.relative, source.text))
-            return found, []
-        except Exception as exc:
-            return found, [ScanError(source.relative, "analysis", f"{exc.__class__.__name__}: {exc}")]
+        return _analyze_one_source(source, imported_sinks)
 
     if workers > 1 and len(files) > 1:
         # executor.map preserves discovery order irrespective of completion order.

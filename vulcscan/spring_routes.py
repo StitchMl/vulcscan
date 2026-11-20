@@ -33,33 +33,91 @@ _METHOD_KIND = {
 }
 
 
+_NEXT_MAPPING = re.compile(r"@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b")
+_REQUEST_METHOD = re.compile(r"RequestMethod\.(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)")
+_CONTROLLER_ANNOTATION = re.compile(r"@(?:RestController|Controller)\b")
+
+
+def _closing_brace(mask: str, opening: int) -> int | None:
+    depth = 0
+    for offset in range(opening, len(mask)):
+        if mask[offset] == "{":
+            depth += 1
+        elif mask[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return offset
+    return None
+
+
+def _controller_class(visible: str, mask: str, candidate: re.Match[str]) -> tuple[int, int, str, bool] | None:
+    annotations = candidate.group("annotations")
+    if not _CONTROLLER_ANNOTATION.search(annotations):
+        return None
+    # Classes with nonliteral RequestMapping cannot be mapped reliably.
+    prefix = _CLASS_PREFIX.search(annotations)
+    dynamic_prefix = "@RequestMapping" in annotations and prefix is None
+    opening = mask.find("{", candidate.end(), min(len(mask), candidate.end() + 300))
+    if opening < 0:
+        return None
+    closing = _closing_brace(mask, opening)
+    if closing is None:
+        return None
+    return opening, closing, prefix.group("path") if prefix else "", dynamic_prefix
+
+
+def _mapping_methods(route: re.Match[str]) -> list[str]:
+    if route.group("type") == "Request":
+        methods = sorted(set(_REQUEST_METHOD.findall(route.group("extra"))))
+        return methods or ["ANY"]
+    return _METHOD_KIND[route.group("type")]
+
+
+def _mapping_tail(visible: str, route: re.Match[str], class_end: int) -> str:
+    # Class-level @RequestMapping appears before class declarations,
+    # so there must be a method signature after the mapping annotation.
+    tail = visible[route.end():min(route.end() + 600, class_end)]
+    next_mapping = _NEXT_MAPPING.search(tail)
+    return tail[:next_mapping.start()] if next_mapping else tail
+
+
+def _route_entry(
+    path: str,
+    source: str,
+    visible: str,
+    route: re.Match[str],
+    class_info: tuple[int, int, str, bool],
+) -> dict[str, Any] | None:
+    _, class_end, prefix, dynamic = class_info
+    if dynamic:
+        return None
+    tail = _mapping_tail(visible, route, class_end)
+    method = _METHOD.search(tail)
+    if method is None:
+        return None
+    segment = route.group("path")
+    if not segment.startswith("/") or segment.startswith("//"):
+        return None
+    combined = prefix.rstrip("/") + segment if prefix else segment
+    auth = "present" if _AUTH.search(tail[:method.start()]) else "unknown"
+    return {
+        "method": _mapping_methods(route),
+        "path": combined,
+        "file": path,
+        "line": source.count("\n", 0, route.start()) + 1,
+        "handler": method.group("name"),
+        "authentication": auth,
+    }
+
+
 def spring_routes(path: str, source: str) -> list[dict[str, Any]]:
     visible = blank_comments(source, C_STYLE)
     mask = code_mask(source, C_STYLE)
     classes = []
     for candidate in _CLASS.finditer(visible):
-        annotations = candidate.group("annotations")
-        if not re.search(r"@(?:RestController|Controller)\b", annotations):
-            continue
-        # Classes with nonliteral RequestMapping cannot be mapped reliably.
-        dynamic_prefix = "@RequestMapping" in annotations and _CLASS_PREFIX.search(annotations) is None
-        prefix = _CLASS_PREFIX.search(annotations)
-        opening = mask.find("{", candidate.end(), min(len(mask), candidate.end() + 300))
-        if opening < 0:
-            continue
-        depth = 0
-        closing = None
-        for offset in range(opening, len(mask)):
-            if mask[offset] == "{":
-                depth += 1
-            elif mask[offset] == "}":
-                depth -= 1
-                if depth == 0:
-                    closing = offset
-                    break
-        if closing is None:
-            continue
-        classes.append((opening, closing, prefix.group("path") if prefix else "", dynamic_prefix))
+        info = _controller_class(visible, mask, candidate)
+        if info is not None:
+            classes.append(info)
     if not classes:
         return []
 
@@ -70,34 +128,7 @@ def spring_routes(path: str, source: str) -> list[dict[str, Any]]:
         candidates = [item for item in classes if item[0] < route.start() < item[1]]
         if not candidates:
             continue
-        _, class_end, prefix, dynamic = candidates[-1]
-        if dynamic:
-            continue
-        # Class-level @RequestMapping appears before class declarations,
-        # so there must be a method signature after the mapping annotation.
-        tail = visible[route.end():min(route.end() + 600, class_end)]
-        next_mapping = re.search(r"@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b", tail)
-        if next_mapping:
-            tail = tail[:next_mapping.start()]
-        method = _METHOD.search(tail)
-        if method is None:
-            continue
-        segment = route.group("path")
-        if not segment.startswith("/") or segment.startswith("//"):
-            continue
-        combined = prefix.rstrip("/") + segment if prefix else segment
-        if route.group("type") == "Request":
-            methods = sorted(set(re.findall(r"RequestMethod\.(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)", route.group("extra"))))
-            methods = methods or ["ANY"]
-        else:
-            methods = _METHOD_KIND[route.group("type")]
-        auth = "present" if _AUTH.search(tail[:method.start()]) else "unknown"
-        output.append({
-            "method": methods,
-            "path": combined,
-            "file": path,
-            "line": source.count("\n", 0, route.start()) + 1,
-            "handler": method.group("name"),
-            "authentication": auth,
-        })
+        entry = _route_entry(path, source, visible, route, candidates[-1])
+        if entry is not None:
+            output.append(entry)
     return output

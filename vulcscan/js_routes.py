@@ -43,25 +43,31 @@ def _exported(text: str, name: str) -> bool:
     return any(re.search(pattern, text) for pattern in definitions)
 
 
+def _import_candidates(
+    source: str, statement: str, item_pattern: str, symbol: str
+) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    for match in re.finditer(statement, source):
+        for item in match.group(1).split(","):
+            parts = re.fullmatch(item_pattern, item)
+            if parts and (parts.group(2) or parts.group(1)) == symbol:
+                candidates.append((match.group(2), parts.group(1)))
+    return candidates
+
+
 def _named_import(source: str, symbol: str) -> tuple[str, str] | None:
     """Return (specifier, exported symbol) for unambiguous direct imports."""
-    candidates: list[tuple[str, str]] = []
-    for match in re.finditer(
+    candidates = _import_candidates(
+        source,
         r"""\bimport\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]""",
+        r"\s*([\w$]+)(?:\s+as\s+([\w$]+))?\s*",
+        symbol,
+    ) + _import_candidates(
         source,
-    ):
-        for item in match.group(1).split(","):
-            parts = re.fullmatch(r"\s*([\w$]+)(?:\s+as\s+([\w$]+))?\s*", item)
-            if parts and (parts.group(2) or parts.group(1)) == symbol:
-                candidates.append((match.group(2), parts.group(1)))
-    for match in re.finditer(
         r"""\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)""",
-        source,
-    ):
-        for item in match.group(1).split(","):
-            parts = re.fullmatch(r"\s*([\w$]+)(?:\s*:\s*([\w$]+))?\s*", item)
-            if parts and (parts.group(2) or parts.group(1)) == symbol:
-                candidates.append((match.group(2), parts.group(1)))
+        r"\s*([\w$]+)(?:\s*:\s*([\w$]+))?\s*",
+        symbol,
+    )
     return candidates[0] if len(candidates) == 1 else None
 
 

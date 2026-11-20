@@ -336,6 +336,17 @@ def _warning_lines(result: ScanResult, color: bool) -> list[str]:
     return lines
 
 
+def _selected_file_lines(metadata: dict, width: int) -> list[str]:
+    """Display the exact requested scope in human-readable targeted reports."""
+    selected = metadata.get("selected_files")
+    if selected is None:
+        return []
+    lines = [f"Selected files: {len(selected)}"]
+    for path in selected:
+        lines.extend(_wrapped(path, width, first="  - ", rest="    "))
+    return lines
+
+
 def render_text(
     result: ScanResult,
     minimum_severity: Severity | None = None,
@@ -353,6 +364,7 @@ def render_text(
     display_width = _display_width(width)
     lines = [_paint("VulcScan - scan completed", "bold", color)]
     lines.extend(_wrapped(str(metadata.get("root", "")), display_width, first="Target:        ", rest="               "))
+    lines.extend(_selected_file_lines(metadata, display_width))
     lines.extend((
         f"Files:         {metadata.get('files_analyzed', 0)} scanned, {metadata.get('files_skipped', 0)} skipped, {duration_text}",
         f"Network:       {metadata.get('network_access', 'DISABLED')}",

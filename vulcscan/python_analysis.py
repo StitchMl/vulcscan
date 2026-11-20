@@ -487,6 +487,25 @@ def _django_route_parameters(route: str) -> dict[str, bool]:
     return parameters
 
 
+_DJANGO_VIEW_WRAPPERS = frozenset({
+    "django.contrib.auth.decorators.login_required",
+    "django.contrib.admin.views.decorators.staff_member_required",
+})
+
+
+def _django_wrapped_view(module: Module, view: ast.expr) -> ast.expr | None:
+    """Unwrap only statically imported Django authentication decorators."""
+    for _ in range(3):
+        if not isinstance(view, ast.Call):
+            break
+        if len(view.args) != 1 or view.keywords:
+            return None
+        if _canonical(module, view.func) not in _DJANGO_VIEW_WRAPPERS:
+            return None
+        view = view.args[0]
+    return view if isinstance(view, (ast.Name, ast.Attribute)) else None
+
+
 class PythonProject:
     def __init__(self, sources: Iterable[tuple[str, str]]) -> None:
         self.modules: list[Module] = []
@@ -607,7 +626,8 @@ class PythonProject:
                 route = _django_route_string(route_module, node)
                 if route is None:
                     continue
-                resolved = self.resolve(route_module, None, node.args[1])
+                view = _django_wrapped_view(route_module, node.args[1])
+                resolved = self.resolve(route_module, None, view) if view is not None else None
                 if resolved is None:
                     continue
                 target_module, target, _ = resolved

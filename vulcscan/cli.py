@@ -293,6 +293,19 @@ def _invalid_selected_file(root: Path, selected: frozenset[str] | None) -> str |
     return None
 
 
+
+def _selected_files_or_error(
+    root: Path, files: Sequence[str]
+) -> tuple[frozenset[str] | None, str | None]:
+    selected, rejected = _select_files(files)
+    if rejected is not None:
+        return None, f"--files requires repository-relative file paths: {rejected}"
+    invalid = _invalid_selected_file(root, selected)
+    if invalid is not None:
+        return None, f"--files path is not a regular file within the repository: {invalid}"
+    return selected, None
+
+
 def _write_outputs(
     result: Any, root: Path, severity: Any, content: str, output: Path | None, diff_path: Path | None
 ) -> None:
@@ -335,13 +348,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error("--output and --generate-diff must name different files")
         return 2
 
-    only_files, rejected = _select_files(args.files)
-    if rejected is not None:
-        _error(f"--files requires repository-relative file paths: {rejected}")
-        return 2
-    invalid_file = _invalid_selected_file(root, only_files)
-    if invalid_file is not None:
-        _error(f"--files path is not a regular file within the repository: {invalid_file}")
+    only_files, selection_error = _selected_files_or_error(root, args.files)
+    if selection_error is not None:
+        _error(selection_error)
         return 2
 
     config = ScanConfig(

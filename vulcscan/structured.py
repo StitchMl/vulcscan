@@ -388,7 +388,7 @@ CATALOGS: dict[str, Catalog] = {
         "dollar",
         False,
         _SHELL_ASSIGNMENT,
-        inputs=((re.compile(r"\bread\b(?:\s++-\w++(?:\s++(?!-)\S++)?)*\s++([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),
+        inputs=((re.compile(r"\bread\b(?:\s++-[A-Za-z]{0,8}[dinNptu]\s++\S++|\s++-\w++)*+\s++([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),
     ),
     "PowerShell": Catalog(
         "PS",

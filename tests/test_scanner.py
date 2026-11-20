@@ -121,14 +121,16 @@ def test_binary_and_oversized_files_are_skipped(tmp_path: Path) -> None:
 
 def test_selected_oversized_source_fails_instead_of_empty_success(tmp_path: Path) -> None:
     (tmp_path / "large.py").write_text("x = 1\n" * 100, encoding="utf-8")
+    selected = frozenset({"large.py"})
     with pytest.raises(ValueError, match="--files selection was not processed: large.py"):
-        _scan(tmp_path, only_files=frozenset({"large.py"}), max_file_size=16)
+        _scan(tmp_path, only_files=selected, max_file_size=16)
 
 
 def test_selected_unknown_extension_fails_instead_of_empty_success(tmp_path: Path) -> None:
     (tmp_path / "notes.unknown").write_text("not scanner input\n", encoding="utf-8")
+    selected = frozenset({"notes.unknown"})
     with pytest.raises(ValueError, match="--files selection was not processed: notes.unknown"):
-        _scan(tmp_path, only_files=frozenset({"notes.unknown"}))
+        _scan(tmp_path, only_files=selected)
 
 
 def test_selected_valid_manifest_is_processed_without_source_language(tmp_path: Path) -> None:

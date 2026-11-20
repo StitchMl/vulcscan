@@ -25,7 +25,7 @@ def test_generated_command_patch_preserves_benign_endpoint_contract(tmp_path: Pa
         "import subprocess\n"
         "from flask import request\n"
         "def endpoint():\n"
-        "    return subprocess.run(f\"echo {request.args['name']}\", shell=True)\n"
+        "    return subprocess.run(f\"git status -- {request.args['path']}\", shell=True)\n"
     )
     target = tmp_path / "app.py"
     target.write_text(original, encoding="utf-8")

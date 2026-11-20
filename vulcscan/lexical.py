@@ -199,6 +199,7 @@ def lexical_findings(file_name: str, relative_path: str, language: str, text: st
     _dynamic_expression_evaluation(language, text, add)
     _unscoped_resource_routes(language, text, add)
     _unchecked_orm_identity(language, text, add)
+    _gin_unscoped_gorm_id(language, text, add)
     if language in {"C", "C++"}:
         _c_format_strings(text, add)
         _c_buffer_overflows(text, add)
@@ -471,6 +472,46 @@ def _go_scopes(code: str) -> Iterator[tuple[str, int]]:
         offset = scope_start + len(scope)
         if scope.lstrip().startswith("func "):
             yield scope, scope_start
+
+
+_GIN_PATH_ID = re.compile(
+    r'(?m)^[ \t]*(?P<variable>[A-Za-z_]\w*)\s*:=\s*[A-Za-z_]\w*'
+    r'\s*\.\s*Param\s*\(\s*"(?P<key>[A-Za-z_]\w*)"\s*\)'
+)
+_GIN_OWNER_SCOPE = re.compile(
+    r'(?i)\b(?:owner_id|tenant_id|account_id|principal_id)\b'
+    r'|\b(?:OwnerID|TenantID|AccountID|PrincipalID)\b'
+    r'|\b(?:authorize|canAccess|checkPermission)\s*\('
+)
+
+
+def _gin_unscoped_gorm_id(language: str, text: str, add: Callable[..., None]) -> None:
+    """Detect direct Gin path IDs used in GORM first-record lookups."""
+    if language != "Go" or "gin.Context" not in text:
+        return
+    code = blank_comments(text, comment_style(language))
+    for scope, offset in _go_scopes(code):
+        if not re.search(r'\bfunc\b[^{]*\bgin\.Context\b', scope.split("{", 1)[0]):
+            continue
+        if _GIN_OWNER_SCOPE.search(scope):
+            continue
+        for source in _GIN_PATH_ID.finditer(scope):
+            key = source.group("key").lower()
+            if key not in {"id", "pk", "uuid"} and not key.endswith(("_id", "_uuid")):
+                continue
+            variable = re.escape(source.group("variable"))
+            lookup = re.search(
+                rf'\.\s*(?:First|Take)\s*\(\s*&[A-Za-z_]\w*\s*,\s*{variable}\s*\)',
+                scope[source.end():],
+            )
+            if lookup is None:
+                continue
+            line = code.count("\n", 0, offset + source.end() + lookup.start()) + 1
+            add(
+                "AUTHZ-SCOPE-001", line, 1,
+                f"Gin GORM lookup by c.Param({key})",
+                lookup.group(0), Confidence.MEDIUM,
+            )
 
 
 def _unchecked_orm_identity(language: str, text: str, add: Callable[..., None]) -> None:

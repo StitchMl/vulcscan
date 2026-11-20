@@ -445,6 +445,10 @@ def test_parse_size_rejects_zero_bytes() -> None:
 
 
 def test_cli_files_limits_scan_to_selected_paths(tmp_path: Path, monkeypatch) -> None:
+    selected = tmp_path / "src"
+    selected.mkdir()
+    (selected / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (selected / "other.py").write_text("value = 2\n", encoding="utf-8")
     captured = {}
 
     def fake_scan(config):
@@ -459,6 +463,55 @@ def test_cli_files_limits_scan_to_selected_paths(tmp_path: Path, monkeypatch) ->
 @pytest.mark.parametrize("unsafe", ["../secret.py", "/etc/passwd", "C:/temp/a.py", "."])
 def test_cli_files_rejects_unsafe_paths(tmp_path: Path, unsafe: str) -> None:
     assert cli.main([str(tmp_path), "--files", unsafe]) == 2
+
+
+def test_cli_files_missing_path_does_not_scan(tmp_path: Path, monkeypatch, capsys) -> None:
+    def unexpected_scan(config):
+        pytest.fail("a missing --files selection must never start a scan")
+
+    monkeypatch.setattr(cli, "scan", unexpected_scan)
+    status = cli.main([str(tmp_path), "--files", "not-present.py", "--no-cve"])
+    assert status == 2
+    assert "not-present.py" in capsys.readouterr().err
+
+
+def test_cli_files_rejects_directory(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    status = cli.main([str(tmp_path), "--files", "src", "--no-cve"])
+    assert status == 2
+
+
+def test_cli_files_rejects_symlinked_parent(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "app.py").write_text("value = 1\n", encoding="utf-8")
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"cannot create directory symlink: {exc}")
+    status = cli.main([str(tmp_path), "--files", "linked/app.py", "--no-cve"])
+    assert status == 2
+
+
+def test_cli_files_real_scan_preserves_sources_and_reports_findings(tmp_path: Path, capsys) -> None:
+    original = (
+        "from flask import request\n"
+        "import subprocess\n"
+        "command = request.args['command']\n"
+        "subprocess.run(command, shell=True)\n"
+    )
+    source = tmp_path / "app.py"
+    source.write_text(original, encoding="utf-8")
+    status = cli.main([
+        str(tmp_path), "--offline", "--no-cve", "--format", "json",
+        "--files", "app.py",
+    ])
+    assert status == 0
+    report = json.loads(capsys.readouterr().out)
+    assert any(finding["rule_id"] == "PY-CMD-001" for finding in report["findings"])
+    assert report["metadata"]["network_access"] == "DISABLED"
+    assert source.read_text(encoding="utf-8") == original
 
 
 def test_python_diff_skips_syntax_breakage(tmp_path: Path) -> None:

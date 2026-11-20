@@ -257,6 +257,11 @@ _REVIEW_ONLY_SHELL_COMMANDS = frozenset({
 })
 
 
+def _shell_rewrite_machine_applicable(node: ast.Call, tokens: list[tuple[str, str]]) -> bool:
+    """Refuse automatic shell rewrites for builtins and interpreters."""
+    return _single_line(node) and tokens[0][1].casefold() not in _REVIEW_ONLY_SHELL_COMMANDS
+
+
 def _argument_list_command(node: ast.Call, text: str) -> Remediation | None:
     if not node.args:
         return None
@@ -280,12 +285,7 @@ def _argument_list_command(node: ast.Call, text: str) -> Remediation | None:
         if any(item is None for item in rest):
             return None
         suggested = f"{function}({', '.join([argv, *rest])})"
-        # These names can be shell builtins or shell interpreters. Removing
-        # shell=True may break availability or leave a shell injection intact.
-        applicable = (
-            _single_line(node)
-            and tokens[0][1].casefold() not in _REVIEW_ONLY_SHELL_COMMANDS
-        )
+        applicable = _shell_rewrite_machine_applicable(node, tokens)
         confidence = Confidence.HIGH
     elif name == "system" and len(node.args) == 1:
         suggested = f"subprocess.run({argv}, check=False).returncode"

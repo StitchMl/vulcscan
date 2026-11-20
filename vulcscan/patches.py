@@ -250,6 +250,13 @@ def _command_tokens(parts: list[tuple[str, str]]) -> list[tuple[str, str]] | Non
     return tokens
 
 
+_REVIEW_ONLY_SHELL_COMMANDS = frozenset({
+    "bash", "cd", "cmd", "command", "copy", "dash", "del", "dir",
+    "echo", "eval", "exec", "exit", "export", "powershell", "pwsh",
+    "read", "set", "sh", "source", "type", "zsh",
+})
+
+
 def _argument_list_command(node: ast.Call, text: str) -> Remediation | None:
     if not node.args:
         return None
@@ -273,7 +280,12 @@ def _argument_list_command(node: ast.Call, text: str) -> Remediation | None:
         if any(item is None for item in rest):
             return None
         suggested = f"{function}({', '.join([argv, *rest])})"
-        applicable = _single_line(node)
+        # These names can be shell builtins or shell interpreters. Removing
+        # shell=True may break availability or leave a shell injection intact.
+        applicable = (
+            _single_line(node)
+            and tokens[0][1].casefold() not in _REVIEW_ONLY_SHELL_COMMANDS
+        )
         confidence = Confidence.HIGH
     elif name == "system" and len(node.args) == 1:
         suggested = f"subprocess.run({argv}, check=False).returncode"

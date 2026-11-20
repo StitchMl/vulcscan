@@ -120,14 +120,14 @@ The scanned repository is treated as hostile. VulcScan reads files as bytes, par
 ## Known limitations
 
 - Python cross-module flows need a direct call to an imported function. Within one module, a method call on an explicitly constructed local instance (`service = LocalClass(); service.run(value)`) is now resolved only when the variable has exactly one direct assignment before the call. Dynamic dispatch, rebound instances, decorators that wrap handlers, `getattr` and callbacks are not followed.
-- JavaScript/TypeScript analysis stays within one file and does not follow higher-order functions or object properties set elsewhere.
+- JavaScript/TypeScript can trace limited direct local imports and up to four imported call edges for unchanged-argument sink relays; higher-order functions, dynamic imports, and object properties set elsewhere remain unresolved.
 - PHP, Java, C#, Go, Ruby, C/C++, Shell, PowerShell and Batch have no type information or inter-procedural analysis.
 - Django literal `path`/`re_path` declarations are linked to imported function views; dynamic URL configuration and class-based `as_view()` dispatch are not resolved.
-- Argument injection into a fixed program (`subprocess.run(["git", user_value])`) is not reported.
+- Python argument injection into recognized fixed programs can be reported for direct HTTP input (see `PY-ARG-001`), but complex argument construction and program-dependent option semantics remain out of scope.
 - Binary analysis is header, symbol and printable-string based. It does not replace disassembly, control-flow analysis, fuzzing or memory-safety instrumentation.
 - Without `--update-cve`, dependency vulnerabilities are not reported. Corporate proxies are not supported for OSV lookups.
 - Reported findings are potential vulnerabilities; a reviewer must confirm them.
-- Object-level authorization analysis covers direct Express route lookups and intra-function GORM identity lookups. Indirect policy engines, helper guards and cross-service ownership checks remain outside its proof model.
+- Object-level authorization analysis covers conservative direct patterns in Express, Flask, FastAPI, Django, PHP Eloquent, Gin/GORM, and intra-function GORM identity checks. Indirect policy engines, helper guards and cross-service ownership checks remain outside its proof model.
 
 ## Tests
 
@@ -180,7 +180,7 @@ document why the finding is a false positive.
 
 With `--attack-surface`, a Python GET endpoint associated with a traced literal query parameter may include a `verify_curl` field. The displayed command targets `127.0.0.1:8000` using the inert `VULCSCAN_CANARY` marker. It is never executed; no command is emitted for POST, dynamic routes or ambiguous inputs. Review handler behavior before running any GET request, because an application may incorrectly mutate state on GET.
 
-Python `--generate-diff` validates proposed changes independently, so one invalid patch no longer discards unrelated valid edits. Syntax validation and basic import checks do not prove functional or SLA safety.
+Python `--generate-diff` validates proposed changes independently, so one invalid patch no longer discards unrelated valid edits. A regression test now covers offline detection of unsafe YAML deserialization, non-mutating diff generation, Python syntax validation and targeted rescan after the suggested repair. Syntax validation and basic import checks still do not prove functional or SLA safety.
 
 ### Express handler links
 
@@ -202,7 +202,11 @@ A JavaScript or TypeScript finding may be suppressed with an exact-rule `// vulc
 
 ### Conservative PHP Eloquent IDOR heuristic
 
-For direct Laravel-style `Model::find($_GET['document_id'])` / `findOrFail` lookups, VulcScan raises a review-only `AUTHZ-SCOPE-001` warning when the request key is an ID/UUID and no explicit ownership or authorization marker appears in the file. A file containing owner or tenant scope checks is left unflagged to avoid guessing whether a resource is exposed. This does not establish a bypass, resolve indirect assignments or cross-file policies, or prove that a returned record reaches an HTTP response. Use manual authorization tests to confirm access controls.
+For direct Laravel-style `Model::find($_GET['document_id'])` / `findOrFail` lookups, VulcScan raises a review-only `AUTHZ-SCOPE-001` warning when the request key is an ID/UUID and no explicit ownership or authorization marker appears in the file. An individual PHP handler containing owner or tenant scope checks is left unflagged to avoid guessing whether a resource is exposed. This does not establish a bypass, resolve indirect assignments or cross-file policies, or prove that a returned record reaches an HTTP response. Use manual authorization tests to confirm access controls.
+
+### Conservative Gin/GORM route IDOR heuristic
+
+Gin handlers that pass a literal `c.Param("id")` or `c.Param("document_id")` value directly to GORM `First(&record, id)` or `Take(&record, id)` may receive a review-only `AUTHZ-SCOPE-001` finding if the handler contains no recognizable owner/tenant or authorization scope. Scoped handlers and non-identifier path parameters are excluded. This does not prove that middleware, external authorization, or downstream guards are absent; review endpoint policy before concluding IDOR.
 
 ### PHP authentication comparisons and token signatures
 

@@ -485,6 +485,17 @@ _GIN_OWNER_SCOPE = re.compile(
 )
 
 
+def _gin_id_record_lookup(scope: str, source: re.Match[str]) -> re.Match[str] | None:
+    key = source.group("key").lower()
+    if key not in {"id", "pk", "uuid"} and not key.endswith(("_id", "_uuid")):
+        return None
+    variable = re.escape(source.group("variable"))
+    return re.search(
+        rf'\.\s*(?:First|Take)\s*\(\s*&[A-Za-z_]\w*\s*,\s*{variable}\s*\)',
+        scope[source.end():],
+    )
+
+
 def _gin_unscoped_gorm_id(language: str, text: str, add: Callable[..., None]) -> None:
     """Detect direct Gin path IDs used in GORM first-record lookups."""
     if language != "Go" or "gin.Context" not in text:
@@ -496,16 +507,10 @@ def _gin_unscoped_gorm_id(language: str, text: str, add: Callable[..., None]) ->
         if _GIN_OWNER_SCOPE.search(scope):
             continue
         for source in _GIN_PATH_ID.finditer(scope):
-            key = source.group("key").lower()
-            if key not in {"id", "pk", "uuid"} and not key.endswith(("_id", "_uuid")):
-                continue
-            variable = re.escape(source.group("variable"))
-            lookup = re.search(
-                rf'\.\s*(?:First|Take)\s*\(\s*&[A-Za-z_]\w*\s*,\s*{variable}\s*\)',
-                scope[source.end():],
-            )
+            lookup = _gin_id_record_lookup(scope, source)
             if lookup is None:
                 continue
+            key = source.group("key").lower()
             line = code.count("\n", 0, offset + source.end() + lookup.start()) + 1
             add(
                 "AUTHZ-SCOPE-001", line, 1,

@@ -186,6 +186,46 @@ def test_scan_order_is_deterministic() -> None:
     ]
 
 
+def test_parallel_scan_matches_serial_findings_dependencies_and_errors() -> None:
+    serial = _scan(FIXTURES / "vulnerable", workers=1)
+    parallel = _scan(FIXTURES / "vulnerable", workers=4)
+
+    assert serial.findings
+    assert [item.as_dict() for item in parallel.findings] == [
+        item.as_dict() for item in serial.findings
+    ]
+    assert [item.as_dict() for item in parallel.dependencies] == [
+        item.as_dict() for item in serial.dependencies
+    ]
+    assert [item.as_dict() for item in parallel.errors] == [
+        item.as_dict() for item in serial.errors
+    ]
+    assert parallel.metadata["files_analyzed"] == serial.metadata["files_analyzed"]
+    assert parallel.metadata["languages"] == serial.metadata["languages"]
+
+
+def test_parallel_selected_offline_scan_does_not_modify_sources(tmp_path: Path) -> None:
+    source = (
+        "from flask import request\n"
+        "import subprocess\n"
+        "command = request.args['command']\n"
+        "subprocess.run(command, shell=True)\n"
+    )
+    paths = [tmp_path / "a.py", tmp_path / "b.py"]
+    for path in paths:
+        path.write_text(source, encoding="utf-8")
+    selected = frozenset(path.name for path in paths)
+    serial = _scan(tmp_path, workers=1, only_files=selected)
+    parallel = _scan(tmp_path, workers=4, only_files=selected)
+
+    assert any(f.rule_id == "PY-CMD-001" for f in parallel.findings)
+    assert [f.as_dict() for f in serial.findings] == [
+        f.as_dict() for f in parallel.findings
+    ]
+    assert parallel.metadata["network_access"] == "DISABLED"
+    assert all(path.read_text(encoding="utf-8") == source for path in paths)
+
+
 def test_offline_mode_performs_no_network_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

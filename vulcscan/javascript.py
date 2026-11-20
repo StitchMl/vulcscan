@@ -102,6 +102,101 @@ _SANITIZER_CALLS: list[tuple[re.Pattern[str], frozenset[str]]] = [
 _DB_RECEIVER = re.compile(r"(?i)(?:^|\.)(?:db|database|conn|connection|pool|client|knex|sequelize|mysql|pg|sql|prisma|trx|tx|tr|cursor)$")
 
 
+_JS_NAME = r"[\w$]+"
+_JS_LITERAL = r"""(?:'[^']*'|"[^"]*"|\d+)"""
+_JS_ARRAY_LITERAL = r"\[\s*" + _JS_LITERAL + r"(?:\s*,\s*" + _JS_LITERAL + r")*(?:\s*,)?\s*\]"
+_ALLOWLIST_LITERAL = re.compile(
+    r"(?:new\s+Set\s*\(\s*)?" + _JS_ARRAY_LITERAL + r"(?:\s*\)(?:\s+as\s+const)?|\s+as\s+const|\s*)"
+)
+_ARRAY_LITERAL = re.compile(_JS_ARRAY_LITERAL)
+_IMPORT_DEFAULT = r"(?:(" + _JS_NAME + r")(?:\s*,)?\s*)?"
+_IMPORT_NAMESPACE = r"(?:\*\s*as\s+(" + _JS_NAME + r")\s*)?"
+_IMPORT_NAMED = r"(?:\{([^}]*)\}\s*)?"
+_IMPORT_SOURCE = r"""from\s*['"](?:node:)?([\w@/.-]+)['"]"""
+_IMPORT_STATEMENT = re.compile(r"import\s+" + _IMPORT_DEFAULT + _IMPORT_NAMESPACE + _IMPORT_NAMED + _IMPORT_SOURCE)
+_FUNCTION_DECLARATION = re.compile(r"\bfunction\b(?:\s*\*)?\s*([\w$]*)\s*\(([^)]*)\)\s*(?::[^{]*)?$")
+_ARROW_PARENS = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?\(([^()]*)\)\s*(?::[^=]*)?=>\s*$")
+_ARROW_BARE = re.compile(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?([\w$]+)\s*=>\s*$")
+_METHOD_MODIFIERS = r"(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
+_METHOD_HEADER = re.compile(r"\s*" + _METHOD_MODIFIERS + r"([\w$]+)\s*(?:<[^>]*>\s*)?\(([^)]*)\)\s*(?::[^{]*)?$")
+_CONTROL_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
+_CATCH_BINDING = re.compile(r"\bcatch\s*\(\s*([\w$]+)")
+_FOR_BINDING = re.compile(
+    r"\bfor\s*\(\s*(?:const|let|var)\s+(" + _JS_NAME + r"|\{[^}]*\}|\[[^\]]*\])\s+(?:of|in)\s+(\S.*)\)\s*$",
+    re.DOTALL,
+)
+_IF_CONDITION = re.compile(r"\s*(?:else\s+)?if\s*\((.*)\)\s*$", re.DOTALL)
+_TYPED_HEADER_TAIL = re.compile(r"\)\s*:\s*[\w$<>\[\]|&.,][\w$<>\[\]|&., ]*$")
+_NEGATIVE_INDEX = re.compile(r"\)\s*(?:===?\s*-1|<\s*0)\s*$")
+_POSITIVE_INDEX = re.compile(r"\)\s*(?:!==?\s*-1|>=\s*0|>\s*-1)\s*$")
+_MEMBERSHIP = re.compile(r"\s*(\S.*?)\.\s*(?:includes|has|indexOf)\s*\(\s*([\w$.]+)\s*\)", re.DOTALL)
+_REGEX_TEST = re.compile(r"\s*/(.+)/([a-z]*)\s*\.\s*test\s*\(\s*([\w$.]+)\s*\)\s*$", re.DOTALL)
+_STARTS_WITH = re.compile(r"\s*([\w$.]+)\s*\.\s*startsWith\s*\(")
+_STRING_LITERAL = r"""(?:'[^']*'|"[^"]*")"""
+_EQUALITY_RIGHT = re.compile(r"\s*([\w$.]+)\s*===?\s*" + _STRING_LITERAL + r"\s*$")
+_EQUALITY_LEFT = re.compile(r"\s*" + _STRING_LITERAL + r"\s*===?\s*([\w$.]+)\s*$")
+_NUMERIC_VALIDATORS = (
+    r"(?:Number\s*\.\s*(?:isInteger|isSafeInteger)"
+    r"|validator\s*\.\s*(?:isInt|isNumeric|isUUID|isAlphanumeric))"
+)
+_NUMERIC_CHECK = re.compile(r"\s*" + _NUMERIC_VALIDATORS + r"\s*\(\s*([\w$.]+)\s*\)\s*$")
+_Condition = tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]
+
+
+_QUOTED_LITERAL = re.compile(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|`((?:\\.|[^`\\$])*)`""", re.DOTALL)
+_NUMBER_LITERAL = re.compile(r"-?\d+(?:\.\d+)?")
+_PLAIN_REFERENCE = re.compile(r"[\w$.\s]+")
+_SOURCE_PATTERNS = (
+    (_REMOTE_SOURCE, REMOTE, "HTTP request input"),
+    (_LOCAL_SOURCE, LOCAL, "Command-line argument"),
+    (_ENV_SOURCE, ENVIRONMENT, "Environment variable"),
+)
+_FS_METHODS = re.compile(
+    r"(?:readFile|writeFile|appendFile|unlink|rm|rmdir|mkdir|readdir|open|copyFile"
+    r"|createReadStream|createWriteStream|readlink|symlink|chmod)(?:Sync)?"
+)
+_VM_METHODS = {"runInNewContext", "runInThisContext", "runInContext", "compileFunction", "Script"}
+_HTTP_CLIENT_MODULES = {"axios", "fetch", "got", "needle", "superagent", "request", "undici"}
+_HTTP_CLIENT_METHODS = {"__call__", "get", "post", "put", "patch", "delete", "head", "request", "default"}
+_RESPONSE_OBJECTS = {"res", "response", "reply", "ctx"}
+_REQUEST_OBJECT = re.compile(r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))")
+_MONGO_METHODS = {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"}
+_MONGO_COLLECTION = re.compile(r"(?:users|accounts|orders|products)Collection", re.IGNORECASE)
+_RAW_SQL_METHODS = {"raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}
+_SQL_METHODS = {"query", "execute"} | _RAW_SQL_METHODS
+
+
+def _is_template_call(receiver: str, method: str) -> bool:
+    return (
+        (receiver in {"ejs", "pug"} and method in {"render", "compile"})
+        or (receiver in {"Handlebars", "handlebars"} and method == "compile")
+        or (receiver == "nunjucks" and method == "renderString")
+    )
+
+
+def _is_merge_call(receiver: str, method: str) -> bool:
+    return (receiver == "Object" and method == "assign") or (
+        receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
+    )
+
+
+def _is_mongo_call(receiver: str, method: str) -> bool:
+    return method in _MONGO_METHODS and (
+        receiver in {"collection", "Model", "User", "Account"}
+        or receiver.startswith(("db.collection", "mongoose.model"))
+        or _MONGO_COLLECTION.fullmatch(receiver) is not None
+    )
+
+
+
+def _function_header(header: str) -> re.Match[str] | None:
+    function_match = _FUNCTION_DECLARATION.search(header) or _ARROW_PARENS.search(header) or _ARROW_BARE.search(header)
+    method_match = _METHOD_HEADER.match(header)
+    if method_match and method_match.group(1) in _CONTROL_KEYWORDS:
+        method_match = None
+    return function_match or method_match
+
+
 @dataclass(slots=True)
 class _Scope:
     function: bool
@@ -118,6 +213,13 @@ class _Statement:
     end: int
     opens: bool = False
     closes: bool = False
+
+
+@dataclass(slots=True)
+class _ScanState:
+    stack: list[tuple[str, int]] = field(default_factory=list)  # ("obj", 0) or ("block", saved paren depth)
+    paren: int = 0
+    start: int = 0
 
 
 class _Analyzer:
@@ -144,7 +246,7 @@ class _Analyzer:
                 self.objects[match.group(1)] = module
         for match in re.finditer(rf"(?:const|let|var)\s*\{{([^}}]*)\}}\s*=\s*{_REQUIRE}", text):
             self._named_imports(match.group(1), match.group(2), ":")
-        for match in re.finditer(r"""import\s+(?:([\w$]+)\s*,?\s*)?(?:\*\s*as\s+([\w$]+)\s*)?(?:\{([^}]*)\}\s*)?from\s*['"](?:node:)?([\w@/.-]+)['"]""", text):
+        for match in _IMPORT_STATEMENT.finditer(text):
             default, namespace, named, source = match.groups()
             module = _MODULES.get(source)
             if not module:
@@ -167,7 +269,7 @@ class _Analyzer:
             exported, local = exported.strip(), (local.strip() or exported.strip())
             if exported == "promises" and module == "fs":
                 self.objects[local] = "fs"
-            elif re.fullmatch(r"[\w$]+", local):
+            elif re.fullmatch(_JS_NAME, local):
                 self.functions[local] = (module, exported)
 
     # Statements -------------------------------------------------------------------
@@ -183,46 +285,52 @@ class _Analyzer:
 
     def _statements(self):
         mask = self.mask
-        stack: list[tuple[str, int]] = []  # ("obj", 0) or ("block", saved paren depth)
-        paren = 0
-        start = 0
-        length = len(mask)
-        index = 0
-        while index < length:
-            char = mask[index]
+        state = _ScanState()
+        for index, char in enumerate(mask):
             if char in "([":
-                paren += 1
+                state.paren += 1
             elif char in ")]":
-                paren = max(0, paren - 1)
+                state.paren = max(0, state.paren - 1)
             elif char == "{":
-                if self._opens_block(start, index):
-                    yield _Statement(start, index + 1, opens=True)
-                    stack.append(("block", paren))
-                    paren = 0
-                    start = index + 1
-                else:
-                    stack.append(("obj", 0))
-                    paren += 1
+                yield from self._open_brace(state, index)
             elif char == "}":
-                if stack and stack[-1][0] == "obj":
-                    stack.pop()
-                    paren = max(0, paren - 1)
-                elif stack:
-                    if mask[start:index].strip():
-                        yield _Statement(start, index)
-                    yield _Statement(index, index + 1, closes=True)
-                    paren = stack.pop()[1]
-                    start = index + 1
-            elif char == ";" and paren == 0:
-                if mask[start:index].strip():
-                    yield _Statement(start, index + 1)
-                start = index + 1
-            elif char == "\n" and paren == 0 and self._complete(start, index):
-                yield _Statement(start, index)
-                start = index + 1
-            index += 1
-        if mask[start:].strip():
-            yield _Statement(start, length)
+                yield from self._close_brace(state, index)
+            elif char in ";\n" and state.paren == 0:
+                yield from self._end_statement(state, index, char)
+        if mask[state.start:].strip():
+            yield _Statement(state.start, len(mask))
+
+    def _open_brace(self, state: _ScanState, index: int):
+        if self._opens_block(state.start, index):
+            yield _Statement(state.start, index + 1, opens=True)
+            state.stack.append(("block", state.paren))
+            state.paren = 0
+            state.start = index + 1
+        else:
+            state.stack.append(("obj", 0))
+            state.paren += 1
+
+    def _close_brace(self, state: _ScanState, index: int):
+        if not state.stack:
+            return
+        if state.stack[-1][0] == "obj":
+            state.stack.pop()
+            state.paren = max(0, state.paren - 1)
+            return
+        if self.mask[state.start:index].strip():
+            yield _Statement(state.start, index)
+        yield _Statement(index, index + 1, closes=True)
+        state.paren = state.stack.pop()[1]
+        state.start = index + 1
+
+    def _end_statement(self, state: _ScanState, index: int, char: str):
+        if char == ";":
+            if self.mask[state.start:index].strip():
+                yield _Statement(state.start, index + 1)
+            state.start = index + 1
+        elif self._complete(state.start, index):
+            yield _Statement(state.start, index)
+            state.start = index + 1
 
     def _opens_block(self, start: int, brace: int) -> bool:
         header = self.mask[start:brace].rstrip()
@@ -235,7 +343,7 @@ class _Analyzer:
         if re.search(r"\b(?:class|interface|enum|namespace)\b[^=(]*$", header):
             return True
         # function f(a): Type {  /  method(a): Promise<T> {
-        return bool(re.search(r"\)\s*:\s*[\w$<>\[\]|&., ]+$", header))
+        return bool(_TYPED_HEADER_TAIL.search(header))
 
     def _complete(self, start: int, newline: int) -> bool:
         current = self.mask[start:newline].strip()
@@ -267,45 +375,41 @@ class _Analyzer:
 
     def _block_scope(self, start: int, end: int) -> _Scope:
         header = self.mask[start:end]
-        function_match = (
-            re.search(r"\bfunction\b\s*\*?\s*([\w$]*)\s*\(([^)]*)\)\s*(?::[^{]*)?$", header)
-            or re.search(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?\(([^()]*)\)\s*(?::[^=]*)?=>\s*$", header)
-            or re.search(r"(?:([\w$]+)\s*[=:]\s*)?(?:async\s+)?([\w$]+)\s*=>\s*$", header)
-        )
-        method_match = re.match(
-            r"\s*(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*([\w$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?::[^{]*)?$",
-            header,
-        )
-        if method_match and method_match.group(1) in {"if", "for", "while", "switch", "catch", "with"}:
-            method_match = None
-        if function_match or method_match:
-            match = function_match or method_match
-            assert match is not None
+        match = _function_header(header)
+        if match is not None:
             name = match.group(1) or None
             scope = _Scope(function=True, name=name or self._enclosing_name())
             for parameter in _parameter_names(match.group(2)):
                 scope.values[parameter] = UNKNOWN
             return scope
         scope = _Scope(function=False, name=self._enclosing_name())
-        catch = re.search(r"\bcatch\s*\(\s*([\w$]+)", header)
+        catch = _CATCH_BINDING.search(header)
         if catch:
             scope.values[catch.group(1)] = UNKNOWN
-        loop = re.search(r"\bfor\s*\(\s*(?:const|let|var)\s+([\w$]+|\{[^}]*\}|\[[^\]]*\])\s+(?:of|in)\s+(.+)\)\s*$", header, re.DOTALL)
-        if loop:
-            offset = start + loop.start(2)
-            iterable = self._value(offset, offset + len(loop.group(2)))
-            for name in _pattern_names(loop.group(1)):
-                scope.values[name] = iterable
-        condition = re.match(r"\s*(?:else\s+)?if\s*\((.*)\)\s*$", header, re.DOTALL)
-        if condition:
-            offset = start + condition.start(1)
-            when_true, when_false = self._condition(offset, offset + len(condition.group(1)))
-            for name, categories in when_true:
-                current = self._lookup(name)
-                if current is not None:
-                    scope.values[name] = sanitize(current, categories)
-            scope.guard = when_false
+        self._bind_loop(scope, start, header)
+        self._bind_condition(scope, start, header)
         return scope
+
+    def _bind_loop(self, scope: _Scope, start: int, header: str) -> None:
+        loop = _FOR_BINDING.search(header)
+        if not loop:
+            return
+        offset = start + loop.start(2)
+        iterable = self._value(offset, offset + len(loop.group(2)))
+        for name in _pattern_names(loop.group(1)):
+            scope.values[name] = iterable
+
+    def _bind_condition(self, scope: _Scope, start: int, header: str) -> None:
+        condition = _IF_CONDITION.match(header)
+        if not condition:
+            return
+        offset = start + condition.start(1)
+        when_true, when_false = self._condition(offset, offset + len(condition.group(1)))
+        for name, categories in when_true:
+            current = self._lookup(name)
+            if current is not None:
+                scope.values[name] = sanitize(current, categories)
+        scope.guard = when_false
 
     def _close_block(self) -> None:
         if len(self.scopes) == 1:
@@ -344,7 +448,7 @@ class _Analyzer:
 
     # Conditions -------------------------------------------------------------------
 
-    def _condition(self, start: int, end: int) -> tuple[list[tuple[str, frozenset[str]]], list[tuple[str, frozenset[str]]]]:
+    def _condition(self, start: int, end: int) -> _Condition:
         """Sanitizations implied when the condition is true and when it is false."""
         code = self.mask[start:end]
         stripped = code.strip()
@@ -362,38 +466,64 @@ class _Analyzer:
             when_true, when_false = self._condition(offset + 1, end)
             return when_false, when_true
         text = self.text[start:end]
-        negative_index = re.search(r"\)\s*(?:===?\s*-1|<\s*0)\s*$", stripped)
-        positive_index = re.search(r"\)\s*(?:!==?\s*-1|>=\s*0|>\s*-1)\s*$", stripped)
-        membership = re.match(r"\s*(.+?)\s*\.\s*(?:includes|has|indexOf)\s*\(\s*([\w$.]+)\s*\)", text, re.DOTALL)
-        if membership and self._is_allowlist(membership.group(1).strip()):
-            items = [(membership.group(2), ALL_SINKS)]
-            if ".indexOf" in text and negative_index:
-                return [], items
-            if ".indexOf" in text and not positive_index:
-                return [], []
-            return items, []
-        regex = re.match(r"\s*/(.+)/([a-z]*)\s*\.\s*test\s*\(\s*([\w$.]+)\s*\)\s*$", text, re.DOTALL)
-        if regex and "m" not in regex.group(2):
-            categories = safe_for(regex.group(1), fullmatch=True) if regex.group(1).startswith("^") and regex.group(1).endswith("$") else frozenset()
-            if categories:
-                return [(regex.group(3), categories)], []
-        startswith = re.match(r"\s*([\w$.]+)\s*\.\s*startsWith\s*\(", text)
-        if startswith:
-            current = self._lookup(startswith.group(1))
-            if current is not None and NORMALIZED in current.sanitized:
-                return [(startswith.group(1), frozenset({FILESYSTEM}))], []
-        equality = re.match(r"""\s*([\w$.]+)\s*===?\s*(?:'[^']*'|"[^"]*")\s*$""", text) or re.match(
-            r"""\s*(?:'[^']*'|"[^"]*")\s*===?\s*([\w$.]+)\s*$""", text
-        )
-        if equality:
-            return [(equality.group(1), ALL_SINKS)], []
-        numeric = re.match(r"\s*(?:Number\s*\.\s*(?:isInteger|isSafeInteger)|validator\s*\.\s*(?:isInt|isNumeric|isUUID|isAlphanumeric))\s*\(\s*([\w$.]+)\s*\)\s*$", text)
-        if numeric:
-            return [(numeric.group(1), ALL_SINKS)], []
+        result = self._membership_condition(text, stripped)
+        if result is not None:
+            return result
+        for check in (
+            self._regex_condition,
+            self._starts_with_condition,
+            self._equality_condition,
+            self._numeric_condition,
+        ):
+            result = check(text)
+            if result is not None:
+                return result
         return [], []
 
+    def _membership_condition(self, text: str, stripped: str) -> _Condition | None:
+        membership = _MEMBERSHIP.match(text)
+        if not (membership and self._is_allowlist(membership.group(1).strip())):
+            return None
+        items = [(membership.group(2), ALL_SINKS)]
+        if ".indexOf" in text and _NEGATIVE_INDEX.search(stripped):
+            return [], items
+        if ".indexOf" in text and not _POSITIVE_INDEX.search(stripped):
+            return [], []
+        return items, []
+
+    def _regex_condition(self, text: str) -> _Condition | None:
+        regex = _REGEX_TEST.match(text)
+        if not regex or "m" in regex.group(2):
+            return None
+        pattern = regex.group(1)
+        categories = safe_for(pattern, fullmatch=True) if pattern.startswith("^") and pattern.endswith("$") else frozenset()
+        if not categories:
+            return None
+        return [(regex.group(3), categories)], []
+
+    def _starts_with_condition(self, text: str) -> _Condition | None:
+        starts_with = _STARTS_WITH.match(text)
+        if not starts_with:
+            return None
+        current = self._lookup(starts_with.group(1))
+        if current is not None and NORMALIZED in current.sanitized:
+            return [(starts_with.group(1), frozenset({FILESYSTEM}))], []
+        return None
+
+    def _equality_condition(self, text: str) -> _Condition | None:
+        equality = _EQUALITY_RIGHT.match(text) or _EQUALITY_LEFT.match(text)
+        if equality:
+            return [(equality.group(1), ALL_SINKS)], []
+        return None
+
+    def _numeric_condition(self, text: str) -> _Condition | None:
+        numeric = _NUMERIC_CHECK.match(text)
+        if numeric:
+            return [(numeric.group(1), ALL_SINKS)], []
+        return None
+
     def _is_allowlist(self, expression: str) -> bool:
-        if re.fullmatch(r"\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]", expression):
+        if _ARRAY_LITERAL.fullmatch(expression):
             return True
         return any(expression in scope.allowlists for scope in self.scopes)
 
@@ -407,7 +537,7 @@ class _Analyzer:
                 target = self.text[target_start:target_end].strip()
                 value = self._declared_value(value_start, value_end, new_scope)
                 self._bind_target(target, value, kind=declaration.group(1), statement=(start, end))
-                if self._literal_allowlist(value_start, value_end) and re.fullmatch(r"[\w$]+", target):
+                if self._literal_allowlist(value_start, value_end) and re.fullmatch(_JS_NAME, target):
                     self.scopes[-1].allowlists.add(target)
             return
         assignment = re.match(r"\s*([\w$]+(?:\s*\.\s*[\w$]+)*)\s*(\+?=)(?!=)", code)
@@ -480,12 +610,7 @@ class _Analyzer:
 
     def _literal_allowlist(self, start: int, end: int) -> bool:
         expression = self.text[start:end].strip().rstrip(";")
-        return bool(
-            re.fullmatch(
-                r"(?:new\s+Set\s*\(\s*)?\[\s*(?:'[^']*'|\"[^\"]*\"|\d+)(?:\s*,\s*(?:'[^']*'|\"[^\"]*\"|\d+))*\s*,?\s*\]\s*\)?(?:\s+as\s+const)?",
-                expression,
-            )
-        )
+        return bool(_ALLOWLIST_LITERAL.fullmatch(expression))
 
     # Values -----------------------------------------------------------------------
 
@@ -493,13 +618,34 @@ class _Analyzer:
         text = self.text[start:end]
         mask = list(self.mask[start:end])
         stripped = text.strip().rstrip(";").strip()
-        literal = re.fullmatch(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"|`((?:\\.|[^`\\$])*)`""", stripped, re.DOTALL)
+        literal = _QUOTED_LITERAL.fullmatch(stripped)
         if literal:
             return constant(next(group for group in literal.groups() if group is not None))
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
+        if _NUMBER_LITERAL.fullmatch(stripped):
             return constant(stripped)
+        values = self._sanitizer_values(start, end, mask)
+        values.extend(self._source_values(start, mask))
+        dynamic = self._identifier_values("".join(mask), values)
+        merged = merge(*values) if values else Value()
+        composed = _is_composed(stripped)
+        direct = len(values) == 1 and _PLAIN_REFERENCE.fullmatch(stripped) is not None
+        prefix = _string_prefix(stripped)
+        if prefix is None and direct:
+            prefix = values[0].prefix
+        result = replace_value(
+            merged,
+            dynamic=merged.dynamic or dynamic or merged.tainted,
+            composed=composed and (merged.dynamic or dynamic or merged.tainted),
+            prefix=prefix,
+            text=" ".join(_string_contents(stripped))[:400] or merged.text,
+        )
+        if not direct:
+            result = replace_value(result, literal=NOT_CONSTANT)
+        return result
+
+    def _sanitizer_values(self, start: int, end: int, mask: list[str]) -> list[Value]:
+        """Evaluate sanitizer-call arguments separately and hide the calls from ``mask``."""
         values: list[Value] = []
-        # Sanitizer calls: evaluate their arguments separately and hide them.
         joined = "".join(mask)
         for pattern, categories in _SANITIZER_CALLS:
             for match in pattern.finditer(joined):
@@ -512,11 +658,12 @@ class _Analyzer:
                 for position in range(match.start(), close - start + 1):
                     mask[position] = " "
             joined = "".join(mask)
-        for pattern, trust, description in (
-            (_REMOTE_SOURCE, REMOTE, "HTTP request input"),
-            (_LOCAL_SOURCE, LOCAL, "Command-line argument"),
-            (_ENV_SOURCE, ENVIRONMENT, "Environment variable"),
-        ):
+        return values
+
+    def _source_values(self, start: int, mask: list[str]) -> list[Value]:
+        values: list[Value] = []
+        joined = "".join(mask)
+        for pattern, trust, description in _SOURCE_PATTERNS:
             for match in pattern.finditer(joined):
                 absolute = start + match.start()
                 origin = re.sub(r"[\s(]+", "", match.group(0))
@@ -530,6 +677,10 @@ class _Analyzer:
                 for position in range(match.start(), match.end()):
                     mask[position] = " "
             joined = "".join(mask)
+        return values
+
+    def _identifier_values(self, joined: str, values: list[Value]) -> bool:
+        """Append the values of known identifiers; return True when one is unknown."""
         dynamic = False
         for match in _IDENTIFIER.finditer(joined):
             name = re.sub(r"\s+", "", match.group(1))
@@ -538,31 +689,21 @@ class _Analyzer:
             following = joined[match.end() : match.end() + 2].lstrip()
             if following.startswith(":") and not following.startswith("::") and self._is_object_key(joined, match.start()):
                 continue
-            current = self._lookup(name)
-            parts = name.split(".")
-            while current is None and len(parts) > 1:
-                parts = parts[:-1]
-                current = self._lookup(".".join(parts))
-            if current is not None:
-                exact = len(parts) == len(name.split("."))
-                values.append(current if exact else replace_value(current, literal=NOT_CONSTANT, prefix=None))
-            else:
+            current, exact = self._resolve_name(name)
+            if current is None:
                 dynamic = True
-        merged = merge(*values) if values else Value()
-        composed = _is_composed(stripped)
-        prefix = _string_prefix(stripped)
-        if prefix is None and len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped):
-            prefix = values[0].prefix
-        result = replace_value(
-            merged,
-            dynamic=merged.dynamic or dynamic or merged.tainted,
-            composed=composed and (merged.dynamic or dynamic or merged.tainted),
-            prefix=prefix,
-            text=" ".join(_string_contents(stripped))[:400] or merged.text,
-        )
-        if not (len(values) == 1 and re.fullmatch(r"[\w$.\s]+", stripped)):
-            result = replace_value(result, literal=NOT_CONSTANT)
-        return result
+            else:
+                values.append(current if exact else replace_value(current, literal=NOT_CONSTANT, prefix=None))
+        return dynamic
+
+    def _resolve_name(self, name: str) -> tuple[Value | None, bool]:
+        """Look up a dotted name, falling back to its longest known prefix."""
+        current = self._lookup(name)
+        parts = name.split(".")
+        while current is None and len(parts) > 1:
+            parts = parts[:-1]
+            current = self._lookup(".".join(parts))
+        return current, len(parts) == len(name.split("."))
 
     @staticmethod
     def _is_object_key(mask: str, position: int) -> bool:
@@ -582,22 +723,22 @@ class _Analyzer:
         for match in re.finditer(rf"{_REQUIRE}\s*\.\s*([\w$]+)\s*\(", self.text[start:end]):
             module = _MODULES.get(match.group(1))
             if module:
-                self._dispatch(start + match.start(), start + match.end() - 1, module, match.group(2), "")
+                self._dispatch(start + match.start(), start + match.end() - 1, module, match.group(2))
 
     def _call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         if receiver:
             module = self.objects.get(receiver.split(".")[0])
             if module:
-                self._dispatch(call_start, open_index, module, method, receiver)
+                self._dispatch(call_start, open_index, module, method)
                 return
             self._generic_call(call_start, open_index, receiver, method)
             return
         if method in self.functions:
             module, exported = self.functions[method]
-            self._dispatch(call_start, open_index, module, exported, "")
+            self._dispatch(call_start, open_index, module, exported)
             return
         if method in self.objects:
-            self._dispatch(call_start, open_index, self.objects[method], "__call__", "")
+            self._dispatch(call_start, open_index, self.objects[method], "__call__")
             return
         if method in self.imported_sinks:
             summary = self.imported_sinks[method]
@@ -628,42 +769,61 @@ class _Analyzer:
         elif method == "fetch":
             self._emit_argument("JS-SSRF-001", "fetch", call_start, open_index, 0)
 
-    def _dispatch(self, call_start: int, open_index: int, module: str, method: str, receiver: str) -> None:
+    def _dispatch(self, call_start: int, open_index: int, module: str, method: str) -> None:
         if module == "child_process":
-            if method in {"exec", "execSync"}:
-                self._emit_argument("JS-CMD-001", f"child_process.{method}", call_start, open_index, 0, unknown_origin=True)
-            elif method in {"spawn", "spawnSync", "execFile", "execFileSync"}:
-                arguments = self._arguments(open_index)
-                options = " ".join(self.mask[a:b] for a, b in arguments[1:])
-                if re.search(r"\bshell\s*:\s*true\b", options):
-                    self._emit_argument("JS-CMD-001", f"child_process.{method}(shell: true)", call_start, open_index, 0, unknown_origin=True)
-                else:
-                    self._emit_argument("JS-CMD-001", f"child_process.{method} program path", call_start, open_index, 0)
-        elif module == "fs" and re.fullmatch(
-            r"(?:readFile|writeFile|appendFile|unlink|rm|rmdir|mkdir|readdir|open|copyFile|createReadStream|createWriteStream|readlink|symlink|chmod)(?:Sync)?",
-            method,
-        ):
+            self._child_process_call(call_start, open_index, method)
+        elif module == "fs" and _FS_METHODS.fullmatch(method):
             self._emit_argument("JS-PATH-001", f"fs.{method}", call_start, open_index, 0)
             if method.startswith("copyFile"):
                 self._emit_argument("JS-PATH-001", f"fs.{method}", call_start, open_index, 1)
-        elif module == "vm" and method in {"runInNewContext", "runInThisContext", "runInContext", "compileFunction", "Script"}:
+        elif module == "vm" and method in _VM_METHODS:
             self._emit_argument("JS-CODE-001", f"vm.{method}", call_start, open_index, 0, unknown_origin=True)
-        elif module in {"axios", "fetch", "got", "needle", "superagent", "request", "undici"} and method in {
-            "__call__", "get", "post", "put", "patch", "delete", "head", "request", "default",
-        }:
+        elif module in _HTTP_CLIENT_MODULES and method in _HTTP_CLIENT_METHODS:
             self._emit_argument("JS-SSRF-001", f"{module} request", call_start, open_index, 0)
         elif module == "http" and method in {"get", "request"}:
             self._emit_argument("JS-SSRF-001", f"http.{method}", call_start, open_index, 0)
         elif module == "node-serialize" and method == "unserialize":
             self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
 
+    def _child_process_call(self, call_start: int, open_index: int, method: str) -> None:
+        if method in {"exec", "execSync"}:
+            self._emit_argument("JS-CMD-001", f"child_process.{method}", call_start, open_index, 0, unknown_origin=True)
+        elif method in {"spawn", "spawnSync", "execFile", "execFileSync"}:
+            arguments = self._arguments(open_index)
+            options = " ".join(self.mask[a:b] for a, b in arguments[1:])
+            if re.search(r"\bshell\s*:\s*true\b", options):
+                self._emit_argument("JS-CMD-001", f"child_process.{method}(shell: true)", call_start, open_index, 0, unknown_origin=True)
+            else:
+                self._emit_argument("JS-CMD-001", f"child_process.{method} program path", call_start, open_index, 0)
+
     def _generic_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
         last = receiver.split(".")[-1]
-        if method in {"send", "write", "end", "html"} and last in {"res", "response", "reply", "ctx"}:
-            if self._explicit_non_html_response(last, call_start):
-                return
-            self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
-        elif method in {"redirect", "location"} and last in {"res", "response", "reply", "ctx"}:
+        if self._response_call(call_start, open_index, last, method):
+            return
+        if _is_template_call(receiver, method):
+            self._emit_argument(
+                "JS-SSTI-001", f"{receiver}.{method} template source",
+                call_start, open_index, 0,
+            )
+        elif _is_merge_call(receiver, method):
+            arguments = self._arguments(open_index)
+            if len(arguments) >= 2:
+                self._emit_request_object("JS-PROTOTYPE-001", receiver, method, call_start, open_index, arguments[1])
+        elif _is_mongo_call(receiver, method):
+            arguments = self._arguments(open_index)
+            if arguments:
+                self._emit_request_object("JS-NOSQL-001", receiver, method, call_start, open_index, arguments[0])
+        elif method in _SQL_METHODS:
+            self._sql_call(call_start, open_index, receiver, method)
+        elif method == "unserialize" and last in {"serialize", "nodeSerialize", "node_serialize"}:
+            self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
+
+    def _response_call(self, call_start: int, open_index: int, last: str, method: str) -> bool:
+        """Handle response-object sinks; return True when the call matched one."""
+        if method in {"send", "write", "end", "html"} and last in _RESPONSE_OBJECTS:
+            if not self._explicit_non_html_response(last, call_start):
+                self._emit_argument("JS-XSS-001", f"{last}.{method}", call_start, open_index, 0)
+        elif method in {"redirect", "location"} and last in _RESPONSE_OBJECTS:
             index = -1 if method == "redirect" else 0
             self._emit_argument("OPEN-REDIRECT-001", f"{last}.{method}", call_start, open_index, index)
         elif method in {"sendFile", "download"} and last in {"res", "response"}:
@@ -671,69 +831,34 @@ class _Analyzer:
             options = " ".join(self.mask[a:b] for a, b in arguments[1:])
             if not re.search(r"\broot\s*:", options):
                 self._emit_argument("JS-PATH-001", f"res.{method}", call_start, open_index, 0)
-        elif (
-            (receiver in {"ejs", "pug"} and method in {"render", "compile"})
-            or (receiver in {"Handlebars", "handlebars"} and method == "compile")
-            or (receiver == "nunjucks" and method == "renderString")
-        ):
-            self._emit_argument(
-                "JS-SSTI-001", f"{receiver}.{method} template source",
-                call_start, open_index, 0,
-            )
-        elif (receiver == "Object" and method == "assign") or (
-            receiver in {"_", "lodash"} and method in {"merge", "mergeWith", "defaultsDeep"}
-        ):
-            arguments = self._arguments(open_index)
-            if len(arguments) < 2:
-                return
-            original = self.text[arguments[1][0]:arguments[1][1]].strip()
-            if not re.fullmatch(
-                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
-                original,
-            ):
-                return
-            value = self._value(*arguments[1])
-            if value.trust != REMOTE or not value.sources:
-                return
-            self._emit_value(
-                "JS-PROTOTYPE-001", receiver + "." + method,
-                call_start, open_index, value, Confidence.MEDIUM,
-            )
-        elif method in {"find", "findOne", "findOneAndUpdate", "updateOne", "deleteOne", "countDocuments"} and (
-            receiver in {"collection", "Model", "User", "Account"}
-            or receiver.startswith(("db.collection", "mongoose.model"))
-            or re.fullmatch(r"(?:users|accounts|orders|products)Collection", receiver, re.IGNORECASE)
-        ):
-            arguments = self._arguments(open_index)
-            if not arguments:
-                return
-            original = self.text[arguments[0][0]:arguments[0][1]].strip()
-            if not re.fullmatch(
-                r"(?:[A-Za-z_$][\w$]*|(?:req|request)\s*\.\s*(?:body|query))",
-                original,
-            ):
-                return
-            value = self._value(*arguments[0])
-            if value.trust != REMOTE or not value.sources:
-                return
-            self._emit_value(
-                "JS-NOSQL-001", receiver + "." + method,
-                call_start, open_index, value, Confidence.MEDIUM,
-            )
-        elif method in {"query", "execute", "raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}:
-            arguments = self._arguments(open_index)
-            if not arguments:
-                return
-            value = self._value(*arguments[0])
-            raw_sql_api = method in {"raw", "literal", "$queryRawUnsafe", "$executeRawUnsafe", "unsafe"}
-            evidence = raw_sql_api or bool(SQL_KEYWORDS.search(value.text))
-            database = bool(_DB_RECEIVER.search(receiver))
-            if not evidence and not database:
-                return
-            certainty = Confidence.HIGH if evidence else Confidence.MEDIUM
-            self._emit_value("JS-SQL-001", "database query", call_start, open_index, value, certainty, unknown_origin=True, sql_evidence=evidence)
-        elif method == "unserialize" and last in {"serialize", "nodeSerialize", "node_serialize"}:
-            self._emit_argument("JS-DESER-001", "node-serialize unserialize", call_start, open_index, 0)
+        else:
+            return False
+        return True
+
+    def _emit_request_object(
+        self, rule_id: str, receiver: str, method: str, call_start: int, open_index: int, span: tuple[int, int]
+    ) -> None:
+        """Report a request-controlled object passed whole to a merge or query call."""
+        original = self.text[span[0]:span[1]].strip()
+        if not _REQUEST_OBJECT.fullmatch(original):
+            return
+        value = self._value(*span)
+        if value.trust != REMOTE or not value.sources:
+            return
+        self._emit_value(rule_id, receiver + "." + method, call_start, open_index, value, Confidence.MEDIUM)
+
+    def _sql_call(self, call_start: int, open_index: int, receiver: str, method: str) -> None:
+        arguments = self._arguments(open_index)
+        if not arguments:
+            return
+        value = self._value(*arguments[0])
+        raw_sql_api = method in _RAW_SQL_METHODS
+        evidence = raw_sql_api or bool(SQL_KEYWORDS.search(value.text))
+        database = bool(_DB_RECEIVER.search(receiver))
+        if not evidence and not database:
+            return
+        certainty = Confidence.HIGH if evidence else Confidence.MEDIUM
+        self._emit_value("JS-SQL-001", "database query", call_start, open_index, value, certainty, unknown_origin=True, sql_evidence=evidence)
 
     def _explicit_non_html_response(self, receiver: str, call_start: int) -> bool:
         context = self.text[max(0, call_start - 1600) : call_start]
@@ -848,7 +973,7 @@ def _pattern_names(pattern: str) -> list[str]:
     """Names bound by a destructuring pattern such as ``{ a, b: c, ...rest }``."""
     pattern = pattern.strip()
     if not pattern.startswith(("{", "[")):
-        name = re.match(r"[\w$]+", pattern)
+        name = re.match(_JS_NAME, pattern)
         return [name.group(0)] if name else []
     inner = pattern[1:-1]
     names = []
@@ -903,16 +1028,19 @@ def _split_top_level(mask: str, start: int, end: int, operator: str) -> list[tup
 def _top_level_equals(text: str) -> int:
     depth = 0
     for index, char in enumerate(text):
-        if char in "([{<":
-            depth += 1 if char != "<" else 0
+        if char in "([{":
+            depth += 1
         elif char in ")]}":
             depth -= 1
-        elif char == "=" and depth == 0:
-            following = text[index + 1 : index + 2]
-            previous = text[index - 1 : index] if index else ""
-            if following not in {"=", ">"} and previous not in {"=", "!", "<", ">"}:
-                return index
+        elif char == "=" and depth == 0 and _is_plain_equals(text, index):
+            return index
     return -1
+
+
+def _is_plain_equals(text: str, index: int) -> bool:
+    following = text[index + 1 : index + 2]
+    previous = text[index - 1 : index] if index else ""
+    return following not in {"=", ">"} and previous not in {"=", "!", "<", ">"}
 
 
 def _top_level_char(text: str, wanted: str) -> int:

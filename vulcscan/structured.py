@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 from .dataflow import (
     ALL_SINKS,
@@ -101,7 +102,57 @@ def _sources(*items: tuple[str, int, str]) -> tuple[tuple[re.Pattern[str], int, 
     return tuple((re.compile(pattern), trust, description) for pattern, trust, description in items)
 
 
+_ENV_VARIABLE = "environment variable"
+_RAW_SQL = "raw SQL query"
+_FILESYSTEM_API = "filesystem API"
+_SYSTEM_IO = "System.IO file access"
 _NUMERIC = frozenset(ALL_SINKS)
+_JAVA_BOXED_PARSE = (
+    r"\b(?:Integer|Long|Short|Double|Float|Boolean)\s*\.\s*"
+    r"(?:parseInt|parseLong|parseShort|parseDouble|parseFloat|parseBoolean|valueOf)\s*\("
+)
+_JAVA_UUID_PARSE = r"\bUUID\s*\.\s*fromString\s*\("
+_JAVA_NUMERIC_PARSE = re.compile(f"{_JAVA_BOXED_PARSE}|{_JAVA_UUID_PARSE}")
+_JAVA_BINDING_ANNOTATIONS = (
+    "RequestParam|PathVariable|RequestBody|RequestHeader|RequestPart|CookieValue|QueryParam|"
+    "PathParam|HeaderParam|FormParam|CookieParam|MatrixParam|RestQuery|RestPath"
+)
+_JAVA_PARAMETERS = re.compile(
+    rf"@(?:{_JAVA_BINDING_ANNOTATIONS})\b(?:\s*+\([^)]*\))?\s++(?:final\s++)?[\w<>\[\],.? ]+?\s++(\w++)\s*+(?=[,)])"
+)
+_CS_PARSE_METHODS = r"\b(?:int|long|short|double|float|decimal|bool|Guid)\s*\.\s*(?:Parse|TryParse)\s*\("
+_CS_CONVERT_METHODS = r"\bConvert\s*\.\s*To(?:Int\d+|Double|Decimal|Boolean)\s*\("
+_CS_NUMERIC_PARSE = re.compile(f"{_CS_PARSE_METHODS}|{_CS_CONVERT_METHODS}")
+_CS_PARAMETERS = re.compile(
+    r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*\))?\]\s*[\w<>\[\],.? ]+?\s++(\w++)\s*+(?=[,)=])"
+)
+_GO_EXTRA_NAMES = r"(?:\s*,\s*[A-Za-z_]\w*)*"
+_GO_TYPE = r"(?:\s+[A-Za-z_][\w.\[\]*]*)?"
+_GO_ASSIGNMENT = re.compile(
+    rf"^\s*(?:var\s+)?(?P<name>[A-Za-z_]\w*){_GO_EXTRA_NAMES}{_GO_TYPE}\s*(?P<op>:=|=|\+=)(?!=)\s*(?P<value>\S.*)$",
+    re.DOTALL,
+)
+_SHELL_DECLARATION = r"(?:(?:local|export|readonly)\s+|declare\s+(?:-\w+\s+)*)"
+_SHELL_ASSIGNMENT = re.compile(rf"^\s*{_SHELL_DECLARATION}?(?P<name>[A-Za-z_]\w*)(?P<op>\+?=)(?P<value>.*)$")
+_GUARD_EXIT_WORD = r"\b(?:return|throw|die|exit|abort|raise|halt|head\s*(?::\s*)?(?:\(\s*)?:?(?:bad_request|forbidden|not_found))\b"
+_GUARD_EXIT = re.compile(f"{_GUARD_EXIT_WORD}|http\\s*\\.\\s*Error\\s*\\(|panic\\s*\\(")
+_FORMAT_CALLS = (
+    re.compile(r"\bString\s*\.\s*format\s*\(|\bstring\s*\.\s*Format\s*\("),
+    re.compile(r"\bfmt\s*\.\s*Sprintf\s*\(|\bsprintf\s*\("),
+)
+_CHECK_VARIABLE = r"\$?[A-Za-z_][\w.]*"
+_CHECK_LITERAL_LIST = r"(?:\[[^\]]*\]|array\s*\([^)]*\)|%w[\[(][^\])]*[\])]|(?:List|Set|Arrays)\s*\.\s*(?:of|asList)\s*\([^)]*\)|new\s*\[\]\s*\{[^}]*\})"
+_IN_ARRAY_CHECK = re.compile(rf"\bin_array\s*\(\s*({_CHECK_VARIABLE})\s*,\s*({_CHECK_LITERAL_LIST}|{_CHECK_VARIABLE})")
+_CONTAINS_CHECK = re.compile(
+    rf"({_CHECK_LITERAL_LIST}|[A-Z_][A-Z0-9_]*|\w*[Aa]llow\w*)\s*\.\s*(?:contains|Contains|include\?|includes|has|ContainsKey|containsKey)\s*\(?\s*({_CHECK_VARIABLE})"
+)
+_MATCHES_CHECK = re.compile(rf"({_CHECK_VARIABLE})\s*\.\s*matches\s*\(\s*\"((?:\\.|[^\"\\])*)\"")
+_PREG_MATCH_CHECK = re.compile(r"""\bpreg_match\s*\(\s*(['"])(.)\^(.*)\$\2D?([a-zA-Z]*)\1\s*,\s*\$([A-Za-z_]\w*)""")
+_RUBY_MATCH_CHECK = re.compile(rf"({_CHECK_VARIABLE})\s*(?:=~|\.match\??)\s*\(?\s*/\\A(.*)\\z/")
+_GO_MATCH_CHECK = re.compile(r"""MustCompile\s*\(\s*[`"]\^(.*)\$[`"]\s*\)\s*\.\s*MatchString\s*\(\s*([A-Za-z_]\w*)""")
+_PREFIX_CHECK = re.compile(
+    rf"({_CHECK_VARIABLE})\s*\.\s*(?:startsWith|StartsWith|start_with\?)\s*\(|(?:strings\s*\.\s*HasPrefix|str_starts_with|strpos)\s*\(\s*({_CHECK_VARIABLE})"
+)
 _C_ASSIGNMENT = re.compile(
     r"^\s*(?:(?:final|const|static|var|let|auto|readonly|volatile|unsigned|signed|register)\s+)*"
     r"(?P<type>[A-Za-z_][\w:<>,.?\[\]*&]*\s+[*&]*)?(?P<name>[A-Za-z_]\w*)\s*(?P<op>\+?=)(?!=)\s*(?P<value>.+?);?\s*$",
@@ -119,18 +170,18 @@ CATALOGS: dict[str, Catalog] = {
             (r"\$this\s*->\s*(?:input|request)\s*->\s*(?:get|post|getPost|getGet|cookie|getHeaderLine|getServer|uri)\s*\(", REMOTE, "framework request input"),
             (r"\$request\s*->\s*(?:getQueryParams|getParsedBody|getUploadedFiles|getCookieParams|getHeaderLine|getAttribute)\s*\(", REMOTE, "PSR-7 request input"),
             (r"""\bfile_get_contents\s*\(\s*['"]php://input""", REMOTE, "raw request body"),
-            (r"\bgetenv\s*\(|\$_ENV\b", ENVIRONMENT, "environment variable"),
+            (r"\bgetenv\s*\(|\$_ENV\b", ENVIRONMENT, _ENV_VARIABLE),
             (r"\$argv\b", LOCAL, "command-line argument"),
         ),
         (
             _sink(r"(?<![\w>$:\\])(?:shell_exec|system|exec|passthru|popen|proc_open|pcntl_exec)\s*\(", "CMD", "PHP command execution"),
-            _sink(r"->\s*(?:query|exec|prepare|unprepared|statement|raw|whereRaw|orderByRaw|selectRaw|havingRaw|groupByRaw)\s*\(", "SQL", "raw SQL query"),
+            _sink(r"->\s*(?:query|exec|prepare|unprepared|statement|raw|whereRaw|orderByRaw|selectRaw|havingRaw|groupByRaw)\s*\(", "SQL", _RAW_SQL),
             _sink(r"->\s*(?:createQuery|createNativeQuery|createSQLQuery)\s*\(", "SQL", "ORM query text"),
-            _sink(r"\bDB::(?:raw|select|statement|unprepared)\s*\(", "SQL", "raw SQL query"),
+            _sink(r"\bDB::(?:raw|select|statement|unprepared)\s*\(", "SQL", _RAW_SQL),
             _sink(r"(?<![\w>$:\\])(?:mysqli_query|mysql_query|pg_query|sqlite_query|mysqli_multi_query)\s*\(", "SQL", "SQL query function", LAST),
             _sink(r"(?<![\w>$:\\])(?:eval|create_function)\s*\(", "CODE", "PHP code evaluation", LAST),
-            _sink(r"(?<![\w>$:\\])(?:fopen|file_get_contents|file_put_contents|unlink|readfile|file|rmdir|mkdir|opendir|scandir|highlight_file|show_source)\s*\(", "PATH", "filesystem API"),
-            _sink(r"(?<![\w>$:\\])(?:copy|rename|symlink)\s*\(", "PATH", "filesystem API", ALL),
+            _sink(r"(?<![\w>$:\\])(?:fopen|file_get_contents|file_put_contents|unlink|readfile|file|rmdir|mkdir|opendir|scandir|highlight_file|show_source)\s*\(", "PATH", _FILESYSTEM_API),
+            _sink(r"(?<![\w>$:\\])(?:copy|rename|symlink)\s*\(", "PATH", _FILESYSTEM_API, ALL),
             _sink(r"(?<![\w>$:\\])move_uploaded_file\s*\(", "PATH", "upload destination", SECOND),
             _sink(r"(?<![\w>$:\\])(?:include|include_once|require|require_once)\b\s*\(?", "PATH", "file inclusion", REST),
             _sink(r"(?<![\w>$:\\])unserialize\s*\(", "DESER", "unserialize"),
@@ -140,7 +191,7 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "dollar",
         True,
-        re.compile(r"^\s*\$(?P<name>[A-Za-z_]\w*)\s*(?P<op>\.?=)(?!=)\s*(?P<value>.+?);?\s*$", re.DOTALL),
+        re.compile(r"^\s*\$(?P<name>[A-Za-z_]\w*)\s*(?P<op>\.?=)(?!=)\s*(?P<value>\S.*(?=;$)|\S.*);?$", re.DOTALL),
         sanitizers=(
             (re.compile(r"(?<![\w>$])(?:intval|floatval|boolval|abs)\s*\(|\(\s*(?:int|float|bool)\s*\)"), _NUMERIC),
             (re.compile(r"(?<![\w>$])escapeshellarg\s*\("), frozenset({COMMAND})),
@@ -151,7 +202,7 @@ CATALOGS: dict[str, Catalog] = {
         normalizers=re.compile(r"(?<![\w>$])realpath\s*\("),
         parameters=None,
         interpolation=re.compile(r"\$\{?([A-Za-z_]\w*)"),
-        function_header=re.compile(r"\bfunction\s+&?\s*\w*\s*\("),
+        function_header=re.compile(r"\bfunction\s+(?:&\s*)?\w*\s*\("),
         concat=".",
     ),
     "Java": Catalog(
@@ -159,7 +210,7 @@ CATALOGS: dict[str, Catalog] = {
         _sources(
             (r"\b\w*[Rr]equest\s*\.\s*(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getRequestURI|getRequestURL|getInputStream|getReader|getPathInfo|getPart)\s*\(", REMOTE, "servlet request input"),
             (r"\b\w*[Rr]equest\s*\.\s*(?:queryParam|pathVariable|header|cookie|body)\s*\(", REMOTE, "reactive request input"),
-            (r"\bSystem\s*\.\s*getenv\s*\(", ENVIRONMENT, "environment variable"),
+            (r"\bSystem\s*\.\s*getenv\s*\(", ENVIRONMENT, _ENV_VARIABLE),
             (r"\bSystem\s*\.\s*console\s*\(\s*\)\s*\.\s*readLine\s*\(", LOCAL, "console input"),
         ),
         (
@@ -181,19 +232,19 @@ CATALOGS: dict[str, Catalog] = {
         True,
         _C_ASSIGNMENT,
         sanitizers=(
-            (re.compile(r"\b(?:Integer|Long|Short|Double|Float|Boolean)\s*\.\s*(?:parseInt|parseLong|parseShort|parseDouble|parseFloat|parseBoolean|valueOf)\s*\(|\bUUID\s*\.\s*fromString\s*\("), _NUMERIC),
+            (_JAVA_NUMERIC_PARSE, _NUMERIC),
             (re.compile(r"\bFilenameUtils\s*\.\s*getName\s*\(|\.\s*getFileName\s*\(\s*\)"), frozenset({FILESYSTEM})),
             (re.compile(r"\b(?:Encode\s*\.\s*forHtml|HtmlUtils\s*\.\s*htmlEscape|StringEscapeUtils\s*\.\s*escapeHtml4)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\.\s*(?:normalize|toRealPath|getCanonicalPath|getCanonicalFile)\s*\("),
-        parameters=re.compile(r"@(?:RequestParam|PathVariable|RequestBody|RequestHeader|RequestPart|CookieValue|QueryParam|PathParam|HeaderParam|FormParam|CookieParam|MatrixParam|RestQuery|RestPath)\b(?:\s*\([^)]*\))?\s+(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)])"),
+        parameters=_JAVA_PARAMETERS,
         function_header=re.compile(r"(?:public|private|protected|static|final|synchronized|abstract)?[\w<>\[\],.? ]*\s(\w+)\s*\($"),
     ),
     "C#": Catalog(
         "CS",
         _sources(
             (r"\b(?:HttpContext\s*\.\s*)?Request\s*\.\s*(?:Query|Form|Headers|Cookies|RouteValues|Body|QueryString|Path)\b", REMOTE, "ASP.NET request input"),
-            (r"\bEnvironment\s*\.\s*GetEnvironmentVariable\s*\(", ENVIRONMENT, "environment variable"),
+            (r"\bEnvironment\s*\.\s*GetEnvironmentVariable\s*\(", ENVIRONMENT, _ENV_VARIABLE),
             (r"\bConsole\s*\.\s*ReadLine\s*\(", LOCAL, "console input"),
         ),
         (
@@ -205,9 +256,9 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\.\s*CommandText\s*=", "SQL", "CommandText", REST),
             _sink(r"\bCSharpScript\s*\.\s*(?:EvaluateAsync|RunAsync|Create)\s*(?:<[^>()]*>)?\s*\(", "CODE", "C# scripting"),
             _sink(r"\bAssembly\s*\.\s*(?:Load|LoadFrom|LoadFile)\s*\(", "CODE", "dynamic assembly load"),
-            _sink(r"\b(?:File|Directory)\s*\.\s*(?:ReadAllText|ReadAllBytes|ReadAllLines|ReadLines|WriteAllText|WriteAllBytes|AppendAllText|Delete|Open|OpenRead|OpenWrite|Create|CreateDirectory|GetFiles|EnumerateFiles)\s*\(", "PATH", "System.IO file access"),
-            _sink(r"\b(?:File|Directory)\s*\.\s*(?:Copy|Move)\s*\(", "PATH", "System.IO file access", ALL),
-            _sink(r"\bnew\s+(?:FileStream|StreamReader|StreamWriter|FileInfo|DirectoryInfo)\s*\(", "PATH", "System.IO file access"),
+            _sink(r"\b(?:File|Directory)\s*\.\s*(?:ReadAllText|ReadAllBytes|ReadAllLines|ReadLines|WriteAllText|WriteAllBytes|AppendAllText|Delete|Open|OpenRead|OpenWrite|Create|CreateDirectory|GetFiles|EnumerateFiles)\s*\(", "PATH", _SYSTEM_IO),
+            _sink(r"\b(?:File|Directory)\s*\.\s*(?:Copy|Move)\s*\(", "PATH", _SYSTEM_IO, ALL),
+            _sink(r"\bnew\s+(?:FileStream|StreamReader|StreamWriter|FileInfo|DirectoryInfo)\s*\(", "PATH", _SYSTEM_IO),
             _sink(r"\bPhysicalFile\s*\(", "PATH", "PhysicalFile result"),
             _sink(r"\b(?:new\s+(?:BinaryFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|ObjectStateFormatter)\s*\(\s*\)|\w*[Ff]ormatter)\s*\.\s*Deserialize\s*\(", "DESER", "native .NET deserialization", requires=r"\b(?:BinaryFormatter|SoapFormatter|LosFormatter|NetDataContractSerializer|ObjectStateFormatter)\b"),
             _sink(r"\b\w*(?:[Cc]lient|[Hh]ttp)\w*\s*\.\s*(?:GetAsync|PostAsync|PutAsync|DeleteAsync|GetStringAsync|GetStreamAsync|GetByteArrayAsync|GetFromJsonAsync)\s*\(", "SSRF", "HttpClient request"),
@@ -219,12 +270,12 @@ CATALOGS: dict[str, Catalog] = {
         True,
         _C_ASSIGNMENT,
         sanitizers=(
-            (re.compile(r"\b(?:int|long|short|double|float|decimal|bool|Guid)\s*\.\s*(?:Parse|TryParse)\s*\(|\bConvert\s*\.\s*To(?:Int\d+|Double|Decimal|Boolean)\s*\("), _NUMERIC),
+            (_CS_NUMERIC_PARSE, _NUMERIC),
             (re.compile(r"\bPath\s*\.\s*GetFileName\s*\("), frozenset({FILESYSTEM})),
             (re.compile(r"\b(?:HtmlEncoder\s*\.\s*Default\s*\.\s*Encode|HttpUtility\s*\.\s*HtmlEncode)\s*\("), frozenset({HTML_OUTPUT})),
         ),
         normalizers=re.compile(r"\bPath\s*\.\s*GetFullPath\s*\("),
-        parameters=re.compile(r"\[(?:FromQuery|FromBody|FromRoute|FromHeader|FromForm)(?:\([^)]*\))?\]\s*[\w<>\[\],.? ]+?\s+(\w+)\s*(?=[,)=])"),
+        parameters=_CS_PARAMETERS,
         interpolation=re.compile(r"\{([A-Za-z_][\w.]*)"),
         function_header=re.compile(r"(?:public|private|protected|internal|static|async|override|virtual)[\w<>\[\],.? ]*\s(\w+)\s*\($"),
     ),
@@ -233,7 +284,7 @@ CATALOGS: dict[str, Catalog] = {
         _sources(
             (r"\b\w+\s*\.\s*URL\s*\.\s*Query\s*\(\s*\)(?:\s*\.\s*Get\s*\()?|\b\w+\s*\.\s*(?:FormValue|PostFormValue|PathValue)\s*\(|\b\w+\s*\.\s*Header\s*\.\s*Get\s*\(|\b\w+\s*\.\s*URL\s*\.\s*(?:Path|RawQuery)\b", REMOTE, "net/http request input"),
             (r"\b(?:c|ctx|context)\s*\.\s*(?:Query|Queries|DefaultQuery|Param|Params|PostForm|DefaultPostForm|FormValue|FormFile|GetHeader|GetReqHeaders|Cookie|Cookies|QueryParam|FormParams|PathParam|Body|BodyRaw)\s*\(", REMOTE, "web framework request input"),
-            (r"\bos\s*\.\s*Getenv\s*\(", ENVIRONMENT, "environment variable"),
+            (r"\bos\s*\.\s*Getenv\s*\(", ENVIRONMENT, _ENV_VARIABLE),
             (r"\bos\s*\.\s*Args\b|\bflag\s*\.\s*(?:Arg|Args)\s*\(", LOCAL, "command-line argument"),
         ),
         (
@@ -252,7 +303,7 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "bare",
         True,
-        re.compile(r"^\s*(?:var\s+)?(?P<name>[A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)*\s*(?:[A-Za-z_][\w.\[\]*]*\s*)?(?P<op>:=|=|\+=)(?!=)\s*(?P<value>.+?)\s*$", re.DOTALL),
+        _GO_ASSIGNMENT,
         sanitizers=(
             (re.compile(r"\bstrconv\s*\.\s*(?:Atoi|ParseInt|ParseUint|ParseFloat|ParseBool)\s*\(|\buuid\s*\.\s*Parse\s*\("), _NUMERIC),
             (re.compile(r"\bfilepath\s*\.\s*Base\s*\("), frozenset({FILESYSTEM})),
@@ -265,7 +316,7 @@ CATALOGS: dict[str, Catalog] = {
         "RB",
         _sources(
             (r"\bparams\s*(?:\[|\.)|\bcookies\s*\[|\brequest\s*\.\s*(?:headers|body|params|query_string|path|url|raw_post)\b", REMOTE, "Rails/Rack request input"),
-            (r"\bENV\s*(?:\[|\.\s*fetch)", ENVIRONMENT, "environment variable"),
+            (r"\bENV\s*(?:\[|\.\s*fetch)", ENVIRONMENT, _ENV_VARIABLE),
             (r"\bARGV\b|(?<![\w.])gets\b|\$stdin\b|\bSTDIN\b", LOCAL, "command-line or stdin input"),
         ),
         (
@@ -273,7 +324,7 @@ CATALOGS: dict[str, Catalog] = {
             _sink(r"\b(?:IO\s*\.\s*popen|Open3\s*\.\s*(?:capture2e?|capture3|popen[23]e?))\s*\(", "CMD", "process spawn", FIRST, multi_argument_safe=True),
             _sink(r"`[^`]*#\{|%x[\(\[{]", "CMD", "backtick command", REST),
             _sink(r"(?<![\w.:])(?:Kernel\s*\.\s*)?open\s*\(", "CMD", "Kernel#open"),
-            _sink(r"\.\s*(?:find_by_sql|execute|exec_query|select_all|select_value|select_rows|count_by_sql)\b\s*\(?", "SQL", "raw SQL query"),
+            _sink(r"\.\s*(?:find_by_sql|execute|exec_query|select_all|select_value|select_rows|count_by_sql)\b\s*\(?", "SQL", _RAW_SQL),
             _sink(r"\.\s*(?:where|having|joins|from|lock)\s*\(\s*(?=[\"'%])", "SQL", "ActiveRecord string condition"),
             _sink(r"\.\s*(?:order|reorder|group|pluck)\s*\(", "SQL", "ActiveRecord order/group clause", certainty=Confidence.MEDIUM),
             _sink(r"(?<![\w.:])(?:eval|instance_eval|class_eval|module_eval)\b\s*\(?", "CODE", "Ruby evaluation"),
@@ -290,9 +341,9 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "bare",
         False,
-        re.compile(r"^\s*(?P<name>@{0,2}[A-Za-z_]\w*)\s*(?P<op>\+?=|\|\|=)(?![=~])\s*(?P<value>.+?)\s*$", re.DOTALL),
+        re.compile(r"^\s*(?P<name>@{0,2}[A-Za-z_]\w*)\s*(?P<op>\+?=|\|\|=)(?![=~])\s*(?P<value>\S.*)$", re.DOTALL),
         sanitizers=(
-            (re.compile(r"\b(?:Integer|Float)\s*\(|\.\s*to_(?:i|f)\b"), _NUMERIC),
+            (re.compile(r"\b(?:Integer|Float)\s*\(|\.\s*to_[if]\b"), _NUMERIC),
             (re.compile(r"\bShellwords\s*\.\s*(?:escape|shellescape)\s*\(|\.\s*shellescape\b"), frozenset({COMMAND})),
             (re.compile(r"\bFile\s*\.\s*basename\s*\("), frozenset({FILESYSTEM})),
             (re.compile(r"\b(?:sanitize_sql\w*|quote)\s*\("), frozenset({SQL})),
@@ -305,13 +356,13 @@ CATALOGS: dict[str, Catalog] = {
         "C",
         _sources(
             (r"\bargv\s*\[|(?<![\w.])gets\s*\(|\bstd::cin\b", LOCAL, "command-line or stdin input"),
-            (r"\bgetenv\s*\(", ENVIRONMENT, "environment variable"),
+            (r"\bgetenv\s*\(", ENVIRONMENT, _ENV_VARIABLE),
         ),
         (
             _sink(r"(?<![\w.>:])(?:system|popen|_popen|_wsystem)\s*\(", "CMD", "C command execution"),
             _sink(r"(?<![\w.>:])exec(?:l|lp|le|v|vp|vpe|ve)\s*\(", "CMD", "exec family program path"),
             _sink(r"\b(?:sqlite3_exec|sqlite3_prepare(?:_v2|_v3)?|mysql_query|mysql_real_query|PQexec)\s*\(", "SQL", "database query", SECOND),
-            _sink(r"(?<![\w.>:])(?:fopen|open|remove|unlink|rmdir|rename)\s*\(", "PATH", "filesystem API"),
+            _sink(r"(?<![\w.>:])(?:fopen|open|remove|unlink|rmdir|rename)\s*\(", "PATH", _FILESYSTEM_API),
         ),
         "bare",
         True,
@@ -336,15 +387,15 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "dollar",
         False,
-        re.compile(r"^\s*(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?(?P<name>[A-Za-z_]\w*)(?P<op>\+?=)(?P<value>.*?)\s*$"),
-        inputs=((re.compile(r"\bread\b(?:\s+-\w+(?:\s+\S+)?)*\s+([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),  # NOSONAR: input is a bounded shell-source line; the read-option grammar needs this backtracking
+        _SHELL_ASSIGNMENT,
+        inputs=((re.compile(r"\bread\b(?:\s++-\w++(?:\s++(?!-)\S++)?)*\s++([A-Za-z_]\w*)"), LOCAL, "line read from stdin"),),
     ),
     "PowerShell": Catalog(
         "PS",
         _sources(
             (r"\$Request\s*\.\s*(?:Query|Body|Headers|Params)\b", REMOTE, "Azure Functions request input"),
             (r"\$args\b|\bRead-Host\b", LOCAL, "script argument or console input"),
-            (r"\$env:\w+", ENVIRONMENT, "environment variable"),
+            (r"\$env:\w+", ENVIRONMENT, _ENV_VARIABLE),
         ),
         (
             _sink(r"\b(?:Invoke-Expression|iex)\b\s+", "CODE", "Invoke-Expression", REST),
@@ -358,7 +409,7 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "dollar",
         False,
-        re.compile(r"^\s*\$(?P<name>[A-Za-z_]\w*)\s*(?P<op>\+?=)(?!=)\s*(?P<value>.+?)\s*$", re.IGNORECASE),
+        re.compile(r"^\s*\$(?P<name>[A-Z_]\w*)\s*(?P<op>\+?=)(?!=)\s*(?P<value>\S.*)$", re.IGNORECASE),
         sanitizers=((re.compile(r"\[(?:int|long|double|guid)\]\s*", re.IGNORECASE), _NUMERIC),),
     ),
     "Batch": Catalog(
@@ -371,13 +422,11 @@ CATALOGS: dict[str, Catalog] = {
         ),
         "percent",
         False,
-        re.compile(r"(?i)^\s*set\s+\"?(?P<name>[A-Za-z_]\w*)(?P<op>=)(?P<value>.*?)\"?\s*$"),
-        inputs=((re.compile(r"(?i)\bset\s+/p\s+\"?([A-Za-z_]\w*)\s*="), LOCAL, "console input from set /p"),),
+        re.compile(r"(?i)^\s*set\s+\"?(?P<name>[A-Z_]\w*)(?P<op>=)(?P<value>.*(?=\"$)|.*)\"?$"),
+        inputs=((re.compile(r"(?i)\bset\s+/p\s+\"?([A-Z_]\w*)\s*="), LOCAL, "console input from set /p"),),
     ),
 }
 CATALOGS["C++"] = replace(CATALOGS["C"], sinks=(*CATALOGS["C"].sinks, _sink(r"\bstd::(?:ifstream|ofstream|fstream)\s+\w+\s*\(", "PATH", "file stream")))
-
-_GUARD_EXIT = re.compile(r"\b(?:return|throw|die|exit|abort|raise|halt|head\s*:?\s*\(?\s*:?(?:bad_request|forbidden|not_found))\b|http\s*\.\s*Error\s*\(|panic\s*\(")
 
 
 @dataclass(slots=True)
@@ -432,38 +481,49 @@ class _Engine:
         start = 0
         stack: list[tuple[bool, int]] = []  # (is_block, saved paren depth)
         for index, char in enumerate(mask):
+            statement: _Statement | None = None
             if char in "([":
                 paren += 1
             elif char in ")]":
                 paren = max(0, paren - 1)
             elif char == "{":
-                before = mask[start:index].rstrip()
-                if paren == 0 or before.endswith((")", "->", "=>")):
-                    # A block: function body, lambda/closure body or control block.
-                    yield _Statement(start, index, opens=1)
-                    stack.append((True, paren))
-                    paren = 0
-                    start = index + 1
-                else:
-                    stack.append((False, 0))  # composite or array literal
-                    paren += 1
+                statement, paren, start = self._open_brace(index, paren, start, stack)
             elif char == "}":
-                if stack and not stack[-1][0]:
-                    stack.pop()
-                    paren = max(0, paren - 1)
-                else:
-                    yield _Statement(start, index, closes=1)
-                    paren = stack.pop()[1] if stack else 0
-                    start = index + 1
+                statement, paren, start = self._close_brace(index, paren, start, stack)
             elif char == ";" and paren == 0:
-                yield _Statement(start, index)
+                statement = _Statement(start, index)
                 start = index + 1
             elif char == "\n" and paren == 0 and self.language == "Go":
-                current = mask[start:index].strip()
-                if current and not re.search(r"[=+\-*/%&|^!<>,.(]$", current):
-                    yield _Statement(start, index)
+                statement = self._go_line_break(index, start)
+                if statement is not None:
                     start = index + 1
+            if statement is not None:
+                yield statement
         yield _Statement(start, len(mask))
+
+    def _open_brace(self, index: int, paren: int, start: int, stack: list[tuple[bool, int]]):
+        before = self.mask[start:index].rstrip()
+        if paren == 0 or before.endswith((")", "->", "=>")):
+            # A block: function body, lambda/closure body or control block.
+            stack.append((True, paren))
+            return _Statement(start, index, opens=1), 0, index + 1
+        stack.append((False, 0))  # composite or array literal
+        return None, paren + 1, start
+
+    @staticmethod
+    def _close_brace(index: int, paren: int, start: int, stack: list[tuple[bool, int]]):
+        if stack and not stack[-1][0]:
+            stack.pop()
+            return None, max(0, paren - 1), start
+        saved = stack.pop()[1] if stack else 0
+        return _Statement(start, index, closes=1), saved, index + 1
+
+    def _go_line_break(self, index: int, start: int) -> _Statement | None:
+        current = self.mask[start:index].strip()
+        if current and not re.search(r"[=+\-*/%&|^!<>,.(]$", current):
+            return _Statement(start, index)
+        return None
+
 
     def _line_statements(self):
         mask = self.mask
@@ -476,10 +536,7 @@ class _Engine:
             elif char in ")]}":
                 paren = max(0, paren - 1)
             elif char == "\n":
-                current = mask[start:index].rstrip()
-                if continuation and current.endswith(continuation):
-                    continue
-                if self.language == "Ruby" and (paren > 0 or re.search(r"[,(\[+\\|&.]$", current) or current.endswith(" \\")):
+                if self._continues_line(mask[start:index].rstrip(), paren, continuation):
                     continue
                 yield _Statement(start, index)
                 start = index + 1
@@ -488,6 +545,14 @@ class _Engine:
                 yield _Statement(start, index)
                 start = index + 1
         yield _Statement(start, len(mask))
+
+    def _continues_line(self, current: str, paren: int, continuation: str | None) -> bool:
+        if continuation and current.endswith(continuation):
+            return True
+        if self.language != "Ruby":
+            return False
+        return paren > 0 or bool(re.search(r"[,(\[+\\|&.]$", current)) or current.endswith(" \\")
+
 
     # Statements -------------------------------------------------------------------
 
@@ -540,7 +605,7 @@ class _Engine:
         definition = re.match(r"def\s+(?:self\.)?([\w?!=]+)\s*(?:\(([^)]*)\)|([^=]+))?", code)
         if definition:
             scope = _Scope(function=True, name=definition.group(1))
-            for name in re.findall(r"[*&]*([A-Za-z_]\w*)", definition.group(2) or definition.group(3) or ""):
+            for name in re.findall(r"([A-Za-z_]\w*)", definition.group(2) or definition.group(3) or ""):
                 scope.values[name] = UNKNOWN
             self.scopes.append(scope)
             if re.search(r"\bend\s*$", code) or re.search(r"\)\s*=\s*\S", code):
@@ -557,15 +622,7 @@ class _Engine:
 
     def _function_header(self, start: int, end: int) -> tuple[str | None, list[str]] | None:
         code = self.mask[start:end].rstrip()
-        if ")" not in code:
-            return None
-        if self.language == "Go":
-            if not re.match(r"\s*func\b", code):
-                return None
-        elif self.language == "PHP":
-            if not re.search(r"\bfunction\b", code):
-                return None
-        elif re.match(r"\s*(?:if|for|foreach|while|switch|catch|using|lock|else|return|new|synchronized|try|do)\b", code):
+        if ")" not in code or not self._may_declare_function(code):
             return None
         open_index = self._parameter_list(start, end)
         if open_index < 0:
@@ -581,20 +638,31 @@ class _Engine:
             return None  # a call, not a declaration
         parameters = []
         for part_start, part_end in split_arguments(self.mask, open_index + 1, close):
-            part = self.text[part_start:part_end]
-            if self.catalog.variables == "dollar":
-                names = re.findall(r"\$([A-Za-z_]\w*)", part)
-            else:
-                part = re.sub(r"@\w+(?:\([^)]*\))?|\[[^\]]*\]", " ", part).split("=", 1)[0]
-                names = re.findall(r"([A-Za-z_]\w*)\s*$", part.strip()) if self.language != "Go" else re.findall(r"^\s*([A-Za-z_]\w*)", part)
-            parameters.extend(names[-1:] if self.language != "Go" else names[:1])
+            names = self._parameter_names(self.text[part_start:part_end])
+            parameters.extend(names[:1] if self.language == "Go" else names[-1:])
         return name_match.group(1), parameters
+
+    def _may_declare_function(self, code: str) -> bool:
+        if self.language == "Go":
+            return bool(re.match(r"\s*func\b", code))
+        if self.language == "PHP":
+            return bool(re.search(r"\bfunction\b", code))
+        return not re.match(r"\s*(?:if|for|foreach|while|switch|catch|using|lock|else|return|new|synchronized|try|do)\b", code)
+
+    def _parameter_names(self, part: str) -> list[str]:
+        if self.catalog.variables == "dollar":
+            return re.findall(r"\$([A-Za-z_]\w*)", part)
+        part = re.sub(r"@\w+(?:\([^)]*\))?|\[[^\]]*\]", " ", part).split("=", 1)[0]
+        if self.language == "Go":
+            return re.findall(r"^\s*([A-Za-z_]\w*)", part)
+        return re.findall(r"([A-Za-z_]\w*)\s*$", part.strip())
+
 
     def _parameter_list(self, start: int, end: int) -> int:
         """Return the offset of the '(' that opens the parameter list."""
         code = self.mask[start:end]
         if self.language == "Go":
-            match = re.match(r"\s*func\s*(?:\([^)]*\)\s*)?[A-Za-z_]\w*\s*(?:\[[^\]]*\])?\s*\(", code)
+            match = re.match(r"\s*func\s*(?:\([^)]*\)\s*)?[A-Za-z_]\w*\s*(?:\[[^\]]*\]\s*)?\(", code)
             return start + match.end() - 1 if match else -1
         depth = 0
         for index in range(len(code) - 1, -1, -1):
@@ -619,7 +687,7 @@ class _Engine:
 
     def _assignment(self, start: int, end: int) -> None:
         code = self.mask[start:end]
-        match = self.catalog.assignment.match(code)
+        match = self.catalog.assignment.match(code.rstrip())
         if not match:
             return
         if re.match(r"\s*(?:return|if|while|for|elif|else|unless|until|case|when)\b", code):
@@ -642,14 +710,19 @@ class _Engine:
                 if scope.function:
                     scope.values[name] = value
                     return
-        if not declare:
-            for scope in reversed(self.scopes):
-                if name in scope.values:
-                    scope.values[name] = value
-                    return
-                if scope.function and self.language == "Ruby":
-                    break
+        if not declare and self._reassign(name, value):
+            return
         self.scopes[-1].values[name] = value
+
+    def _reassign(self, name: str, value: Value) -> bool:
+        for scope in reversed(self.scopes):
+            if name in scope.values:
+                scope.values[name] = value
+                return True
+            if scope.function and self.language == "Ruby":
+                break
+        return False
+
 
     def _lookup(self, name: str) -> Value | None:
         for scope in reversed(self.scopes):
@@ -665,20 +738,14 @@ class _Engine:
         """Recognize ``if (!allowed(x)) { return/throw }`` style early exits."""
         text = self.text[start:end]
         condition = re.match(r"\s*(?:if\s*\(?|unless\s+|elsif\s+)(.*)", text, re.DOTALL)
-        modifier = re.search(r"\b(?:unless|if)\s+(.+)$", text) if self.language == "Ruby" and _GUARD_EXIT.match(text.strip()) else None
+        modifier = re.search(r"\b(?:unless|if)\s++(.++)$", text) if self.language == "Ruby" and _GUARD_EXIT.match(text.strip()) else None
         if not condition and not modifier:
             return
         expression = (modifier or condition).group(1)
-        negated_keyword = text.lstrip().startswith("unless") or bool(modifier and modifier.group(0).startswith("unless"))
-        exits = bool(modifier) or bool(_GUARD_EXIT.search(text[(condition.end(1) if condition else 0):]))
-        if not exits and following:
-            body = self.mask[following[0].start : following[0].end]
-            exits = bool(_GUARD_EXIT.search(body))
-            if not exits and len(following) > 1 and not body.strip():
-                exits = bool(_GUARD_EXIT.search(self.mask[following[1].start : following[1].end]))
-        if not exits:
+        if not self._guard_exits(text, condition, modifier, following):
             return
-        negated = negated_keyword ^ bool(re.match(r"\s*\(?\s*(?:!|not\b)", expression))
+        negated_keyword = text.lstrip().startswith("unless") or bool(modifier and modifier.group(0).startswith("unless"))
+        negated = negated_keyword ^ bool(re.match(r"\s*(?:\(\s*)?(?:!|not\b)", expression))
         if not negated and not re.search(r"(?:===?|!==?)\s*false\b", expression):
             return
         for name, categories in self._checks(expression):
@@ -686,91 +753,60 @@ class _Engine:
             if current is not None:
                 self._assign(name, sanitize(current, categories), declare=False)
 
+    def _guard_exits(self, text: str, condition: re.Match[str] | None, modifier: re.Match[str] | None, following: list[_Statement]) -> bool:
+        exits = bool(modifier) or bool(_GUARD_EXIT.search(text[(condition.end(1) if condition else 0):]))
+        if exits or not following:
+            return exits
+        body = self.mask[following[0].start : following[0].end]
+        if _GUARD_EXIT.search(body):
+            return True
+        if len(following) > 1 and not body.strip():
+            return bool(_GUARD_EXIT.search(self.mask[following[1].start : following[1].end]))
+        return False
+
+
     def _checks(self, expression: str) -> list[tuple[str, frozenset[str]]]:
-        variable = r"\$?[A-Za-z_][\w.]*"
         results: list[tuple[str, frozenset[str]]] = []
-        literal_list = r"(?:\[[^\]]*\]|array\s*\([^)]*\)|%w[\[(][^\])]*[\])]|(?:List|Set|Arrays)\s*\.\s*(?:of|asList)\s*\([^)]*\)|new\s*\[\]\s*\{[^}]*\})"
-        for match in re.finditer(rf"\bin_array\s*\(\s*({variable})\s*,\s*({literal_list}|{variable})", expression):
+        for match in _IN_ARRAY_CHECK.finditer(expression):
             results.append((match.group(1).lstrip("$"), ALL_SINKS))
-        for match in re.finditer(rf"({literal_list}|[A-Z_][A-Z0-9_]*|\w*[Aa]llow\w*)\s*\.\s*(?:contains|Contains|include\?|includes|has|ContainsKey|containsKey)\s*\(?\s*({variable})", expression):
+        for match in _CONTAINS_CHECK.finditer(expression):
             results.append((match.group(2).lstrip("$"), ALL_SINKS))
-        for match in re.finditer(rf"({variable})\s*\.\s*matches\s*\(\s*\"((?:\\.|[^\"\\])*)\"", expression):
-            categories = safe_for(match.group(2).encode().decode("unicode_escape"), fullmatch=True)
-            if categories:
-                results.append((match.group(1), categories))
-        for match in re.finditer(r"""\bpreg_match\s*\(\s*(['"])(.)\^(.*)\$\2D?([a-zA-Z]*)\1\s*,\s*\$([A-Za-z_]\w*)""", expression):
+        for match in _MATCHES_CHECK.finditer(expression):
+            self._add_regex_check(results, match.group(1), match.group(2).encode().decode("unicode_escape"))
+        for match in _PREG_MATCH_CHECK.finditer(expression):
             if "D" in match.group(0)[-30:] or match.group(4).find("D") >= 0:
-                categories = safe_for(match.group(3), fullmatch=True)
-                if categories:
-                    results.append((match.group(5), categories))
-        for match in re.finditer(rf"({variable})\s*(?:=~|\.match\??)\s*\(?\s*/\\A(.*)\\z/", expression):
-            categories = safe_for(match.group(2), fullmatch=True)
-            if categories:
-                results.append((match.group(1), categories))
-        for match in re.finditer(r"""MustCompile\s*\(\s*[`"]\^(.*)\$[`"]\s*\)\s*\.\s*MatchString\s*\(\s*([A-Za-z_]\w*)""", expression):
-            categories = safe_for(match.group(1), fullmatch=True)
-            if categories:
-                results.append((match.group(2), categories))
-        for match in re.finditer(rf"({variable})\s*\.\s*(?:startsWith|StartsWith|start_with\?)\s*\(|(?:strings\s*\.\s*HasPrefix|str_starts_with|strpos)\s*\(\s*({variable})", expression):
+                self._add_regex_check(results, match.group(5), match.group(3))
+        for match in _RUBY_MATCH_CHECK.finditer(expression):
+            self._add_regex_check(results, match.group(1), match.group(2))
+        for match in _GO_MATCH_CHECK.finditer(expression):
+            self._add_regex_check(results, match.group(2), match.group(1))
+        for match in _PREFIX_CHECK.finditer(expression):
             name = (match.group(1) or match.group(2)).lstrip("$")
             current = self._lookup(name)
             if current is not None and NORMALIZED in current.sanitized:
                 results.append((name, frozenset({FILESYSTEM})))
         return results
 
+    @staticmethod
+    def _add_regex_check(results: list[tuple[str, frozenset[str]]], name: str, regex: str) -> None:
+        categories = safe_for(regex, fullmatch=True)
+        if categories:
+            results.append((name, categories))
+
+
     # Values -----------------------------------------------------------------------
 
     def _value(self, start: int, end: int) -> Value:
-        text = self.text[start:end]
+        stripped = self.text[start:end].strip().rstrip(";").strip()
+        literal = _literal_value(stripped)
+        if literal is not None:
+            return literal
         mask = list(self.mask[start:end])
-        stripped = text.strip().rstrip(";").strip()
-        literal = re.fullmatch(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\$#{])*)\"""", stripped)
-        if literal:
-            return constant(next(group for group in literal.groups() if group is not None))
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
-            return constant(stripped)
         values: list[Value] = []
-        joined = "".join(mask)
-        for pattern, categories in self.catalog.sanitizers:
-            for match in pattern.finditer(joined):
-                close = -1
-                if joined[match.end() - 1 : match.end()] == "(":
-                    close = matching_paren(self.mask, start + match.end() - 1)
-                inner_end = close if 0 <= close < end else end
-                inner = self._value(start + match.end(), inner_end)
-                values.append(sanitize(replace(inner, composed=False), categories))
-                for position in range(match.start(), (inner_end - start + 1) if close >= 0 else len(mask)):
-                    if position < len(mask):
-                        mask[position] = " "
-            joined = "".join(mask)
-        normalized_receiver = False
-        if self.catalog.normalizers is not None:
-            for match in self.catalog.normalizers.finditer(joined):
-                close = matching_paren(self.mask, start + match.end() - 1) if joined[match.end() - 1 : match.end()] == "(" else -1
-                if not 0 <= close < end:
-                    continue
-                if joined[match.start()] == "." or joined[: match.start()].rstrip().endswith("."):
-                    # receiver.normalize(): the whole receiver chain is normalized
-                    # when the call ends the expression.
-                    normalized_receiver = normalized_receiver or not self.mask[close + 1 : end].strip().rstrip(";")
-                    continue
-                inner = self._value(start + match.end(), close)
-                values.append(sanitize(inner, {NORMALIZED}))
-                for position in range(match.start(), close - start + 1):
-                    mask[position] = " "
-            joined = "".join(mask)
-        searchable = self._searchable(start, end, joined)
-        for pattern, trust, description in self.catalog.sources:
-            for match in pattern.finditer(self.text[start:end] if self.catalog.variables == "dollar" else searchable):
-                if any(mask[position] == " " and self.mask[start + position] != " " for position in range(match.start(), min(match.end(), len(mask)))):
-                    continue  # inside a sanitizer call that was already evaluated
-                step = FlowStep(
-                    "SOURCE",
-                    self._location(start + match.start(), start + match.end()),
-                    _compact(self.text[start + match.start() : start + match.end()]),
-                    f"Untrusted {description}.",
-                )
-                values.append(source_value(step, trust))
+        self._sanitized_values(start, end, mask, values)
+        normalized_receiver = self._normalized_values(start, end, mask, values)
+        searchable = self._searchable(start, end, "".join(mask))
+        self._source_values(start, end, mask, searchable, values)
         dynamic = False
         for name in self._variable_names(start, end, searchable):
             current = self._lookup(name)
@@ -781,14 +817,73 @@ class _Engine:
         merged = merge(*values) if values else Value()
         variable = merged.dynamic or dynamic or merged.tainted
         strings = [single or double for single, double in re.findall(r"""'([^']*)'|"([^"]*)\"""", stripped)]
-        result = replace(
-            merged,
-            dynamic=variable,
-            composed=variable and self._composed(stripped),
-            prefix=_prefix(stripped),
-            text=" ".join(strings)[:400],
+        result = cast(
+            Value,
+            replace(
+                merged,
+                dynamic=variable,
+                composed=variable and self._composed(stripped),
+                prefix=_prefix(stripped),
+                text=" ".join(strings)[:400],
+            ),
         )
         return sanitize(result, {NORMALIZED}) if normalized_receiver else result
+
+    def _call_close(self, joined: str, start: int, match_end: int) -> int:
+        """Offset of the ')' closing a call whose '(' ends the match, or -1."""
+        if joined[match_end - 1 : match_end] == "(":
+            return matching_paren(self.mask, start + match_end - 1)
+        return -1
+
+    def _sanitized_values(self, start: int, end: int, mask: list[str], values: list[Value]) -> None:
+        """Evaluate sanitizer calls, record them and blank them out of the mask."""
+        joined = "".join(mask)
+        for pattern, categories in self.catalog.sanitizers:
+            for match in pattern.finditer(joined):
+                close = self._call_close(joined, start, match.end())
+                inner_end = close if 0 <= close < end else end
+                inner = self._value(start + match.end(), inner_end)
+                values.append(sanitize(cast(Value, replace(inner, composed=False)), categories))
+                stop = (inner_end - start + 1) if close >= 0 else len(mask)
+                for position in range(match.start(), min(stop, len(mask))):
+                    mask[position] = " "
+            joined = "".join(mask)
+
+    def _normalized_values(self, start: int, end: int, mask: list[str], values: list[Value]) -> bool:
+        """Evaluate path normalizers; return True when a receiver chain is normalized."""
+        if self.catalog.normalizers is None:
+            return False
+        normalized_receiver = False
+        joined = "".join(mask)
+        for match in self.catalog.normalizers.finditer(joined):
+            close = self._call_close(joined, start, match.end())
+            if not 0 <= close < end:
+                continue
+            if joined[match.start()] == "." or joined[: match.start()].rstrip().endswith("."):
+                # receiver.normalize(): the whole receiver chain is normalized
+                # when the call ends the expression.
+                normalized_receiver = normalized_receiver or not self.mask[close + 1 : end].strip().rstrip(";")
+                continue
+            inner = self._value(start + match.end(), close)
+            values.append(sanitize(inner, {NORMALIZED}))
+            for position in range(match.start(), close - start + 1):
+                mask[position] = " "
+        return normalized_receiver
+
+    def _source_values(self, start: int, end: int, mask: list[str], searchable: str, values: list[Value]) -> None:
+        subject = self.text[start:end] if self.catalog.variables == "dollar" else searchable
+        for pattern, trust, description in self.catalog.sources:
+            for match in pattern.finditer(subject):
+                if any(mask[position] == " " and self.mask[start + position] != " " for position in range(match.start(), min(match.end(), len(mask)))):
+                    continue  # inside a sanitizer call that was already evaluated
+                step = FlowStep(
+                    "SOURCE",
+                    self._location(start + match.start(), start + match.end()),
+                    _compact(self.text[start + match.start() : start + match.end()]),
+                    f"Untrusted {description}.",
+                )
+                values.append(source_value(step, trust))
+
 
     def _searchable(self, start: int, end: int, mask: str) -> str:
         """The masked text with string-interpolation expressions restored."""
@@ -805,28 +900,35 @@ class _Engine:
         return "".join(restored)
 
     def _variable_names(self, start: int, end: int, mask: str) -> list[str]:
-        text = self.text[start:end]
-        names: list[str] = []
         kind = self.catalog.variables
         if kind == "dollar":
-            # Variables expand inside double quotes but not inside single quotes.
-            searchable_chars = list(_mask_single_quoted(text))
-            for position, character in enumerate(mask):
-                if character == " " and self.mask[start + position : start + position + 1] != " ":
-                    searchable_chars[position] = " "
-            searchable = "".join(searchable_chars)
-            names.extend(re.findall(r"\$\{?([A-Za-z_]\w*)", searchable))
-            names = [name for name in names if not re.fullmatch(r"_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV)|args|env|Request|this", name)]
+            names = self._dollar_names(start, end, mask)
         elif kind == "percent":
-            names.extend(percent or bang for percent, bang in re.findall(r"%([A-Za-z_]\w*)%|!([A-Za-z_]\w*)!", text))
+            names = [percent or bang for percent, bang in re.findall(r"%([A-Za-z_]\w*)%|!([A-Za-z_]\w*)!", self.text[start:end])]
         else:
-            for match in re.finditer(r"(?<![\w.$:>@])(@{0,2}[A-Za-z_]\w*)", mask):
-                following = mask[match.end() : match.end() + 3]
-                if following.lstrip().startswith("(") or following.startswith("::"):
-                    continue  # function call or namespace
-                names.append(match.group(1))
+            names = self._bare_names(mask)
         keywords = _KEYWORDS.get(self.language, set())
         return [name for name in dict.fromkeys(names) if name not in keywords]
+
+    def _dollar_names(self, start: int, end: int, mask: str) -> list[str]:
+        # Variables expand inside double quotes but not inside single quotes.
+        searchable_chars = list(_mask_single_quoted(self.text[start:end]))
+        for position, character in enumerate(mask):
+            if character == " " and self.mask[start + position : start + position + 1] != " ":
+                searchable_chars[position] = " "
+        names = re.findall(r"\$\{?([A-Za-z_]\w*)", "".join(searchable_chars))
+        return [name for name in names if not re.fullmatch(r"_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV)|args|env|Request|this", name)]
+
+    @staticmethod
+    def _bare_names(mask: str) -> list[str]:
+        names: list[str] = []
+        for match in re.finditer(r"(?<![\w.$:>@])(@{0,2}[A-Za-z_]\w*)", mask):
+            following = mask[match.end() : match.end() + 3]
+            if following.lstrip().startswith("(") or following.startswith("::"):
+                continue  # function call or namespace
+            names.append(match.group(1))
+        return names
+
 
     def _composed(self, expression: str) -> bool:
         without = re.sub(r"""'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*\"""", "S", expression)
@@ -834,7 +936,7 @@ class _Engine:
             return True
         if self.catalog.interpolation is not None and self.catalog.interpolation.search(expression) and re.search(r"[\"`]", expression):
             return True
-        return bool(re.search(r"\bString\s*\.\s*format\s*\(|\bfmt\s*\.\s*Sprintf\s*\(|\bsprintf\s*\(|\bstring\s*\.\s*Format\s*\(", expression))
+        return any(pattern.search(expression) for pattern in _FORMAT_CALLS)
 
     # Sinks ------------------------------------------------------------------------
 
@@ -845,25 +947,29 @@ class _Engine:
             if sink.requires is not None and not sink.requires.search(text):
                 continue
             for match in sink.pattern.finditer(mask):
-                call_start = start + match.start()
-                spans = self._argument_spans(sink, start + match.end(), end)
-                if not spans:
-                    continue
-                selected = self._program_arguments(sink, spans) if sink.multi_argument_safe else None
-                if selected is None:
-                    selected = self._select(sink, spans)
-                if not selected:
-                    continue
-                values = [self._value(a, b) for a, b in selected]
-                value = merge(*values)
-                category = rule(f"{self.catalog.prefix}-{sink.family}-001").category
-                if category == HTTP_REQUEST and has_fixed_host(values[0].prefix):
-                    continue
-                direct = any(
-                    pattern.search(self.text[a:b]) for a, b in selected for pattern, _, _ in self.catalog.sources
-                )
-                certainty = sink.certainty if direct else weakest(sink.certainty, Confidence.MEDIUM)
-                self._emit(sink, call_start, spans[-1][1], value, certainty)
+                self._sink_match(sink, match, start, end)
+
+    def _sink_match(self, sink: Sink, match: re.Match[str], start: int, end: int) -> None:
+        call_start = start + match.start()
+        spans = self._argument_spans(sink, start + match.end(), end)
+        if not spans:
+            return
+        selected = self._program_arguments(sink, spans) if sink.multi_argument_safe else None
+        if selected is None:
+            selected = self._select(sink, spans)
+        if not selected:
+            return
+        values = [self._value(a, b) for a, b in selected]
+        value = merge(*values)
+        category = rule(f"{self.catalog.prefix}-{sink.family}-001").category
+        if category == HTTP_REQUEST and has_fixed_host(values[0].prefix):
+            return
+        direct = any(
+            pattern.search(self.text[a:b]) for a, b in selected for pattern, _, _ in self.catalog.sources
+        )
+        certainty = sink.certainty if direct else weakest(sink.certainty, Confidence.MEDIUM)
+        self._emit(sink, call_start, spans[-1][1], value, certainty)
+
 
     def _argument_spans(self, sink: Sink, after: int, end: int) -> list[tuple[int, int]]:
         if sink.argument in {REST, TOKEN}:
@@ -993,21 +1099,12 @@ def _mask_single_quoted(text: str) -> str:
     escaped = False
     for index, character in enumerate(text):
         if escaped:
-            if quote == "'":
-                result[index] = " "
             escaped = False
-            continue
-        if character == "\\" and quote is not None:
-            if quote == "'":
-                result[index] = " "
+        elif quote is not None and character == "\\":
             escaped = True
-            continue
-        if quote is None and character in {"'", '"'}:
+        elif quote is None and character in {"'", '"'}:
             quote = character
-            if quote == "'":
-                result[index] = " "
-            continue
-        if quote is not None and character == quote:
+        elif character == quote:
             if quote == "'":
                 result[index] = " "
             quote = None
@@ -1015,3 +1112,12 @@ def _mask_single_quoted(text: str) -> str:
         if quote == "'":
             result[index] = " "
     return "".join(result)
+
+
+def _literal_value(stripped: str) -> Value | None:
+    literal = re.fullmatch(r"""'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\$#{])*)\"""", stripped)
+    if literal:
+        return constant(next(group for group in literal.groups() if group is not None))
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
+        return constant(stripped)
+    return None

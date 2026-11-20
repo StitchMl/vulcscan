@@ -160,10 +160,49 @@ def _alias_summary(
     return summaries[destination].get(exported)
 
 
+def _relay_summaries(
+    path: str,
+    source: str,
+    modules: dict[str, Any],
+    direct: dict[str, dict[str, ImportedSink]],
+) -> dict[str, ImportedSink]:
+    """Summarize one unchanged-argument relay to a directly imported sink."""
+    clean = blank_comments(source, JS_STYLE)
+    mask = code_mask(source, JS_STYLE)
+    imports = _import_aliases(clean)
+    occurrences: dict[str, int] = {}
+    relays: dict[str, ImportedSink] = {}
+    for match in _FUNCTION.finditer(clean):
+        name, parameters = match.group(1), match.group(2)
+        occurrences[name] = occurrences.get(name, 0) + 1
+        if not _exported(clean, name):
+            continue
+        args = [item.strip() for item in parameters.split(",")]
+        if not args or not all(re.fullmatch(r"[A-Za-z_$][\w$]*", arg) for arg in args):
+            continue
+        end = _matching_brace(mask, match.end() - 1)
+        if end < 0:
+            continue
+        call = _DIRECT_CALL.fullmatch(clean[match.end():end])
+        if call is None or call.group(1) not in imports or call.group(2) not in args:
+            continue
+        sink = _alias_summary(path, clean, call.group(1), modules, direct)
+        if sink is not None and sink.parameter_index == 0:
+            relays[name] = ImportedSink(
+                sink.rule_id, args.index(call.group(2)), sink.file, sink.line, sink.sink
+            )
+    return {name: sink for name, sink in relays.items() if occurrences[name] == 1}
+
+
 def imported_sink_map(files: list[Any]) -> dict[str, dict[str, ImportedSink]]:
     """Map caller file -> imported alias -> strict one-hop sink summary."""
     modules = {item.relative: item for item in files if item.language in {"JavaScript", "TypeScript"}}
     summaries = {path: _summaries(path, item.text) for path, item in modules.items()}
+    relays = {
+        path: _relay_summaries(path, item.text, modules, summaries)
+        for path, item in modules.items()
+    }
+    summaries = {path: {**summaries[path], **relays[path]} for path in modules}
     result: dict[str, dict[str, ImportedSink]] = {}
     for path, item in modules.items():
         clean = blank_comments(item.text, JS_STYLE)

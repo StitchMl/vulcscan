@@ -152,3 +152,27 @@ def test_gin_non_id_or_non_gin_context_does_not_report_idor(tmp_path: Path) -> N
     assert not [f for f in scan_path(tmp_path, cve=False).findings
                 if f.rule_id == "AUTHZ-SCOPE-001"]
 
+
+
+def test_gin_owner_check_in_other_handler_cannot_hide_unscoped_lookup(
+    tmp_path: Path,
+) -> None:
+    code = (
+        'package main\n'
+        'import "github.com/gin-gonic/gin"\n'
+        'func protected(c *gin.Context) {\n'
+        '    id := c.Param("id")\n'
+        '    db.Where("owner_id = ?", userID).First(&doc, id)\n'
+        '}\n'
+        'func exposed(c *gin.Context) {\n'
+        '    id := c.Param("id")\n'
+        '    db.Take(&doc, id)\n'
+        '}\n'
+    )
+    (tmp_path / "server.go").write_text(code, encoding="utf-8")
+    findings = [finding for finding in scan_path(tmp_path, cve=False).findings
+                if finding.rule_id == "AUTHZ-SCOPE-001"]
+    assert len(findings) == 1
+    assert findings[0].location.line == 9
+
+

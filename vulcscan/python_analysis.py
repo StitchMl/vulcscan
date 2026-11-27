@@ -157,6 +157,7 @@ def _has_non_html_media_type(node: ast.Call) -> bool:
     return False
 _FASTAPI_INPUTS = {"Query", "Path", "Body", "Header", "Cookie", "Form", "File"}
 _INJECTED = {"Depends", "Security"}
+_MCP_CONTEXT_TYPES = {"Context", "MCPContext", "RequestContext"}
 
 _SANITIZERS: dict[str, frozenset[str]] = {
     "int": ALL_SINKS,
@@ -460,9 +461,10 @@ def _constructed_local_class(
         if assigned is None or assigned[0] != variable or statement.lineno >= call_line:
             continue
         constructor = assigned[1]
-        if isinstance(constructor, ast.Call) and isinstance(constructor.func, ast.Name):
-            if constructor.func.id in module.classes:
-                return constructor.func.id
+        if (isinstance(constructor, ast.Call)
+                and isinstance(constructor.func, ast.Name)
+                and constructor.func.id in module.classes):
+            return constructor.func.id
     return None
 
 
@@ -599,6 +601,13 @@ class PythonProject:
             step = FlowStep("SOURCE", location, argument.arg, "HTTP route parameter enters the handler.")
             value = source_value(step, REMOTE)
             environment[argument.arg] = sanitize(value, ALL_SINKS) if sanitized else value
+        for argument in _mcp_tool_inputs(info.node, module):
+            location = _location(module, argument, info.qualname)
+            step = FlowStep(
+                "SOURCE", location, argument.arg,
+                "MCP tool arguments are caller-controlled API input.",
+            )
+            environment[argument.arg] = source_value(step, REMOTE)
         routed = self.django_routes.get((module.relative, info.qualname), {})
         arguments = {
             argument.arg: argument
@@ -2073,6 +2082,49 @@ def _route_inputs(node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module) 
         if entry is not None:
             result.append(entry)
     return result
+
+
+def _mcp_instance_names(module: Module) -> set[str]:
+    names = {
+        alias for alias, target in module.imports.items()
+        if target.casefold().startswith(("mcp.", "fastmcp."))
+        and target.rsplit(".", 1)[-1] in {"FastMCP", "Server"}
+    }
+    for statement in module.tree.body:
+        assigned = _single_name_assignment(statement)
+        if assigned is None or not isinstance(assigned[1], ast.Call):
+            continue
+        target = _canonical(module, assigned[1].func).casefold()
+        if target.rsplit(".", 1)[-1] in {"fastmcp", "server"} and (
+                target.startswith(("mcp.", "fastmcp."))):
+            names.add(assigned[0])
+    return names
+
+
+def _is_mcp_tool_decorator(decorator: ast.expr, module: Module,
+                           instances: set[str]) -> bool:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if not isinstance(target, ast.Attribute) or target.attr != "tool":
+        return False
+    owner = _canonical(module, target.value)
+    if re.search(r"(?:^|[._])mcp(?:[._]|$)", owner, re.IGNORECASE):
+        return True
+    owner_name = ast.unparse(target.value).split(".", 1)[0]
+    return owner_name in instances
+
+
+def _mcp_tool_inputs(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, module: Module,
+) -> list[ast.arg]:
+    instances = _mcp_instance_names(module)
+    if not any(_is_mcp_tool_decorator(item, module, instances)
+               for item in node.decorator_list):
+        return []
+    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    return [argument for argument in arguments
+            if argument.arg not in {"self", "cls"}
+            and _annotation_name(argument.annotation, module).rsplit(".", 1)[-1]
+            not in _MCP_CONTEXT_TYPES]
 
 
 def _annotation_name(annotation: ast.expr | None, module: Module) -> str:

@@ -79,6 +79,8 @@ Paths in findings are relative to the scanned directory.
 | Dockerfile, YAML, JSON, XML, SVG, CSS, `.env`, config files | Configuration, secret and active-SVG rules | rule-specific |
 | PE, ELF, Mach-O, Java bytecode/JAR, WebAssembly and common native-library extensions | Magic/header inspection, PE ASLR/DEP, ELF PIE/NX stack, risky imported or embedded symbols and printable credential assignments | HIGH for explicit header flags, MEDIUM for symbol and string indicators |
 
+For Python MCP servers using `FastMCP`, tool arguments are treated as caller-controlled API input and followed into existing command, SQL, path, deserialization, SSRF and output sinks.
+
 Path traversal, SSRF, open redirect, template injection, XML and deserialization findings require network input: a CLI that opens the file named on its own command line is not reported.
 
 Sanitizers are recognized by behavior, never by function name: numeric conversion, `shlex.quote`, `escapeshellarg`, `basename`/`secure_filename`, literal allowlists, anchored regex checks whose character class excludes dangerous characters (`re.fullmatch`, `\Z`; `re.match` with `$` is rejected because `$` accepts a trailing newline), and path containment checks on canonicalized paths. A function called `sanitize()` gets no trust.
